@@ -13,6 +13,10 @@ This page covers two ways to protect it:
 - [Service-mesh mutual TLS](#service-mesh-mutual-tls): an Istio sidecar
   encrypts and authenticates the connection, and the harness is unchanged.
 
+A pod-local TLS-terminating proxy (Envoy, say) is no longer needed for
+this: the harness's own TLS gives the same result without an extra
+container.
+
 **A private address is not authentication.** A cluster-internal Service
 name, a private VPC range or a NetworkPolicy limits who can reach the
 control plane. It does not prove to the harness that the peer is the
@@ -66,17 +70,21 @@ identity, closes this.
 | Stream encrypted on the network | yes | yes | yes, between sidecars |
 | Harness verifies the control plane | yes, against a CA bundle | yes, against a CA bundle | partly: any mesh identity authorised to serve the Service is accepted |
 | Control plane verifies the job | no | yes, if it requires client certificates | yes, with the AuthorizationPolicy |
+| Control plane knows which job | no | only with per-job certificates | no: every job shares one identity |
 | Plaintext inside the job Pod | no | no | yes, between the harness and its sidecar |
 | Exercised | locally | locally and on `kind` | manifests validated only |
 
 Harness mutual TLS is the default choice: it needs no mesh, the harness
-pins the control plane to a CA that the operator chooses, and a job given
+pins the control plane to the CA in `CONTROL_PLANE_TLS_CA_FILE`, and a job given
 the TLS settings refuses to fall back to plaintext. The mesh recipe suits
 clusters that already run Istio. The two compose: with the control-plane
 Service set to `appProtocol: tcp`, the sidecars carry the harness's TLS
 connection as opaque bytes, and the harness's CA check covers the mesh's
-weaker server check. That combination has not been exercised, and the two
-recipes' placeholder ports (9443 and 9090) must then agree.
+weaker server check. That combination has not been exercised. The two
+recipes' manifests overlap and must be merged by hand: both define the
+`stirrup-jobs` and `stirrup-control` namespaces with different labels
+(sidecar injection, Pod Security level) and the `stirrup-control-plane`
+Service with different ports (9443 and 9090).
 
 Neither recipe protects the transport credential from the run itself. With
 the `local` executor, the agent's commands run as the harness's own user in
@@ -129,7 +137,8 @@ stirrup: control plane transport mode=mutual-tls ca=/etc/stirrup/control-plane-t
   for `CONTROL_PLANE_TLS_SERVER_NAME` when set. An address given as an IP
   needs an IP SAN.
 - The server negotiates `h2` through ALPN. grpc-go requires it, so a
-  TLS-terminating proxy in front of the control plane must offer `h2`.
+  TLS-terminating proxy or load balancer in front of the control plane
+  must offer both TLS 1.3 and `h2`.
 
 The harness does not check revocation (CRL or OCSP) and does not pin a
 certificate beyond the CA bundle. It reads the files once at startup and
@@ -160,34 +169,41 @@ this with `-tls-cert`, `-tls-key` and `-tls-client-ca`
 with no client authentication, which is the "Harness TLS" column above.
 
 `CONTROL_PLANE_SESSION_ID` and the `ready` event are not authenticated by
-TLS. A control plane that runs several jobs should map the verified client
+TLS. With one client certificate shared by every job, as in the recipe
+below, any holder of that certificate can claim another job's session ID
+and receive that session's `RunConfig` and sandbox identity token. A
+control plane that runs several jobs should map the verified client
 certificate's identity to the session it launched, rather than trusting
 the session ID the job reports. Issuing one certificate per job, for
 example with the run ID in a URI SAN, makes that mapping possible. The
-`sandbox_token_request` contract already assumes this: the control plane
-derives the run identity from the authenticated stream the task was
-assigned on (`proto/harness/v1/harness.proto`).
+`sandbox_token_request` contract expects it: the control plane derives
+the run identity from the authenticated stream the task was assigned on
+(`proto/harness/v1/harness.proto`), so the sandbox identity token flow
+needs per-job certificates, or a control plane that issues a token only
+to the stream it assigned the task on.
 
 ### Certificates
 
-Any PKI works. For a test or a small deployment, `openssl` produces a CA,
-a server certificate for the control plane's Service name and a client
-certificate:
+Any PKI works. For a test or a small deployment, `openssl` (OpenSSL 1.1.1
+or later, or LibreSSL) produces a CA, a server certificate for the control
+plane's Service name and a client certificate. Go rejects EC keys with
+explicit curve parameters and SHA-1 signatures, hence
+`ec_param_enc:named_curve` and `-sha256`:
 
 ```sh
-openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 365 \
-  -subj "/CN=stirrup control-plane CA" -keyout ca-key.pem -out ca.pem
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -pkeyopt ec_param_enc:named_curve \
+  -nodes -days 365 -subj "/CN=stirrup control-plane CA" -keyout ca-key.pem -out ca.pem
 
-openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-  -subj "/CN=stirrup-control-plane" -keyout server-key.pem -out server.csr
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -pkeyopt ec_param_enc:named_curve \
+  -nodes -subj "/CN=stirrup-control-plane" -keyout server-key.pem -out server.csr
 printf 'subjectAltName=DNS:stirrup-control-plane.stirrup-control.svc\nextendedKeyUsage=serverAuth\n' > server.ext
-openssl x509 -req -in server.csr -CA ca.pem -CAkey ca-key.pem -CAcreateserial \
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca-key.pem -CAcreateserial -sha256 \
   -days 90 -extfile server.ext -out server.pem
 
-openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-  -subj "/CN=stirrup-job" -keyout client-key.pem -out client.csr
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -pkeyopt ec_param_enc:named_curve \
+  -nodes -subj "/CN=stirrup-job" -keyout client-key.pem -out client.csr
 printf 'extendedKeyUsage=clientAuth\n' > client.ext
-openssl x509 -req -in client.csr -CA ca.pem -CAkey ca-key.pem -CAcreateserial \
+openssl x509 -req -in client.csr -CA ca.pem -CAkey ca-key.pem -CAcreateserial -sha256 \
   -days 30 -extfile client.ext -out client.pem
 ```
 
@@ -202,7 +218,11 @@ issuer rather than a cluster-wide one: anyone who can request a
 certificate for the control plane's DNS name from the issuer that the job
 trusts can impersonate the control plane. cert-manager's `ca.crt` is the
 CA of the certificate's own issuer, so it is the right
-`CONTROL_PLANE_TLS_CA_FILE` only when one issuer signs both sides.
+`CONTROL_PLANE_TLS_CA_FILE` only when one issuer signs both sides. Set
+`usages` to include `client auth` on the job's `Certificate` and
+`server auth` on the control plane's; a job certificate without the
+client-auth usage fails with the unhelpful `remote error: tls: bad
+certificate`.
 
 ### Kubernetes
 
@@ -233,8 +253,9 @@ kubectl -n stirrup-control create secret generic stirrup-control-plane-server-tl
 ```
 
 The control plane mounts its Secret and loads it into the TLS
-configuration above. For the example control plane, the container section
-is:
+configuration above. No image of the example control plane is published;
+to use it in a cluster, build it from `examples/controlplane` into an
+image of its own. Its container section is then:
 
 ```yaml
 args: ["-config", "/etc/controlplane/runconfig.json", "-listen", "0.0.0.0:9443",
@@ -247,7 +268,8 @@ volumeMounts:
 
 `job.yaml` mounts the client Secret with mode `0440` and `fsGroup: 65532`,
 the image's group, so the harness can read the key and the files are not
-world-readable. A job that also runs the k8s executor needs a token
+world-readable. Anyone who can read Secrets in `stirrup-jobs`, or create
+a Pod there that mounts this one, holds the job identity, so restrict both. A job that also runs the k8s executor needs a token
 (`automountServiceAccountToken: true`) and the orchestrator Role from
 [`examples/k8s/rbac.yaml`](../examples/k8s/rbac.yaml) bound to
 `system:serviceaccount:stirrup-jobs:stirrup-job` in the sandbox namespace.
@@ -300,12 +322,24 @@ Prerequisites:
   `security.istio.io` and `networking.istio.io`, and the default trust
   domain `cluster.local`.
 - Native sidecars, which `job.yaml` requests with the
-  `sidecar.istio.io/nativeSidecar` annotation and which need Kubernetes
-  1.29 or later. The harness then starts only after its proxy is ready, and
-  the Job completes when the harness exits; a classic sidecar keeps a Job
-  Pod running.
+  `sidecar.istio.io/nativeSidecar` annotation (Alpha in Istio's annotation
+  reference) and which need Kubernetes 1.29 or later. The harness then
+  starts only after its proxy is ready, and the Job completes when the
+  harness exits. If the annotation is not honoured, `istio-proxy` appears
+  under `containers` rather than `initContainers`, and the Job Pod keeps
+  running after the harness exits.
 - The Istio CNI node agent, for the `baseline` Pod Security level on the
   job namespace. Without it, `istio-init` needs `NET_ADMIN` and `NET_RAW`.
+- Sidecar mode. Ambient mode and Linkerd are not covered here, and a
+  mesh's default (Istio `PERMISSIVE`, Linkerd's opportunistic mTLS) does
+  not refuse plaintext; only an explicit `STRICT` policy does.
+
+The job's sidecar carries all of its traffic, not only the control-plane
+stream: provider APIs, OTLP, MCP servers. A mesh with
+`outboundTrafficPolicy: REGISTRY_ONLY` needs a ServiceEntry for each. An
+operator's own control-plane Service needs `appProtocol: tcp` (or a
+`tcp-` port name), as in `control-plane-service.yaml`, so the sidecars
+treat the long-lived stream as opaque TCP.
 
 [`examples/k8s/control-transport/istio-mtls/`](../examples/k8s/control-transport/istio-mtls/)
 holds the manifests:
@@ -349,6 +383,11 @@ identity is one Istio considers authorised to serve
   create Pods, Services and Istio routing objects in `stirrup-control` and
   `stirrup-jobs`, or layer harness TLS on top to pin the control plane's
   CA.
+- Changes to the policy objects themselves. A workload-level
+  `PERMISSIVE` PeerAuthentication or a deleted AuthorizationPolicy
+  silently undoes the recipe, so restrict who can write
+  `security.istio.io` and `networking.istio.io` objects in both
+  namespaces.
 - A control-plane Pod that lost its sidecar. `STRICT` and the
   `AuthorizationPolicy` are both enforced by that sidecar, so without it
   the control plane accepts plaintext from anything that can reach it.
@@ -370,9 +409,11 @@ identity is one Istio considers authorised to serve
 
 ### Verification
 
-Apply the probes after the control plane is running, at a time it is not
-dispatching real work, since a probe that is wrongly accepted is assigned
-a task:
+First run one real job from `job.yaml` to completion. Without that
+positive control, a refused probe proves nothing: a mistyped Service name
+or a stopped control plane refuses everything. Then apply the probes at a
+time the control plane is not dispatching real work, since a probe that
+is wrongly accepted is assigned a task:
 
 ```sh
 kubectl apply -f examples/k8s/control-transport/istio-mtls/plaintext-probe.yaml
@@ -381,10 +422,15 @@ kubectl -n stirrup-jobs logs wrong-identity-probe -c stirrup
 kubectl -n stirrup-jobs delete pod plaintext-probe wrong-identity-probe
 ```
 
-Both must end with `failed to connect to control plane` or another
-connection error, never with an assignment. `plaintext-probe` has no
-sidecar and is refused by `PeerAuthentication`; `wrong-identity-probe` is
-meshed but runs as the `default` ServiceAccount and is refused by the
+Both must fail with `failed to connect to control plane at …` and a
+transport error from the control plane's side, such as `error reading
+server preface` with `EOF` or `connection reset by peer`. `no such host`,
+`connection refused` or `i/o timeout` mean the probe never reached the
+control plane's sidecar and prove nothing. These strings are inferred
+from the harness's behaviour against a refusing TLS listener; the recipe
+has not been run on a live mesh. `plaintext-probe` has no sidecar and is
+refused by `PeerAuthentication`; `wrong-identity-probe` is meshed but runs
+as the `default` ServiceAccount and is refused by the
 `AuthorizationPolicy`. Confirm injection on a real job, and on the
 control-plane Pods:
 
