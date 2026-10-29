@@ -1,0 +1,25 @@
+# Namespaces for the Istio strict mutual TLS recipe
+# (docs/transport-security.md#service-mesh-mutual-tls).
+#
+# Job Pods and the control plane each get their own namespace with sidecar
+# injection enabled. The job namespace is separate from the k8s executor's
+# sandbox namespace (examples/k8s/namespace.yaml) so sandbox Pods are not
+# meshed and keep the `restricted` Pod Security level.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stirrup-control
+  labels:
+    istio-injection: enabled
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stirrup-jobs
+  labels:
+    istio-injection: enabled
+    # Sidecar-injected Pods satisfy `baseline` only when the Istio CNI node
+    # agent replaces the istio-init container (which needs NET_ADMIN and
+    # NET_RAW). Without the CNI agent, lower this to `privileged`.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.30

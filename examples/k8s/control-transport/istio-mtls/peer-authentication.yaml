@@ -1,0 +1,12 @@
+# Every workload in stirrup-control accepts mutual TLS only. A client
+# without a mesh certificate (a Pod with no sidecar, or anything outside the
+# mesh) is refused at the control plane's sidecar before any byte reaches
+# the control plane.
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: stirrup-control
+spec:
+  mtls:
+    mode: STRICT

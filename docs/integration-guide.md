@@ -234,16 +234,21 @@ Go.
 
 The gRPC transport is **plaintext and unauthenticated** by default — the
 harness dials with insecure credentials and `TransportConfig`
-exposes only `{type, address}`. Acceptable deployment shapes are
-same-host loopback, a private network, or mesh-provided mTLS
-(Istio, Linkerd). API keys never transit the stream (they travel as
-`secret://` references and outbound events are scrubbed for
-secret-shaped strings), but prompts, tool results, and especially
-the raw sandbox identity JWT do. Do not point a harness at a control
-plane across an untrusted network without TLS, which `stirrup job` enables through `CONTROL_PLANE_TLS_*` environment variables and `stirrup harness` through `--transport-tls-*` flags (never `RunConfig` fields). The public embedding API accepts a caller-provided `Transport`,
-so an embedder can supply its own authenticated transport; the built-in
-TLS constructor is internal. Full discussion:
-[`deployment.md`](deployment.md#transport-security-posture-v01).
+exposes only `{type, address}`. Acceptable deployment shapes are harness
+mutual TLS, mesh-provided mTLS (Istio, Linkerd), or same-host loopback; a
+private network address on its own is not authentication. Provider API
+keys travel as `secret://` references, and outbound events are scrubbed
+for secret-shaped strings, but prompts, tool results, and especially the
+raw sandbox identity JWT cross the stream. `stirrup job` enables TLS
+through `CONTROL_PLANE_TLS_*` environment variables and `stirrup harness`
+through `--transport-tls-*` flags (never `RunConfig` fields). The public
+embedding API accepts a caller-provided `Transport`, so an embedder can
+supply its own authenticated transport; the built-in TLS constructor is
+internal. Full discussion:
+[`deployment.md`](deployment.md#transport-security-posture-v01). What the
+control plane must do to serve TLS and verify job client certificates,
+with Kubernetes and Istio recipes:
+[`transport-security.md`](transport-security.md).
 
 ## A minimal control plane
 
@@ -264,7 +269,8 @@ implementation of these steps built on the generated stubs. It assigns a
 `RunConfig` from a file, answers permission requests by flag (allow, deny, or
 ask on the terminal), prints events and exits with a status that reflects the
 outcome. Its `smoke.sh` runs one task through `stirrup job` against a scripted
-provider with no API key. The example is plaintext and unauthenticated; it
+provider with no API key. The example is plaintext and unauthenticated unless
+its `-tls-*` flags are set, in which case it serves TLS or mutual TLS. It
 supports one run and does not opt into sandbox identity, batching, async
 results, or follow-ups. Add handlers for those events before enabling the
 corresponding config.

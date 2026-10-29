@@ -1,0 +1,21 @@
+# The control plane's RunTask endpoint. The selector must match the
+# operator's control-plane Pods, which run in the stirrup-control namespace.
+#
+# appProtocol tcp makes the sidecars treat the stream as opaque TCP:
+# mutual TLS and the identity check in authorization-policy.yaml work at the
+# connection level, and the long-lived RunTask stream stays out of HTTP
+# routing and per-request timeouts.
+apiVersion: v1
+kind: Service
+metadata:
+  name: stirrup-control-plane
+  namespace: stirrup-control
+spec:
+  selector:
+    app: stirrup-control-plane
+  ports:
+    - name: runtask
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+      appProtocol: tcp

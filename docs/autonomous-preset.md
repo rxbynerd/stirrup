@@ -101,9 +101,8 @@ ANTHROPIC_API_KEY=... stirrup harness \
 ## What the preset does not cover
 
 - Transport authentication for `stirrup job`. The gRPC channel is
-  plaintext and unauthenticated; the network path to the control plane
-  must be trusted. See
-  [Transport security posture](deployment.md#transport-security-posture-v01).
+  plaintext and unauthenticated unless harness TLS or a mesh secures it;
+  see [`transport-security.md`](transport-security.md).
 - Provider choice, model tiering and cost controls beyond the token
   budget.
 - Sandbox identity and git-proxy credentials, covered in

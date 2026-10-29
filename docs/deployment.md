@@ -61,30 +61,34 @@ control plane sends over the bidi stream.
 > `{type, address}` — there is no TLS, token, or mTLS knob on the
 > `RunConfig` surface in v0.1.
 
-v0.1 targets single-operator, self-hosted deployment. The design
-assumes a trusted network path between job Pods and the control
-plane; acceptable shapes are:
+TLS 1.3 and mutual TLS are opt-in through the `CONTROL_PLANE_TLS_*`
+environment variables (`stirrup job --help`) and the `--transport-tls-*`
+flags on `stirrup harness --transport grpc`. They are deliberately not
+`RunConfig` fields, because the job dials before any `RunConfig` arrives.
 
-- **Same host** — control plane and harness on one machine,
-  dialling over loopback.
-- **Private network** — a private VPC / cluster network where the
-  control-plane address is not reachable from untrusted networks.
-- **Mesh-provided mTLS** — a service mesh (Istio, Linkerd) that
-  transparently encrypts and authenticates Pod-to-Pod traffic
-  outside the harness process.
+v0.1 targets single-operator, self-hosted deployment. Acceptable shapes
+for the path between job Pods and the control plane are:
 
-Do not point `--transport-addr` / `CONTROL_PLANE_ADDR` across an
-untrusted network: everything on the stream — prompts, tool
-results, permission responses — would transit in cleartext, and
-any endpoint that can reach the harness's dial target could pose
-as the control plane. Secrets are less exposed than they appear
-(API keys travel as `secret://` references, never raw values, and
-the transport scrubs secret-shaped strings from outbound events) —
-except the sandbox identity token (`ControlEvent.token`), which is
-the raw signed JWT itself and receives no such protection — but the
-stream contents and the control channel itself are unprotected.
+- **Harness mutual TLS** — the `CONTROL_PLANE_TLS_*` settings, with the
+  control plane requiring client certificates.
+- **Mesh-provided mTLS** — a service mesh (Istio, Linkerd) that encrypts
+  and authenticates Pod-to-Pod traffic outside the harness process.
+- **Same host** — control plane and harness on one machine, dialling
+  over loopback.
 
-TLS 1.3 and mutual TLS are opt-in through the `CONTROL_PLANE_TLS_*` environment variables (`stirrup job --help`) and the `--transport-tls-*` flags on `stirrup harness --transport grpc`; they are deliberately not `RunConfig` fields because the job dials before any `RunConfig` arrives.
+A private VPC or cluster network on its own is not one of them. A private
+address limits who can reach the control plane, but it neither encrypts
+the stream nor proves either peer's identity: any workload on that
+network can read prompts, tool results and the raw sandbox identity token
+(`ControlEvent.token`). Anything that can answer at the dial target
+can pose as the control plane and direct the harness to send the job's
+credentials to an endpoint of its choosing. Use a private address without
+TLS only when every workload that can reach it is trusted.
+
+[`transport-security.md`](transport-security.md) lists what crosses the
+stream and gives recipes for harness mutual TLS and for Istio strict
+mutual TLS, with manifests under
+[`examples/k8s/control-transport/`](../examples/k8s/control-transport/).
 
 ## The `stirrup job` subcommand
 
@@ -327,16 +331,15 @@ below).
   same way it treats an explicit error.
 
 **Transport trust boundary.** Unlike API keys, `token` is not a
-`secret://` reference — it is the raw signed JWT, and it rides the
+`secret://` reference — it is the raw signed JWT, and it travels on the
 same plaintext-by-default `RunTask` stream as every other event (see
 [Transport security posture](#transport-security-posture-v01)).
-Requesting a sandbox identity token therefore requires, at minimum,
-the same-host / private-network / mesh-mTLS posture described there:
-the token is a bearer credential and unencrypted by default, so it is
+The token is a bearer credential and unencrypted by default, so it is
 a materially higher-value payload than the rest of the stream. Do not
-opt a run into the sandbox identity token flow across an untrusted
-network without transport TLS configured (see
-[Transport security posture](#transport-security-posture-v01)).
+opt a run into the sandbox identity token flow without harness mutual
+TLS, mesh mTLS, or a same-host control plane; a private network alone
+leaves the token readable by every workload on it. See
+[`transport-security.md`](transport-security.md).
 
 A control plane implementing this contract must:
 
@@ -494,10 +497,12 @@ Before deploying:
 5. Enforce a `Job.spec.activeDeadlineSeconds` slightly larger than
    `RunConfig.timeout` so K8s reaps any stuck Pod even if the
    harness's own wall-clock timeout fails to fire.
-6. Confirm the network path between job Pods and the control plane
-   is trusted (private network or mesh mTLS) — the gRPC transport
-   itself is plaintext and unauthenticated unless transport TLS is configured. See
-   [Transport security posture](#transport-security-posture-v01).
+6. Secure the stream between job Pods and the control plane with
+   harness mutual TLS or mesh mTLS. The gRPC transport is plaintext and
+   unauthenticated unless transport TLS is configured, and a private
+   network address is not authentication. See
+   [Transport security posture](#transport-security-posture-v01) and the
+   recipes in [`transport-security.md`](transport-security.md).
 
 ## Embedding the harness
 

@@ -1,0 +1,69 @@
+# Per-run Job template for the harness's own mutual TLS
+# (docs/transport-security.md#harness-tls-and-mutual-tls). The control plane
+# creates one of these per run.
+#
+# The Secret stirrup-control-plane-client-tls holds the CA that issued the
+# control plane's server certificate (ca.crt) and the job's client
+# certificate and key (tls.crt, tls.key); the page shows how to create it.
+# The control plane's server certificate must carry the host part of
+# CONTROL_PLANE_ADDR as a DNS SAN, or CONTROL_PLANE_TLS_SERVER_NAME must name
+# a SAN it does carry.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stirrup-run-example
+  namespace: stirrup-jobs
+spec:
+  activeDeadlineSeconds: 7200
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: stirrup-job
+    spec:
+      restartPolicy: Never
+      serviceAccountName: stirrup-job
+      securityContext:
+        runAsNonRoot: true
+        # The image runs as UID/GID 65532; group ownership lets it read the
+        # key with a 0440 mode.
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: stirrup
+          image: ghcr.io/rxbynerd/stirrup:main
+          args: ["job"]
+          env:
+            - name: CONTROL_PLANE_ADDR
+              value: stirrup-control-plane.stirrup-control.svc:9443
+            - name: CONTROL_PLANE_SESSION_ID
+              value: example-session
+            - name: STIRRUP_SESSION_DEADLINE
+              value: "7200"
+            - name: CONTROL_PLANE_TLS_CA_FILE
+              value: /etc/stirrup/control-plane-tls/ca.crt
+            - name: CONTROL_PLANE_TLS_CERT_FILE
+              value: /etc/stirrup/control-plane-tls/tls.crt
+            - name: CONTROL_PLANE_TLS_KEY_FILE
+              value: /etc/stirrup/control-plane-tls/tls.key
+          volumeMounts:
+            - name: control-plane-tls
+              mountPath: /etc/stirrup/control-plane-tls
+              readOnly: true
+          livenessProbe:
+            exec:
+              command: ["/usr/local/bin/stirrup", "healthcheck", "--file=/tmp/healthy"]
+          readinessProbe:
+            exec:
+              command: ["/usr/local/bin/stirrup", "healthcheck", "--file=/tmp/ready"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: control-plane-tls
+          secret:
+            secretName: stirrup-control-plane-client-tls
+            defaultMode: 0440
