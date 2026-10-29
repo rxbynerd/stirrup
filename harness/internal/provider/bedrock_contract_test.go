@@ -25,10 +25,15 @@ type capturedBedrockRequest struct {
 // body is the SDK's own serialisation of the ConverseStream input.
 func captureBedrockConverseRequest(t *testing.T, params types.StreamParams) capturedBedrockRequest {
 	t.Helper()
+	must := require.New(t)
 	captured := make(chan capturedBedrockRequest, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		captured <- capturedBedrockRequest{path: r.URL.EscapedPath(), body: body}
+		select {
+		case captured <- capturedBedrockRequest{path: r.URL.EscapedPath(), body: body}:
+		default:
+			t.Error("the SDK sent more than one request")
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Amzn-ErrorType", "ValidationException")
 		w.WriteHeader(http.StatusBadRequest)
@@ -46,7 +51,7 @@ func captureBedrockConverseRequest(t *testing.T, params types.StreamParams) capt
 	})
 	adapter := &BedrockAdapter{client: client}
 	_, err := adapter.Stream(context.Background(), params)
-	require.Error(t, err, "the contract server answers 400, so Stream must fail")
+	must.Error(err, "the contract server answers 400, so Stream must fail")
 
 	select {
 	case req := <-captured:

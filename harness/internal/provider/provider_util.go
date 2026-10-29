@@ -14,8 +14,8 @@ import (
 
 // AdapterDeps carries the cross-cutting dependencies the factory injects
 // into every streaming provider adapter (Anthropic, OpenAICompatible,
-// OpenAIResponses, Gemini, Bedrock) after construction. Every field is optional
-// and nil-safe at every call site. Registry (*quirks.Registry) is
+// OpenAIResponses, Gemini, Bedrock) after construction. Every field is
+// optional and nil-safe at every call site. Registry (*quirks.Registry) is
 // deliberately NOT part of this struct: each adapter resolves quirks
 // differently (e.g. Gemini's ReplayFields gating), so it stays
 // adapter-local.
