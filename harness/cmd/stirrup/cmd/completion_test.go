@@ -147,6 +147,7 @@ func TestFlagCompletion_FileAnnotations(t *testing.T) {
 		{flag: "config", wantExt: []string{"json"}, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},
 		{flag: "prompt-file", wantExt: []string{}, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},
 		{flag: "gcp-credentials-file", wantExt: []string{"json"}, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},
+		{flag: "replay-file", wantExt: []string{"jsonl"}, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},
 		{flag: "permission-policy-file", wantExt: []string{"cedar"}, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},
 		{flag: "trace", wantExt: []string{"jsonl"}, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},
 		{flag: "workspace", wantDir: true, onCommands: []*cobra.Command{harnessCmd, runConfigCmd}},

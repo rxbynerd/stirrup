@@ -12,6 +12,10 @@ const (
 	defaultAnthropicModel  = "claude-sonnet-4-6"
 	defaultAnthropicKeyRef = "secret://ANTHROPIC_API_KEY"
 	defaultOpenAIKeyRef    = "secret://OPENAI_API_KEY"
+	// defaultReplayModel labels a replayed run whose recording decides
+	// every turn; no model is called, so the name is a label wherever
+	// it is read.
+	defaultReplayModel = "replay"
 )
 
 // applyProviderDefaults fills the model and API key reference that the
@@ -27,10 +31,11 @@ const (
 // document points at a baseUrl is a keyless gateway or local server
 // unless the document names a key, so it gets no default reference.
 //
-// The model is defaulted only for the anthropic provider; every other
-// provider has no safe default, so a static router without a model is
-// an error that names the provider and the flag. Non-static routers
-// carry their own model fields and are left to ValidateRunConfig.
+// The model is defaulted for the anthropic provider and for replay,
+// where no model is called; every other provider has no safe default,
+// so a static router without a model is an error that names the
+// provider and the flag. Non-static routers carry their own model fields
+// and are left to ValidateRunConfig.
 func applyProviderDefaults(cmd *cobra.Command, cfg *types.RunConfig, fromDocument bool) error {
 	provider := cfg.Provider.Type
 	if provider == "" {
@@ -50,12 +55,16 @@ func applyProviderDefaults(cmd *cobra.Command, cfg *types.RunConfig, fromDocumen
 
 	staticRouter := cfg.ModelRouter.Type == "" || cfg.ModelRouter.Type == "static"
 	if staticRouter && cfg.ModelRouter.Model == "" {
-		if provider != "anthropic" {
+		switch provider {
+		case "anthropic":
+			cfg.ModelRouter.Model = defaultAnthropicModel
+		case "replay":
+			cfg.ModelRouter.Model = defaultReplayModel
+		default:
 			return validationError(fmt.Errorf(
 				"--model is required with --provider=%s: no default model is defined for this provider; "+
 					"pass --model <model-id> or set modelRouter.model in the --config file", provider))
 		}
-		cfg.ModelRouter.Model = defaultAnthropicModel
 	}
 	return nil
 }

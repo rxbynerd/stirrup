@@ -1156,3 +1156,58 @@ fi
 		})
 	}
 }
+
+// replayBackedSuite is a suite whose single task names a recording, the
+// shape eval/suites/tooluse.hcl uses.
+func replayBackedSuite() types.EvalSuite {
+	return types.EvalSuite{
+		ID:        "replayed",
+		RunConfig: &types.RunConfig{Mode: "execution", PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"}},
+		Tasks: []types.EvalTask{{
+			ID:                 "t1",
+			Prompt:             "p",
+			Mode:               "execution",
+			Judge:              types.EvalJudge{Type: "test-command", Command: "true"},
+			RunConfigOverrides: &types.RunConfigOverrides{Provider: &types.ProviderConfig{Type: "replay", ReplayFile: "/tmp/run.jsonl"}},
+		}},
+	}
+}
+
+// TestRunSuite_ReplaySuite_RejectsLiveFlagsWithoutProvider pins that a
+// model, base URL or key reference given without --provider is refused on
+// a replay-backed suite, since the tasks would keep replaying while the
+// result named the requested model.
+func TestRunSuite_ReplaySuite_RejectsLiveFlagsWithoutProvider(t *testing.T) {
+	cases := map[string]RunConfig{
+		"model":       {Model: "claude-sonnet-5"},
+		"base url":    {BaseURL: "https://example.com/v1"},
+		"api key ref": {APIKeyRef: "secret://KEY"},
+	}
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			cfg.DryRun = true
+			_, err := RunSuite(context.Background(), replayBackedSuite(), cfg)
+			must.ErrorContains(err, "is replay-backed")
+		})
+	}
+}
+
+// TestRunSuite_ReplaySuite_AcceptsLiveFlagsWithProvider pins that the
+// same flags pass once --provider switches the suite live, and that a
+// live suite is never subject to the check.
+func TestRunSuite_ReplaySuite_AcceptsLiveFlagsWithProvider(t *testing.T) {
+	t.Run("replay suite with provider", func(t *testing.T) {
+		must := require.New(t)
+		_, err := RunSuite(context.Background(), replayBackedSuite(), RunConfig{DryRun: true, Provider: "anthropic", Model: "claude-sonnet-5"})
+		must.NoError(err)
+	})
+	t.Run("live suite without provider", func(t *testing.T) {
+		must := require.New(t)
+		suite := replayBackedSuite()
+		suite.Tasks[0].RunConfigOverrides = nil
+		suite.RunConfig.Provider = types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://K"}
+		_, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true, Model: "claude-sonnet-5"})
+		must.NoError(err)
+	})
+}

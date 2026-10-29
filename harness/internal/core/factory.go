@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -44,6 +45,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/harness/internal/verifier"
 	"github.com/rxbynerd/stirrup/types"
+	tracereader "github.com/rxbynerd/stirrup/types/trace"
 )
 
 // The executor capability the factory dispatches on and the narrower
@@ -836,6 +838,12 @@ func buildProviders(ctx context.Context, config *types.RunConfig, secrets securi
 }
 
 func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets security.SecretStore) (provider.ProviderAdapter, error) {
+	// A replay provider serves a recording and resolves no credential, so
+	// it is built before the credential source a live adapter needs.
+	if cfg.Type == "replay" {
+		return buildReplayProvider(cfg.ReplayFile)
+	}
+
 	src, err := credential.BuildSource(cfg, secrets)
 	if err != nil {
 		return nil, fmt.Errorf("build credential source: %w", err)
@@ -914,7 +922,7 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		adapter.RetryPolicy = retry
 		return adapter, nil
 	default:
-		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, bedrock, gemini, openai-compatible, openai-responses)", cfg.Type)
+		return nil, fmt.Errorf("unsupported provider type: %q (supported: anthropic, bedrock, gemini, openai-compatible, openai-responses, replay)", cfg.Type)
 	}
 }
 
@@ -923,6 +931,55 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 // that accepts unauthenticated requests.
 func keylessEndpoint(cfg types.ProviderConfig) bool {
 	return types.IsOpenAIWireProviderType(cfg.Type) && !provider.IsDefaultOpenAIBaseURL(cfg.BaseURL)
+}
+
+// maxReplayFileBytes bounds a recording; the read is capped as well as
+// the stat so a file that grows after the check stays bounded.
+const maxReplayFileBytes int64 = 64 << 20
+
+// buildReplayProvider loads the turn_record events of a JSONL trace and
+// serves them as the model output of successive turns. Every defect in
+// the recording fails here rather than on a later turn: a dropped line
+// would shift each following turn's output onto the wrong request, and
+// the path is operator- or control-plane-supplied, so a device, FIFO or
+// oversized file must not stall construction.
+func buildReplayProvider(path string) (provider.ProviderAdapter, error) {
+	// O_NONBLOCK makes opening a FIFO return at once instead of waiting
+	// for a writer; regular files ignore it.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, fmt.Errorf("open replay file: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat replay file %q: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("replay file %q is not a regular file (mode %s)", path, info.Mode())
+	}
+	if info.Size() > maxReplayFileBytes {
+		return nil, fmt.Errorf("replay file %q is %d bytes; the cap is %d", path, info.Size(), maxReplayFileBytes)
+	}
+	reader := tracereader.NewReader(io.LimitReader(f, maxReplayFileBytes+1))
+	recording, err := reader.ReadRecording()
+	if err != nil {
+		return nil, fmt.Errorf("read replay file %q: %w", path, err)
+	}
+	if n := reader.SkippedLines(); n > 0 {
+		return nil, fmt.Errorf("replay file %q has %d line(s) over %d bytes; a replay must be complete", path, n, tracereader.MaxLineBytes)
+	}
+	if n := reader.MalformedLines(); n > 0 {
+		return nil, fmt.Errorf("replay file %q has %d malformed line(s); a replay must be complete", path, n)
+	}
+	adapter := provider.NewReplayProvider(recording.Turns)
+	if adapter.Len() == 0 {
+		if len(recording.SubRuns) > 0 {
+			return nil, fmt.Errorf("replay file %q holds only sub-agent turns; a replay serves the top-level run", path)
+		}
+		return nil, fmt.Errorf("replay file %q holds no turn_record event to replay", path)
+	}
+	return adapter, nil
 }
 
 func buildRouter(cfg types.ModelRouterConfig, defaultProvider string) router.ModelRouter {

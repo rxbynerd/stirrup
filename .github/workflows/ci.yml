@@ -241,8 +241,8 @@ jobs:
             esac
 
             # Only baselined suites are gated. Unbaselined suites
-            # (guardrail needs a local vLLM endpoint; tooluse's
-            # no-credential gate is the in-process replay test — see
+            # (guardrail needs a local vLLM endpoint; tooluse runs
+            # from recordings in the verify job — see
             # eval/suites/README.md) are opt-in local runs: executing
             # them here would spend tokens, produce failure noise, and
             # enforce nothing, since the compare step below skips
