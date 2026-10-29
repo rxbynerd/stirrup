@@ -1324,7 +1324,8 @@ familiar pass rate when K is 1. A result file without `trials` fields,
 such as a single-run baseline, loads as one trial per task.
 `SuiteResult.trialsPolicy` records how the trials were scheduled
 (`fixed` or `confirm-on-fail`, below); a result file without it ran
-under `fixed`.
+under `fixed`. Under `confirm-on-fail`, `trials` is the most runs any
+task could take, not the number every task ran.
 
 The gate is stricter than the majority rule about errors: the
 deterministic-flip rule in [Gate semantics](#gate-semantics) counts an
@@ -1335,41 +1336,63 @@ and a regression; once trials run, errors count against the gate.
 
 #### Confirm-on-fail trials
 
-`--trials-policy confirm-on-fail` runs every task once and runs the
-remaining K−1 trials only for a task whose first trial did not pass.
-"Did not pass" follows the gate: under `require_healthy` a judge pass
-on an unhealthy run is confirmed too. The outcome is the strict
-majority over the trials the task actually ran, so a task that passed
-its first trial is a pass on one trial, and a confirmed task is
-decided over all K. Reruns are not cut short once a majority is
-settled, so a task needs K failures to count as a deterministic flip,
-exactly as under `fixed`. On a suite where most tasks pass, the run
-costs close to one trial per task instead of K.
+`--trials-policy confirm-on-fail` runs every task once. When every
+first trial has finished, it runs the remaining K−1 trials of each task
+whose first trial did not pass. "Did not pass" follows the gate: under
+`require_healthy` a judge pass on an unhealthy run is confirmed too.
+The outcome is the strict majority over the trials the task actually
+ran, so a task that passed its first trial is a pass on one trial, and
+a confirmed task is decided over all K. Reruns are not cut short once
+a majority is settled, so a task needs K failures to count as a
+deterministic flip, exactly as under `fixed`. On a suite where most
+tasks pass, the run costs close to one trial per task instead of K.
+
+An odd K suits the policy. With an even K a confirmed task needs more
+than half its trials to pass after already failing one: at K = 2 it
+can never become a pass, because one pass and one failure is a tie,
+and a tie reports `error`. With K = 1 both policies run the same
+trials, so the result records `fixed`. A run cancelled before the
+reruns start keeps each task's first trial alone.
 
 The saving changes the sample. Per-task trial counts now depend on the
 first outcome, so the per-task pass fractions are no longer identically
-distributed, and a failing task gets K−1 extra chances to reach a
-passing majority. `compare` handles this in three ways:
+distributed. They are also biased upward: a task that passes its first
+trial is never rerun and records a pass fraction of 1, so its
+occasional failures never enter the result. `compare` handles this in
+three ways:
 
-- When either side ran `confirm-on-fail`, the paired statistics (mean
-  delta, paired standard error, interval, upper bound, sign-flip p,
-  and MDE), the noise floor, and the pass^k / pass@k rows use each
-  task's first trial alone, on both sides. The first trial is a single
+- When either side ran `confirm-on-fail`, some statistics use each
+  task's first trial alone, on both sides. These are the paired
+  statistics (mean delta, paired standard error, interval, upper
+  bound, sign-flip p, and MDE), the noise floor, and the pass^k /
+  pass@k rows, which then stop at k = 1. The first trial is one
   unbiased run of every task, so these behave as they do for a
-  single-run comparison, including the `warn` rule's sensitivity to one
-  failure. The text report states this in a `Note:` line, the side
-  lines read `K=3 (confirm-on-fail)`, and the JSON sets
-  `summary.firstTrialOnly`.
+  single-run comparison.
 - Pass rates, the deterministic-flip rule, and the regression list
-  still use every trial run. This is where the confirmation acts: a
-  first-trial failure that the reruns overturn is neither a flip nor
-  (above the flip threshold) a listed regression.
-- A `confirm-on-fail` result is biased upward against a `fixed` one,
-  so `compare` refuses to compare results recorded under different
-  policies and exits `2`. `--allow-policy-mismatch` compares them
-  anyway, logs a warning, and adds a `Warning:` line to the report.
-  Baselines and the runs gated against them should therefore use the
-  same policy.
+  still use every trial run. Only these see the confirmation. A
+  first-trial failure that the reruns overturn is not a flip. It is
+  not a listed regression either when its pass fraction stays above
+  the flip threshold, as 2/3 does at the default 0.5.
+- `compare` refuses to compare results recorded under different
+  policies and exits `2`, because of the upward bias.
+  `--allow-policy-mismatch` compares them anyway, logs a warning, and
+  adds a `Warning:` line to the report. Record a baseline under the
+  same policy as the runs gated against it.
+
+A first-trial failure that the reruns overturn still lowers the paired
+mean delta, so the `warn` rule and the upper-bound `block` rule react
+to it as they would to a single-run failure. On a five-task suite one
+such failure moves d̄ by −0.2 and warns, where the same task at 2/3
+under `fixed` moves d̄ by −0.067 and does not. Confirm-on-fail
+therefore lowers cost without lowering the gate's sensitivity to a
+flaky first trial. A small suite that should not warn on a single flaky
+run is better gated with `fixed` trials.
+
+The text report marks the first-trial treatment with a `Note:` line
+and tags each `confirm-on-fail` side as `K=3 (confirm-on-fail)`. The
+JSON report sets `summary.firstTrialOnly`. Under first-trial pairing
+the `Pass Rate:` header, which uses every trial, can differ from the
+mean delta on the `Paired:` line.
 
 #### Estimators
 
@@ -1386,7 +1409,7 @@ s<sub>i</sub> over the tasks present in both results:
 | One-sided upper bound U | d̄ + t<sub>n−1, 0.95</sub> × SE: the upper end of a one-sided 95% interval, equivalently of a two-sided 90% interval. U below zero rules out "no regression" at 95% one-sided confidence. The two-sided 95% interval is wider, so it can still include zero when U is negative. |
 | Sign-flip p-value | Two-sided permutation test on d<sub>i</sub>. Tasks with d<sub>i</sub> = 0 are dropped; with at most 20 remaining, all 2<sup>m</sup> sign assignments are enumerated and p is the share whose absolute sum reaches the observed one. Above 20 a normal approximation is used, and the report says so. The p-value is informational and does not decide the gate. Against an all-pass baseline every non-zero d<sub>i</sub> has the same sign, so the exact p is 2<sup>1−m</sup> for m non-zero differences and cannot go lower. |
 | Minimum detectable effect | (t<sub>n−1, 0.975</sub> + t<sub>n−1, 0.80</sub>) × SE, with the same degrees of freedom as the interval: the smallest true mean change the suite detects with 80% power at a two-sided 5% level. Smaller drops are unlikely to be confirmed. More tasks or more trials shrink it. Not reported (`n/a`, omitted from the JSON) when SE is zero, because an observed variance of zero says nothing about sensitivity. |
-| pass^k and pass@k | Per task with c passes in K trials, pass^k = C(c, k) / C(K, k), the chance that k trials drawn without replacement all pass ([τ-bench](https://arxiv.org/abs/2406.12045)), and pass@k = 1 − C(K − c, k) / C(K, k), the chance that at least one does ([Chen et al.](https://arxiv.org/abs/2107.03374)). Averaged over tasks for k = 1 up to the smallest per-task trial count. A falling pass^k shows inconsistency that the pass rate hides. |
+| pass^k and pass@k | Per task with c passes in K trials, pass^k = C(c, k) / C(K, k), the chance that k trials drawn without replacement all pass ([τ-bench](https://arxiv.org/abs/2406.12045)), and pass@k = 1 − C(K − c, k) / C(K, k), the chance that at least one does ([Chen et al.](https://arxiv.org/abs/2107.03374)). Averaged over tasks for k = 1 up to the smallest per-task trial count, or for k = 1 alone when a side ran [confirm-on-fail](#confirm-on-fail-trials). A falling pass^k shows inconsistency that the pass rate hides. |
 | Wilson 95% interval | Wilson score interval for the suite pass rate treated as a proportion over n tasks; the report labels it "over tasks". Trials of one task are not pooled. |
 | Noise floor | Reported when every paired baseline task passed every trial. With p the per-trial pass rate pooled over both results, a single-run flip gate false-alarms with probability 1 − p<sup>n</sup>, and the K-of-K flip rule with 1 − (1 − (1 − p)<sup>K</sup>)<sup>n</sup>. These cover the flip rule only; the upper-bound rule adds to the overall block rate. When every pooled trial passed, p is 1 and carries no variation, so the report prints "insufficient variation" in place of the rates and the JSON omits them. |
 
@@ -1439,7 +1462,7 @@ that is, when 1/(n·K) is above m for n paired tasks and K current
 trials (K is 1 when the paired statistics use the first trial only).
 `warn` then reacts to a single flaky trial.
 
-With one trial per task every d<sub>i</sub> is −1, 0, or +1, and a −1
+With one trial per task (K = 1) every d<sub>i</sub> is −1, 0, or +1, and a −1
 is always a deterministic flip, so the gate blocks exactly when a task
 that passed in the baseline did not pass in the current run.
 
@@ -1506,7 +1529,7 @@ has only `trial-1/`; see
 The summary printed to stdout states K and the number of harness runs
 when K is above 1; under `confirm-on-fail` it counts the runs actually
 made and the tasks that were rerun. A dry run validates each task once
-and reports the runs it would have made.
+and reports the runs it would have made, as a range under `confirm-on-fail`.
 
 When the suite declares a baseline (`run_config_file` or inline
 `run_config`), the runner merges the per-task
@@ -1522,8 +1545,8 @@ tree gains a `run_config.redacted.json` per task. See
 | `--output`       | current dir      | Directory for `result.json` and per-task artifacts. Ignored under `--dry-run`, which writes no artifacts. |
 | `--harness`      | `stirrup` on PATH| Harness binary to invoke for live runs.                      |
 | `--concurrency`  | `1`              | Number of task trials executed in parallel. Workers preserve suite order in `result.json`. Values larger than the number of task trials cap at that number. Concurrent invocations talking to the same provider hit rate limits faster, so the value should respect the provider account's per-minute caps. |
-| `--trials`       | `1`              | Independent runs per task, from 1 to 20. When the flag is not given, the suite's `trials` attribute applies, else one run. Values outside 1-20 are rejected. Provider spend scales linearly with K. |
-| `--trials-policy` | `fixed`         | `fixed` runs every task K times. `confirm-on-fail` runs every task once and the remaining K−1 trials only for a task whose first trial did not pass; see [Confirm-on-fail trials](#confirm-on-fail-trials). Recorded in `result.json` as `trialsPolicy`. `compare` refuses a baseline and current result recorded under different policies. |
+| `--trials`       | `1`              | Independent runs per task, from 1 to 20. When the flag is not given, the suite's `trials` attribute applies, else one run. Values outside 1-20 are rejected. Under `fixed`, provider spend scales linearly with K. |
+| `--trials-policy` | `fixed`         | `fixed` runs every task K times. `confirm-on-fail` runs every task once and the remaining K−1 trials only for a task whose first trial did not pass; see [Confirm-on-fail trials](#confirm-on-fail-trials). Recorded in `result.json` as `trialsPolicy`. `compare` refuses a baseline and a current result recorded under different policies. |
 | `--dry-run`      | `false`          | Validate the suite (and, when present, the merged per-task RunConfig via `ValidateRunConfig`), print the summary, and exit without writing `result.json` or JUnit XML. |
 | `--junit`        | empty            | Write JUnit XML to this path after `result.json`. Each task is one `testcase`. A task with more than one trial carries a `system-out` summary of every trial, its `failure` or `error` message is prefixed with the pass count (for example `1/3 trials passed: ...`), and the body ends with the reason of each non-passing trial. Single-trial output is unchanged. |
 | `--model`        | empty            | Model to run every task with, forwarded to each harness invocation as `--model`. Overrides the harness default and any model pinned by the suite's `run_config` block. CI uses this to pin the per-push gate to a cheap model and the release sweep to stronger ones. |
@@ -1613,7 +1636,7 @@ comparison that did not run (`2`).
 | `--warn-margin`    | `0.10`   | Mean pass-fraction drop that reports `warn` when the one-sided upper bound does not fall below zero. Must be within [0, 1]. |
 | `--flip-threshold` | `0.5`    | Current pass fraction at or below which a task that passed every baseline trial is listed as a regression, and the baseline pass fraction at or below which a task that passes every current trial is listed as an improvement. Must be within [0, 1). |
 | `--output`         | empty    | Also write the comparison report as JSON to this path. |
-| `--allow-policy-mismatch` | `false` | Compare a baseline and current result recorded under different trials policies, with a logged warning and a `Warning:` line in the report, instead of exiting `2`. See [Confirm-on-fail trials](#confirm-on-fail-trials). |
+| `--allow-policy-mismatch` | `false` | Compare a baseline and a current result recorded under different trials policies, with a logged warning and a `Warning:` line in the report, instead of exiting `2`. See [Confirm-on-fail trials](#confirm-on-fail-trials). |
 
 The text report opens with the gate result and its reasons, then the
 pass rate of each side with its Wilson interval over tasks, task-level
@@ -1623,9 +1646,9 @@ the two-sided 95% t interval, the one-sided 95% upper bound, the
 sign-flip p (marked exact or approximate), and the minimum detectable
 effect (`n/a` when the standard error is zero). When either side ran
 `confirm-on-fail`, a `Note:` line says the paired statistics use each
-task's first trial only, and a `Warning:` line appears when the two
-sides' policies differ. A `Note:` line appears when one lost trial
-exceeds the warn margin. The noise floor, the tasks
+task's first trial only. A `Warning:` line appears when the two sides'
+policies differ. A `Note:` line appears when one lost trial exceeds the
+warn margin. The noise floor, the tasks
 missing from or new in the current run, regressions, and improvements
 follow. For the worked example in [Statistics](#statistics) at the
 default options (the same data report `warn` with a `--warn-margin` of
@@ -1879,14 +1902,14 @@ matrix cell red without holding the release.
    fractional pass rate for any flaky task, so the gate measures
    change instead of the gap between one lucky run and the task's
    true rate. A single-run baseline still loads and compares as one
-   trial per task. Record the baseline under the `--trials-policy` the
-   gate runs (`fixed` in CI); `compare` refuses a baseline recorded
-   under a different policy.
+   trial per task. Record the baseline under the `--trials-policy` value
+   the gate runs (`fixed`, the default, in CI); `compare` refuses a
+   baseline recorded under a different policy.
 3. On subsequent CI runs, `eval-gate` runs the suite and compares to
    the committed baseline. A `block` fails the push; a `warn` is
    annotated on the run for review.
 4. When a behaviour change is intentional, regenerate the baseline
-   (again with `--trials 3`) and commit it as part of the PR.
+   (again with `--trials 3` and the same `--trials-policy`) and commit it as part of the PR.
 
 ### Comparing prompts across models
 
