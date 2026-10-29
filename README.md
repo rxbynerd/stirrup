@@ -148,11 +148,12 @@ entry points in each group:
 
 | Group | Start with |
 |---|---|
-| Start | This README, and the [autonomous deployment preset](docs/autonomous-preset.md) for unattended runs |
+| Start | This README, and the [Autonomous deployment preset](docs/autonomous-preset.md) for unattended runs |
 | Concepts | [Philosophy](docs/philosophy.md), [Architecture](docs/architecture.md), [Safety rings](docs/safety-rings.md) |
 | Reference | [Configuration](docs/configuration.md), [Provider adapters](docs/providers.md), [Eval framework](docs/eval.md) |
-| Operate | [Production deployment](docs/deployment.md), [Kubernetes executor](docs/executors/k8s.md), [Observability backends](docs/observability-cloud.md) |
+| Operate | [Production deployment](docs/deployment.md), [Kubernetes executor](docs/executors/k8s.md), [Shipping Stirrup telemetry to a managed APM](docs/observability-cloud.md) |
 | Develop | [Integration guide](docs/integration-guide.md), [Contributing](CONTRIBUTING.md), [`AGENTS.md`](AGENTS.md), [Security policy](SECURITY.md) |
+| Design records | [Sessions](docs/sessions-spec-draft.md) and the Langfuse feedback worksheets, listed in the index |
 
 ## License
 

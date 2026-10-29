@@ -17,7 +17,10 @@
           "path": "README.md",
           "title": "Introduction"
         },
-        "docs/index.md",
+        {
+          "path": "docs/index.md",
+          "title": "Documentation index"
+        },
         "docs/autonomous-preset.md"
       ]
     },
@@ -63,7 +66,12 @@
       "pages": [
         "docs/integration-guide.md",
         "CONTRIBUTING.md",
-        "SECURITY.md",
+        "SECURITY.md"
+      ]
+    },
+    {
+      "title": "Design records",
+      "pages": [
         "docs/sessions-spec-draft.md",
         "docs/langfuse-feedback-and-trace-propagation-research.md",
         "docs/langfuse-feedback-and-trace-propagation-implementation.md",
