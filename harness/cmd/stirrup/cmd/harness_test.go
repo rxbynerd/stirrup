@@ -5530,3 +5530,23 @@ func TestAPIKeyRefHint_NamesFlagOnlyForAnUnflaggedTopLevelReference(t *testing.T
 		})
 	}
 }
+
+// TestApplyOverrides_SwitchFromGeminiDropsEveryGoogleCredential pins that
+// leaving gemini drops a credential block of any gcp-* type, which would
+// otherwise mint a Google access token for the new provider's endpoint.
+func TestApplyOverrides_SwitchFromGeminiDropsEveryGoogleCredential(t *testing.T) {
+	for _, credType := range []string{"gcp-default", "gcp-service-account", "gcp-workload-identity", "gcp-workload-identity-federation"} {
+		t.Run(credType, func(t *testing.T) {
+			must := require.New(t)
+			cmd := newTestHarnessCommand()
+			cfg := geminiFileConfig()
+			cfg.Provider.Credential = &types.CredentialConfig{Type: credType}
+			must.NoError(cmd.Flags().Set("provider", "openai-compatible"))
+			must.NoError(cmd.Flags().Set("base-url", "https://gateway.example/v1"))
+
+			must.NoError(applyOverrides(cmd, cfg, nil))
+
+			must.Nil(cfg.Provider.Credential)
+		})
+	}
+}

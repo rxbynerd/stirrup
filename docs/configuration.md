@@ -353,14 +353,15 @@ and validation reports the conflict:
 
 | Switch | Dropped |
 |---|---|
-| away from `gemini` | `gcpProject`, `gcpLocation`, `gcpCredentialsFile`, `geminiSafetySettings`, and a `gcp-service-account` `credential` block |
+| away from `gemini` | `gcpProject`, `gcpLocation`, `gcpCredentialsFile`, `geminiSafetySettings`, and a `credential` block of any `gcp-*` type, which would otherwise mint a Google access token for the new provider's endpoint |
 | away from `replay` | `replayFile`, and the `replay` model label, so the anthropic default model applies or `--model` is demanded for a provider without one |
 | to `replay` | `apiKeyRef`, `credential`, `baseUrl`, `endpointProfile`, `apiKeyHeader`, `queryParams`, `compatProfile`, `region` and `profile` |
 | to `gemini` | `apiKeyRef` |
 
 Only the top-level `provider` is switched; entries in the `providers`
-map are untouched. The eval suites rely on the switch away from
-`replay` to run a recorded suite live: see
+map are untouched, so a replay document with a `replay` entry in that
+map fails validation when switched live. The eval suites rely on the
+switch away from `replay` to run a recorded suite live: see
 [`eval.md`](eval.md#replay-doubles).
 
 ### Retry policy
