@@ -60,7 +60,8 @@ status.
 1. The harness (launched as `stirrup job` with `CONTROL_PLANE_ADDR`
    set) dials the control plane and opens the `RunTask` stream.
 2. The harness sends
-   `HarnessEvent{type:"ready", harness_version, capabilities}`.
+   `HarnessEvent{type:"ready", harness_version, harness_semver,
+   capabilities, config_fields}`.
    When `CONTROL_PLANE_SESSION_ID` is set in the Pod environment,
    the `id` field echoes it so the stream can be correlated to the
    session that launched the Pod.
@@ -130,7 +131,7 @@ the policy lint keeps its lint findings in the message.
 
 | `type` | Fields | Control-plane obligation |
 |---|---|---|
-| `ready` | `harness_version`, `capabilities`, `id` (session echo) | Gate assignment on `capabilities` when the task depends on a contract feature; see [Compatibility](#compatibility). `harness_version` is informational. |
+| `ready` | `harness_version`, `harness_semver`, `capabilities`, `config_fields`, `id` (session echo) | Gate assignment on `capabilities` when the task depends on a contract feature, and remove from the task any `RunConfig` field `config_fields` does not list; see [Negotiating RunConfig fields](#negotiating-runconfig-fields). `harness_version` and `harness_semver` are informational. |
 | `run_started` | `id` (run ID), `trace_reference` (`trace_id`, `run_span_id`, `sampled`) | Key the run's transcript on `id`. Sent once per run, primary and follow-up, after setup and before the run's first `user_message`. `trace_reference` is present only when the run records an OTel span; persist it against the run to target feedback scores or link to the trace. `sampled: false` means the span was not exported, so the backend holds no trace for it. The `done` summary repeats the reference. |
 | `user_message` | `text`, `source`, `request_id` | Informational. A user-role message the harness appended to the history, after sanitisation, in append order. `text` is the appended text only (capped at 256 KiB), even when the harness merged it into a trailing user message. `source` names its origin; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. `request_id` echoes the `user_response` the text came from, which marks that input as accepted into the history. Tool results are reported by `tool_result`, not by `user_message`. |
 | `turn_started` | `turn`, `model`, `provider` | Informational. A model turn began. `turn` counts from 0 within each run. `provider` is the adapter type (for example `anthropic` or `openai-responses`), never the operator's `providers` map key. Sent once per turn, before the first provider request. |
@@ -261,7 +262,8 @@ TLS constructor is internal. Full discussion:
 The smallest correct `RunTask` implementation:
 
 1. Accept the stream; wait for `ready`.
-2. Send `task_assignment` with a valid `RunConfig`.
+2. Send `task_assignment` with a valid `RunConfig` that sets only
+   fields `ready.config_fields` lists.
 3. Consume events. Log `text_delta` / `tool_call` / `tool_result`;
    track `heartbeat` arrival times.
 4. Answer every `permission_request` (even a blanket deny keeps the
@@ -1448,27 +1450,84 @@ around silently".
     honoured. A harness without it keeps the 30 s interval and
     ignores the field, so a control plane that shortens its liveness
     deadline should gate on this capability.
-- `ready.harness_version` carries the build label
-  (`v1.2.3 (abc1234)` for releases) and is informational: `dev` and
-  `main` builds cannot be ordered against a release, so it is not a
-  basis for feature gating.
+- `ready.config_fields` lists every `RunConfig` field the harness
+  accepts. Remove the fields it does not list before sending
+  `task_assignment`; see
+  [Negotiating RunConfig fields](#negotiating-runconfig-fields).
+- `ready.harness_version` carries the build label: the release tag
+  (`v1.2.3`), `main`, or `dev`. It is informational: `dev` and `main`
+  builds cannot be ordered against a release, so it is not a basis for
+  feature gating.
+- `ready.harness_semver` carries the same version as a Semantic
+  Versioning 2.0.0 string without the tag's leading `v` (`0.1.0`,
+  `0.1.0-rc.1`), set only on release builds and empty for `main` and
+  `dev` builds. It suits fleet inventory and reporting; gate features
+  on `capabilities` and fields on `config_fields`, not on version
+  comparisons.
 - For mirrored fields, file-config JSON and protobuf JSON use the same
   lower-camel-case names. The MCP host allowlist spelling is
   `tools.mcpServers[].allowedMcpHosts`; the pre-#554 file spelling
   `allowedMCPHosts` is no longer accepted.
 - File-config JSON rejects unknown fields (`DisallowUnknownFields`).
   Protobuf binary compatibility is different: an older harness ignores
-  unknown fields. Gate assignment on `ready.capabilities` when a task
-  depends on a newly added wire field; do not assume it will fail
-  loudly.
+  unknown fields. Check a newly added wire field against
+  `ready.config_fields` before relying on it; do not assume it will
+  fail loudly.
 - `tools.profile` and `traceEmitter.archive` reached the wire without a
   capability of their own. A harness built before them ignores both: it
   presents tools under their internal names and writes the
   command-output archive to its derived default. A control plane that
-  depends on either pins a harness version that carries them.
+  depends on either pins a harness version that carries them. Every
+  harness that sends `ready.config_fields` carries both.
 - New `HarnessEvent` types are added without a version bump of the
   RPC. Ignore unrecognised types; gate on `ready.capabilities` when a
   feature depends on one, as for the live transcript events in
   [Watching a run live](#watching-a-run-live).
 - The container image is distroless (`nonroot`, no shell):
   `ghcr.io/rxbynerd/stirrup:<tag>` per release, `:main` per merge.
+
+### Negotiating RunConfig fields
+
+A control plane and a harness built at different times can disagree on
+the `RunConfig` schema. A field the harness does not know is dropped
+without notice when it arrives in a `task_assignment`, and fails the
+parse with exit code 2 when it arrives in a file config. `ready`
+carries the harness's schema so the control plane can resolve the
+difference before it assigns the task.
+
+`ready.config_fields` lists every `RunConfig` field the harness
+accepts, as dotted paths of the fields' JSON names, sorted:
+
+- A message field is listed along with each of its fields:
+  `provider`, `provider.endpointProfile`.
+- A repeated field lists its element's fields under its own path:
+  `tools.mcpServers`, `tools.mcpServers.name`.
+- A map lists `*` for its keys, then its value's fields under that:
+  `providers`, `providers.*`, `providers.*.type`. A map with scalar
+  values ends at the `*` entry: `executor.k8sNodeSelector.*`.
+
+The names are the lower-camel-case JSON names that protobuf JSON and
+file-config JSON share. The list is derived from the harness's own
+`RunConfig` type, so it also names the fields in
+[Features not on the wire](#features-not-on-the-wire), which only a
+file config can set.
+
+Before sending `task_assignment`:
+
+1. Read `config_fields` from `ready` into a set.
+2. Render the intended `RunConfig` as protobuf JSON and collect the
+   path of every field it sets. Under an object at path `P`, the key
+   `k` has the path `P.k`, or `P.*` when `P.*` is listed (the object
+   is a map). The elements of an array are walked at the array's own
+   path. Stop descending at a path that no listed path extends: below
+   it the value is data, such as the body of `outputSchema`.
+3. Any collected path missing from the set is a field this harness
+   does not know. Remove it when the task works without it; otherwise
+   assign the task to a harness that lists it.
+
+`config_fields` says the harness parses a field, not that it implements
+a feature: gate features on `capabilities`. A listed field can also be
+accepted without effect, as `maxCostBudget` is (see
+[Limits and budgets](configuration.md#limits-and-budgets)). A `ready`
+without `config_fields` comes from a harness that predates the list;
+for such a harness, the field set has to come from its release notes.
