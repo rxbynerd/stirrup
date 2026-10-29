@@ -9,8 +9,8 @@ exits with a status that reflects the outcome of the runs. The wire contract is 
 
 The transport is **plaintext and unauthenticated** unless the `-tls-*` flags
 are set (see [TLS](#tls)). The program is a demonstration of the contract, not
-a deployable service: without TLS, run it on loopback or a private network
-only. Mapping a client identity to a session, multiple concurrent jobs,
+a deployable service: without TLS, run it on loopback, or on a network where
+every workload that can reach it is trusted. Mapping a client identity to a session, multiple concurrent jobs,
 durable state and the sandbox identity token flow are out of scope.
 
 The module depends on the standard library, gRPC and the generated stubs in
