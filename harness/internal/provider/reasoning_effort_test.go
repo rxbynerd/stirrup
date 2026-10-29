@@ -63,7 +63,7 @@ func TestOpenAIRequest_ReasoningEffortProjection(t *testing.T) {
 		{"openrouter deepseek v4.1 flash projects high effort", "deepseek/deepseek-v4.1-flash-1017", "high", `"reasoning_effort":"high"`},
 		{"openrouter deepseek latest alias projects xhigh effort", "~deepseek/deepseek-flash-latest", "xhigh", `"reasoning_effort":"xhigh"`},
 		{"model without allow-list omits effort", "gpt-4o", "high", ""},
-		{"gateway-prefixed gpt-6 omits effort", "openai/gpt-6-luna", "high", ""},
+		{"gateway-prefixed gpt-6 sends effort", "openai/gpt-6-luna", "high", `"reasoning_effort":"high"`},
 		{"empty effort omits key", "gpt-6-astra", "", ""},
 	}
 	for _, tc := range cases {

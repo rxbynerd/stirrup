@@ -72,6 +72,15 @@ func CompatRules() []quirks.Rule {
 				q.ReplayFields = append(q.ReplayFields, "reasoning_content")
 			},
 		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "z-ai/glm-5.3*",
+			Description:  "Z.ai GLM-5.3 via gateway prefix: reasoning_effort low/high/max (high accepted by OpenRouter's Z.AI host, max by its Relace host; probed 2026-10-29)",
+			LastVerified: quirks.Date("2026-10-29"),
+			Apply: func(q *quirks.ProviderQuirks) {
+				q.BehaviourFlags.OpenAI.ReasoningEffortLevels = []string{"low", "high", "max"}
+			},
+		},
 	}
 }
 
