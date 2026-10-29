@@ -62,7 +62,9 @@ credential source reads it transparently:
 
 The attached service account holds every Google-side grant
 (`roles/aiplatform.user` for Vertex AI calls, `roles/storage.objectCreator`
-on the results bucket). The harness itself holds nothing.
+on the results bucket, and `roles/pubsub.publisher` on the result topic
+when the `gcp-pubsub` result sink is used). The harness itself holds
+nothing.
 
 ## Prerequisites
 
@@ -85,6 +87,7 @@ gcloud services enable \
   storage.googleapis.com \
   secretmanager.googleapis.com \
   iamcredentials.googleapis.com \
+  pubsub.googleapis.com \
   --project="$PROJECT_ID"
 ```
 
@@ -92,12 +95,15 @@ gcloud services enable \
 identity needs to attach a service account to the Cloud Run job
 (`iam.serviceAccountUser` on the target SA) — see
 [*Service identity for jobs*](https://cloud.google.com/run/docs/securing/service-identity).
+`pubsub.googleapis.com` is needed only for the `gcp-pubsub` result
+sink.
 
 ## 2. Create the results bucket
 
 The bucket holds two artefacts: JSONL traces uploaded by the
 `gcs` trace emitter, and workspace tarballs uploaded by
-`executor.workspaceExportTo`. Uniform bucket-level access is the
+`executor.workspaceExportTo`. A `gcs` result sink adds a third, one
+`RunResult` object per run. Uniform bucket-level access is the
 recommended posture; per-object ACLs are an attack surface the
 harness never needs.
 
@@ -150,7 +156,9 @@ JOB_SA="stirrup-job@${PROJECT_ID}.iam.gserviceaccount.com"
 ## 4. Grant the minimal IAM
 
 Two role bindings — Vertex AI usage at the project level, and bucket
-writes scoped to the results bucket. `roles/storage.objectCreator` is
+writes scoped to the results bucket. A `gcp-pubsub` result sink adds a
+third, on its topic (see
+[Structured result on Pub/Sub or GCS](#structured-result-on-pubsub-or-gcs)). `roles/storage.objectCreator` is
 the smallest grant that allows writes; `objectAdmin` is overkill (it
 permits delete and ACL modification, neither of which the harness
 ever performs).
@@ -300,9 +308,9 @@ shape for an interactive smoke test.
 ## 8. Collect results
 
 Both result-collection paths run independently — Shape A (the
-structured `RunResult` from Cloud Logging) and Shape B (the workspace
-tarball from GCS). The fixture configures both; real fixtures often
-configure only one.
+structured `RunResult`, from Cloud Logging or from a Pub/Sub or GCS
+result sink) and Shape B (the workspace tarball from GCS). The fixture
+configures both; real fixtures often configure only one.
 
 ### Shape A: structured result from Cloud Logging
 
@@ -359,8 +367,73 @@ Cloud Logging retention costs apply
 (see [Cloud Logging pricing](https://cloud.google.com/stackdriver/pricing#logging-costs);
 ≈ $0.50/GiB at time of writing). For low-volume classification
 workloads, the cost is negligible; higher-volume callers should
-prefer the reserved `gcp-pubsub` result sink (interface reserved, adapter
-deferred — see *Out of scope* below).
+prefer the `gcp-pubsub` or `gcs` result sink below.
+
+### Structured result on Pub/Sub or GCS
+
+The `gcp-pubsub` and `gcs` result sinks deliver the same `RunResult`
+JSON to a durable channel, so a caller does not have to read Cloud
+Logging. `gcp-pubsub` publishes one message per run, with a `runId`
+attribute; `gcs` writes one object per run at
+`gs://{bucket}/{objectPrefix}{runId}.result.json`. Both authenticate
+like the workspace export, through the job's service account on the
+metadata server.
+
+For `gcp-pubsub`, create the topic and grant the job's service
+account `roles/pubsub.publisher` on it:
+
+```sh
+gcloud pubsub topics create stirrup-results --project="$PROJECT_ID"
+
+gcloud pubsub topics add-iam-policy-binding stirrup-results \
+  --member="serviceAccount:${JOB_SA}" \
+  --role="roles/pubsub.publisher" \
+  --project="$PROJECT_ID"
+```
+
+```json
+"resultSink": { "type": "gcp-pubsub", "topic": "projects/PROJECT_ID/topics/stirrup-results" }
+```
+
+For `gcs`, the `roles/storage.objectCreator` binding on the results
+bucket from step 4 is enough:
+
+```json
+"resultSink": { "type": "gcs", "bucket": "RESULTS_BUCKET", "objectPrefix": "results/" }
+```
+
+The `gcs` sink never replaces an object, so it needs a `runId` that is
+unique per execution. The fixture's fixed `runId` works for one
+execution only; every later one fails to deliver, and the object keeps
+the first execution's result. Remove `runId` from the RunConfig so the
+harness generates one per execution. The execution's logs then name
+the object in the `resultSink: uploaded RunResult` line:
+
+```sh
+gcloud logging read \
+  "resource.type=cloud_run_job AND labels.\"run.googleapis.com/execution_name\"=$EXEC AND textPayload:\"uploaded RunResult\"" \
+  --limit=1 --format='value(textPayload)' --project="$PROJECT_ID"
+
+gcloud storage cat "gs://${RESULTS_BUCKET}/results/<runId>.result.json" | jq .
+```
+
+Each sink makes up to three delivery attempts before the run ends.
+A delivery that still fails is logged to Cloud Logging and leaves the
+job's exit code unchanged, so a missing result is diagnosed from the
+execution's logs. A SIGTERM during delivery can lose the result
+without that log line, because Cloud Run sends SIGKILL 10 s later.
+Pub/Sub delivery is at-least-once, and every repeat carries the same
+data. `--output=json` is independent of `resultSink`, so a job that
+also needs the `STIRRUP_RESULT` log line passes it alongside a remote
+sink.
+
+The fixture's `local` executor lets the agent's commands reach the
+metadata server and the job's service-account token. A
+prompt-injected agent could therefore publish a message, or create
+the result object under the run's name before the harness does.
+Treat these results as no more trustworthy than the sandbox. See
+[`configuration.md`](configuration.md#result-sinks) for the field
+reference, the retry and conflict rules, and the trust boundary.
 
 ### Shape B: workspace tarball from GCS
 
