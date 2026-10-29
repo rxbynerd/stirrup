@@ -25,7 +25,7 @@ fails fast with a clear error rather than being silently dropped.
 
 | File | What it demonstrates |
 |---|---|
-| [`full.json`](full.json) | All-rings-active showcase: gVisor-isolated container, Cedar policy engine with `deny-side-effects` fallback, Rule of Two enforced, post-edit code scanner, Granite Guardian guardrail across all three phases, multi edit strategy, OTel traces and metrics, dynamic model router, deterministic git, and one MCP server. Passes `types.ValidateRunConfig` end-to-end. |
+| [`full.json`](full.json) | All-rings-active showcase: gVisor-isolated container, Cedar policy engine over `destructive-shell.cedar` with an `allow-all` fallback, Rule of Two enforced, post-edit code scanner, Granite Guardian guardrail across all three phases, multi edit strategy, OTel traces and metrics, dynamic model router, deterministic git, and one MCP server. Passes `types.ValidateRunConfig` end-to-end. |
 | [`autonomous-preset.json`](autonomous-preset.json) | Unattended execution run with every safeguard on: `container` executor on `runsc` with the sandbox image and allowlist egress, `policy-engine` over `autonomous-allow-list.cedar` with a `deny-all` fallback, `patterns` code scanner, `test-runner` verifier, deterministic git, `stdout-json` sink, `gs://` workspace export, OTel traces and turn/time/token limits. CI keeps it valid and fails if a safeguard is dropped. See [`docs/autonomous-preset.md`](../../docs/autonomous-preset.md). |
 | [`k8s-gvisor.json`](k8s-gvisor.json) | The `k8s` executor running each run in a gVisor-isolated sandbox Pod (`executor.runtime: gvisor`) with deny-all egress (`network.mode: none`). `k8sKubeconfig` is empty so it prefers the in-cluster ServiceAccount; set it to a kubeconfig path (e.g. a GKE Connect Gateway context) to drive the cluster from outside. For allowlist egress set `network.mode: "allowlist"` plus `executor.k8sEgressProxyUrl`. See [`docs/executors/k8s.md`](../../docs/executors/k8s.md). |
 | [`k8s-sandbox-gvisor.json`](k8s-sandbox-gvisor.json) | The `k8s-sandbox` executor: the same gVisor-isolated sandbox, but provisioned through the GKE Agent Sandbox CRD (`agents.x-k8s.io/v1alpha1` Sandbox → controller-created Pod) rather than a raw Pod. Reuses every `K8s*` field; gVisor-only. See [`docs/executors/k8s-agent-sandbox.md`](../../docs/executors/k8s-agent-sandbox.md). |
@@ -176,7 +176,7 @@ active and Rule of Two is enforced.
   "permissionPolicy": {
     "type": "policy-engine",
     "policyFile": "examples/policies/destructive-shell.cedar",
-    "fallback": "deny-side-effects"
+    "fallback": "allow-all"
   },
 
   // Deterministic git: writes commits with stable author/date so
