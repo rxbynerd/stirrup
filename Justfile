@@ -7,6 +7,14 @@ build:
 test:
     go test ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 
+# The repository root is not a module, so `go build ./...` there fails.
+# Compile every module listed in go.work.
+build-modules:
+    go build ./types/... ./gen/... ./harness/... ./eval/... ./examples/controlplane/...
+
+# Run before pushing: build every workspace module, test, and lint.
+check: build-modules test lint
+
 # Race-detector pass over the goroutine-heavy packages (executor —
 # which includes egressproxy — provider, core, and sandboxidentity,
 # whose no-token-in-logs proof must hold against the live refresher

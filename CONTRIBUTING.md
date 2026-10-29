@@ -41,8 +41,10 @@ embedding surface is `harness/harnessapi/`.
 ## Build, test, lint
 
 ```sh
+just check        # before pushing: build every module, test, lint
 just              # build + test
 just build        # binaries: ./stirrup and ./stirrup-eval
+just build-modules # compile every module in go.work
 just test         # go test ./harness/... ./types/... ./eval/...
 just lint         # golangci-lint v2
 just fuzz-scrub   # short fuzz runs of the secret scrubber
@@ -53,17 +55,16 @@ just docker       # docker build -t stirrup .
 just clean        # remove built binaries
 ```
 
-Or directly:
-
-```sh
-go test ./harness/... ./types/... ./eval/...
-go build ./harness/... ./types/... ./eval/...
-buf generate
-buf lint
-```
+`just check` is the one command to run before pushing. The
+repository root is not a Go module, so `go build ./...` there fails
+with "directory prefix . does not contain modules listed in go.work";
+quote `just check` (or `just build-modules` for the build alone)
+rather than `go build ./...` in instructions and pull requests.
 
 CI runs the equivalent of `just test` + `just test-race` +
-`just fuzz-scrub` + a full build via the reusable `_verify.yml` workflow on every push, plus an
+`just fuzz-scrub` + a full build via the reusable `_verify.yml` workflow on every push, then
+fails if the build or tests changed `go.work.sum` or any `go.sum`
+(commit checksum changes with the change that caused them), plus an
 `eval-gate` job (baselined eval suites against committed baselines,
 pinned to a cheap model) on every push and a container publish on
 every merge to `main`. A failing `compare` exit fails the eval gate.
@@ -179,7 +180,7 @@ PR.
   `docs/post-issue-42-readme-pass`).
 - Reference any related issue in the PR description (`refs #42`,
   `closes #62`).
-- Run `just lint` and `just test` locally before pushing. The
+- Run `just check` locally before pushing. The
   `eval-gate` job catches behavioural regressions, but it runs only on
   pushes to `main` and on manual dispatch — live eval runs spend real
   tokens, so they are deliberately not per-push. To get the signal on a

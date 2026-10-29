@@ -39,12 +39,18 @@ default Claude Code conventions.
 ### Build, test, lint
 
 ```sh
+just check        # before pushing: build every module, test, lint
 just              # build + test (default)
 just build        # ./stirrup and ./stirrup-eval
 just test         # go test ./harness/... ./types/... ./eval/...
 just lint         # golangci-lint v2
 just proto        # buf generate (after editing proto/*.proto)
 ```
+
+`just check` is the one command to run before pushing. `go build
+./...` at the repository root fails ("directory prefix . does not
+contain modules listed in go.work") because the root is not a
+module; `just build-modules` builds every module in `go.work`.
 
 A failing build or test is a real error. A failing `gopls`
 diagnostic against a workspace package (e.g. "X not declared by
