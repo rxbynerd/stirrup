@@ -210,6 +210,27 @@ The generated code is committed (`gen/` is a tracked module). Keep
 proto changes backwards-compatible where possible; `buf` will refuse to
 break wire compatibility on a tagged release without explicit override.
 
+A `RunConfig` field ships with its proto mirror and a line in
+`harness/internal/transport/grpc_translate.go`;
+`TestRunConfigProtoMirror_EveryFieldIsMirroredAndTranslated` in
+`harness/internal/invariants` fails when either is missing. A field
+deliberately kept off the wire (flag- or environment-only) goes on that
+test's allow-list with the reason.
+
+**Field-number blocks for parallel work.** When several branches add
+proto fields at the same time (a tracker issue split across concurrent
+pull requests), the tracker assigns each branch its own block of field
+numbers per message before work starts, for example `RunConfig` 120-124
+for one branch and 125-129 for the next, and records the assignment in
+the tracker. Each branch uses only its block, so the branches never
+collide on a field number and merge in any order. Numbers a branch
+leaves unused stay reserved for it until the tracker closes.
+
+**Rebase conflicts in `gen/`.** Conflicts inside `gen/` are mechanical:
+take either side of the conflicting generated files, resolve any
+conflict in `proto/`, then run `just proto` and stage the regenerated
+`gen/`. Never hand-merge generated code.
+
 CI rebuilds the descriptor set from `proto/` on every run and uploads
 it as the `proto-descriptor-set` artifact, so a `.proto` edit that does
 not compile fails the verify gate regardless of whether `gen/` was
