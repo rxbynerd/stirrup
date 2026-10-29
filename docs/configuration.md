@@ -830,7 +830,10 @@ that was not a genuine success.
 
 The CLI deliberately exposes only a subset of each component's
 configuration space — the common cases. Anything below requires
-`--config`:
+`--config`. Which components may be combined with which (executor with
+git strategy, export, verifier, hooks or transport; batch with mode,
+provider or transport) is a separate question, answered in
+[`compatibility.md`](compatibility.md):
 
 | Component | What needs `--config` |
 |---|---|
