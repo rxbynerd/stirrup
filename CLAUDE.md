@@ -159,6 +159,11 @@ to make a feature easier:
   `TestRunConfigProtoMirror_EveryFieldIsMirroredAndTranslated` fails
   when a `RunConfig` field has no proto field or a proto field is never
   read by `grpc_translate.go`; it does not check where the value lands.
+  The one documented exception is the control-plane TLS settings
+  (`CONTROL_PLANE_TLS_*`, `--transport-tls-*`): `stirrup job` dials the
+  control plane before any `RunConfig` arrives, so they are
+  environment and flag only, with no `RunConfig` or proto field
+  (`harness/cmd/stirrup/cmd/transporttls.go`). Do not add one.
 - **Cross-package invariants live in `harness/internal/invariants`.**
   Its `go/ast` tests pin these properties:
   - provider calls are charged to the run ledger;
@@ -215,6 +220,8 @@ Quick map for "I need to change X" lookups:
 | Live transcript events (`user_message`, `turn_started`, `turn_committed`, `turn_abandoned`, `thinking_delta`, `tools_loaded`) and the setup-warning hold | `harness/internal/core/transcript.go`; wire contract in the `HarnessEvent` comment in `proto/harness/v1/harness.proto`, `types/events.go`, `harness/internal/transport/grpc_translate.go` and `eventbound.go` (operator doc: `docs/integration-guide.md#watching-a-run-live`) |
 | Follow-up history carry (`followUpHistory: "continue"`) | `harness/internal/core/followuphistory.go`, `RunFollowUpLoop` in `harness/internal/core/loop.go` (operator doc: `docs/integration-guide.md#follow-up-turns`) |
 | Lifecycle hooks (pre/post-run exec, #461) | `harness/internal/hook/` (Runner/Noop/ExecRunner), loop wiring in `harness/internal/core/loop.go` (operator doc: `docs/configuration.md#lifecycle-hooks`) |
+| Post-edit checks (`tools.postEdit`: operator commands run after each successful edit) | `harness/internal/postedit/` (Checker, glob match, `{path}` expansion, fenced diagnostics), wiring in `core/factory.go::attachPostEditChecks`, validation in `types/runconfig.go::validatePostEditChecks`, proto `PostEditCheck` mirrored in `harness/internal/transport/grpc_translate.go` (operator doc: `docs/configuration.md`) |
+| Deterministic git strategy (setup, per-turn checkpoint, final checkpoint and handoff, all run through the executor) | `harness/internal/git/` (`deterministic.go`, `command.go` quoting, `identity.go` hardening flags and harness identity, `root.go` workspace root); final-checkpoint outcome handling in `harness/internal/core/githandoff.go`; dry-run probe in `core/preflight.go::preflightGitStrategyProbe` |
 | Permission gating logic | `harness/internal/permission/<type>.go` |
 | Cedar policy semantics | `harness/internal/permission/policyengine.go` |
 | Cedar load-time lint (dead clauses, wildcard hosts) | `harness/internal/permission/policylint.go`; registry wiring in `core/factory.go::toolSchemaIndex` (operator doc: `docs/safety-rings.md#load-time-policy-lint`) |

@@ -35,7 +35,15 @@ The repository is a Go workspace (`go.work`) composed of five modules:
 - `harness/` — the harness binary and its 12 components.
 - `eval/` — the eval CLI, judges, runner, and lakehouse adapters.
 - `examples/controlplane/` — a minimal control plane that drives
-  `stirrup job` over gRPC, used by the control-plane smoke tests.
+  `stirrup job` over gRPC, used by the control-plane smoke tests. It
+  is a separate module, so `go test` inside `harness/` does not run its
+  tests; `just test` and `just lint` include it.
+
+A new workspace member needs a `COPY <module>/go.mod ./<module>/go.mod`
+line in the [`Dockerfile`](Dockerfile) builder stage, next to the one
+for `examples/controlplane`. `go.work` lists every member, and the image
+build fails to load the workspace when a listed module's `go.mod` is
+missing.
 
 The `harness/internal/*` packages are not part of the public API. The
 embedding surface is `harness/harnessapi/`.
