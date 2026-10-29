@@ -18,7 +18,7 @@ a `kind` discriminator. A complete run produces:
 
 ```jsonl
 {"kind":"run_started","schemaVersion":"2","runId":"...","config":{...redacted...},"startedAt":"..."}
-{"kind":"turn_record","turn":1,"modelInput":{...},"modelOutput":[...],"toolCalls":[...]}
+{"kind":"turn_record","turn":1,"modelInput":{...},"modelOutput":[...],"toolCalls":[...],"stopReason":"tool_use"}
 {"kind":"tool_call_record","turn":1,"name":"read_file","input":{...},"output":"..."}
 {"kind":"command_output_record","commandOutput":{"archiveId":"...","toolUseId":"...","stdout":{"rawBytes":123,"scrubbedBytes":111,"rawSha256":"...","scrubbedSha256":"..."}}}
 {"kind":"turn_record","turn":2,"modelInput":{...},"modelOutput":[...]}
@@ -29,8 +29,8 @@ a `kind` discriminator. A complete run produces:
 that turn, including the exact scrubbed tool results shown to it, and
 the normalised `stopReason` the provider ended the turn with (absent
 when the provider reported none, and on traces written before the
-field existed). The [replay provider](providers.md#replay)
-replays it.
+field existed). The [replay provider](providers.md#replay) ends
+each replayed turn with that stop reason.
 Anthropic `thinking` blocks keep their type and reasoning text, scrubbed
 like assistant text; their signatures, and the data of
 `redacted_thinking` blocks, are never written (see [thinking-block

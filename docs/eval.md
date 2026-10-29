@@ -1200,7 +1200,9 @@ file, carrying the full `ModelInput.Messages`, the model's
 `ModelOutput` content blocks, and every tool call's raw
 `Input`/`Output`. `types/trace.Reader.ReadRecording` reassembles a
 `types.RunRecording` from the event stream, including from
-partially-written files left behind by an interrupted run.
+partially-written files left behind by an interrupted run; the replay
+provider loads through `ReadReplay`, which keeps only the parts it
+serves (see [`providers.md`](providers.md#replay)).
 
 Pre-streaming traces (single-blob `RunTrace` lines) parse through the
 same reader as recordings with no transcript turns; the replay

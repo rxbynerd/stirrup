@@ -180,7 +180,7 @@ Quick map for "I need to change X" lookups:
 | Want to change… | Look in… |
 |---|---|
 | Provider behaviour or wire format | `harness/internal/provider/<name>.go` |
-| Replay provider (`provider.type=replay`, `--replay-file`; recorded model output, no credential) | `harness/internal/provider/replay.go`, factory arm `core/factory.go::buildReplayProvider`, eval path anchoring `eval/spec/runconfig.go::AnchorReplayFiles` (operator doc: `docs/providers.md#replay`) |
+| Replay provider (`provider.type=replay`, `--replay-file`; recorded model output, no credential) | `harness/internal/provider/replay.go` (sub-agent matching in `ForSubRun`), factory arm `core/factory.go::buildReplayProvider` and `replaySubAgentProviders`, slim load `types/trace/reader.go::ReadReplay`, validation `types/runconfig.go::validateReplayProviderFields` / `validateReplayAuxiliaryCalls`, `--provider` switch rules `cmd/harness.go::dropProviderFieldsOnSwitch`, eval path anchoring `eval/spec/runconfig.go::AnchorRunConfigPaths` (operator doc: `docs/providers.md#replay`) |
 | System prompt content or model tiers (the `.md` files are Go text/templates) | `harness/internal/prompt/systemprompts/*.md`, `harness/internal/prompt/modeltier.go` (operator doc: `docs/configuration.md#system-prompt-templating`) |
 | Tool definition or schema | `harness/internal/tool/builtins/<name>.go` |
 | Control-plane-fulfilled tools (`tools.controlPlane`) | `harness/internal/tool/controlplane.go` (builder), registration in `core/factory.go::buildToolRegistry`, validation in `types/runconfig.go::validateControlPlaneTools` (operator doc: `docs/configuration.md#control-plane-tools`) |
@@ -202,6 +202,7 @@ Quick map for "I need to change X" lookups:
 | Code scanner | `harness/internal/security/codescanner/` |
 | OTLP exporter construction (endpoint, TLS, headers, HTTP client, per signal) | `harness/internal/observability/otlp/` |
 | Observability platform profiles (`traceEmitter.platform`) and their precedence rules | `harness/internal/observability/platform/` (the only Go package outside `types/` that may name a vendor; a source-scan test enforces it); wiring in `core/factory.go::resolveTelemetry` (operator doc: `docs/observability-cloud.md#platform-profiles`) |
+| Build errors a control plane sees (`HostFileError` collapse for host-file fields) | `harness/internal/core/builderrors.go`, `harness/cmd/stirrup/cmd/job.go::controlPlaneBuildError` (operator doc: `docs/integration-guide.md#stream-lifecycle`) |
 | Result sink (RunResult payload) | `harness/internal/resultsink/` |
 | Workspace GCS export | `harness/internal/workspaceexport/` |
 | `RunConfig` validation | `types/runconfig.go` |
