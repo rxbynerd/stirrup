@@ -90,34 +90,54 @@ its verdicts without changing any outcome. See
 
 `tooluse.hcl` gives the tool redesign (schema redesign, tool-choice
 escalation, structured results, toolset profiles) end-to-end
-regression coverage. Each task seeds a small synthetic workspace and
-exercises one behaviour, judged on both the final workspace state
+regression coverage. Each task exercises one behaviour, seeds a small
+synthetic workspace (except `mcp-name-normalization`, which needs
+none), and is judged on both the final workspace state
 (`file-exists` / `file-contains`) and the tool-call path
 (`tool-trace`, documented in [`docs/eval.md`](../../docs/eval.md)).
 
 ### Running without provider credentials (the default)
 
-Every task seeds its workspace with `file` blocks and names a
-recording under `fixtures/tooluse/` through a `run_config_overrides`
-`provider { type = "replay" }` block, so `stirrup-eval run` spawns the
-real `stirrup harness` binary and drives its tool registry, a real
-`LocalExecutor` and the judges over a scripted conversation:
+Every task except `mcp-name-normalization` seeds its workspace with
+`file` blocks. All but the two streaming tasks name a recording under `fixtures/tooluse/` through a
+`run_config_overrides` `provider { type = "replay" }` block, so
+`stirrup-eval run` spawns the real `stirrup harness` binary and drives
+its tool registry, a real `LocalExecutor` and the judges over a scripted
+conversation:
 
 ```sh
 ./stirrup-eval run --suite eval/suites/tooluse.hcl --output results/tooluse
 ```
 
-No `ANTHROPIC_API_KEY`, no network, deterministic. The `verify` CI job
+No `ANTHROPIC_API_KEY`, no outbound network, deterministic. The `verify` CI job
 runs it on every push. A recording is a JSONL trace whose
 `turn_record` events carry the model output of each turn in order
 (format in [`docs/providers.md`](../../docs/providers.md#replay)); the
 fixtures are hand-written to the shapes
 `harness/internal/core/tooluse_replay_test.go` pins in process, and
 that Go test remains the unit-level gate for the same behaviours.
-Two of its behaviours stay in process only: MCP name normalization
-needs an MCP server the runner does not start (and the HCL `tools`
-block has no MCP server field), and streaming tool-call parsing is a
-wire property of each adapter that a replay bypasses by design.
+Two of its behaviours need a server instead, and each task declares a
+loopback [fixture server](../../docs/eval.md#fixture-servers) that the
+runner starts for the trial:
+
+- Streaming tool-call parsing is a wire property of each adapter that a
+  replay bypasses by design, so the `streaming-split-args-*` tasks run
+  the real `openai-compatible` and `openai-responses` adapters against
+  a canned SSE stream (`fixtures/tooluse/*.sse`) with the tool-call
+  arguments split across deltas. The Gemini adapter has no such task,
+  because a RunConfig cannot point it at a loopback server; its parsing
+  stays pinned in process.
+- MCP name normalization needs a tool registered under a hyphenated MCP
+  name, so the `mcp-name-normalization` task registers an MCP stub that
+  advertises `read-file-stub` and replays a recording that calls it by
+  the underscore name the strictest provider naming policy shows the
+  model.
+
+In the default run these tasks need no credential. The live-model flags
+of an invocation do not reach the streaming tasks, whose subject is a
+specific adapter, so they stay keyless and pass in a live run too. The
+flags do reach the MCP task, which then offers the stub's tool to the
+live model and therefore needs the live provider's credential.
 
 ### Running against a live provider (opt-in)
 
@@ -251,7 +271,8 @@ loading without a `run_config_file`. `enabled` defaults to `false`;
 `strategy`, `eager` and `max_results` take the values documented in
 [Lazy tool loading](../../docs/configuration.md#lazy-tool-loading),
 and `ValidateRunConfig` rejects invalid ones. The block belongs to the
-suite baseline only; `run_config_overrides` has no `tools` block.
+suite baseline only; the `tools` block of `run_config_overrides` carries
+`mcp_server` blocks and nothing else.
 
 ```hcl
 run_config {

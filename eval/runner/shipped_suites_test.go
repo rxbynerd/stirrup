@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/rxbynerd/stirrup/eval/fixtureserver"
 	"github.com/rxbynerd/stirrup/eval/spec"
 	tracereader "github.com/rxbynerd/stirrup/types/trace"
 )
@@ -81,5 +82,41 @@ func TestShippedSuites_ReplayFixturesLoad(t *testing.T) {
 		abs, err := filepath.Abs(fixture)
 		must.NoError(err)
 		must.True(referenced[abs], "fixture %s is not named by any shipped suite", fixture)
+	}
+}
+
+// TestShippedSuites_FixtureStreamsLoad opens every canned stream a shipped
+// suite names and checks it holds at least one turn, and that every stream
+// file is named by some suite. A dry run never opens the file, so a renamed
+// or empty stream would otherwise surface only when the harness runs.
+func TestShippedSuites_FixtureStreamsLoad(t *testing.T) {
+	must := require.New(t)
+	paths, err := filepath.Glob(filepath.Join("..", "suites", "*.hcl"))
+	must.NoError(err)
+	referenced := map[string]bool{}
+	for _, path := range paths {
+		suite, err := spec.LoadSuiteHCL(path)
+		must.NoError(err, "LoadSuiteHCL %s", path)
+		for _, task := range suite.Tasks {
+			if task.FixtureServer == nil || task.FixtureServer.StreamFile == "" {
+				continue
+			}
+			file := task.FixtureServer.StreamFile
+			referenced[file] = true
+			t.Run(filepath.Base(path)+"/"+task.ID, func(t *testing.T) {
+				must := require.New(t)
+				turns, err := fixtureserver.LoadTurns(file)
+				must.NoError(err)
+				must.NotEmpty(turns)
+			})
+		}
+	}
+	streams, err := filepath.Glob(filepath.Join("..", "suites", "fixtures", "*", "*.sse"))
+	must.NoError(err)
+	must.NotEmpty(streams, "no stream files found")
+	for _, stream := range streams {
+		abs, err := filepath.Abs(stream)
+		must.NoError(err)
+		must.True(referenced[abs], "stream file %s is not named by any shipped suite", stream)
 	}
 }

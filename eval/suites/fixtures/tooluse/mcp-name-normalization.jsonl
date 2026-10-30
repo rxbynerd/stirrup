@@ -1,0 +1,2 @@
+{"kind":"turn_record","turn":1,"modelOutput":[{"type":"tool_use","id":"c1","name":"mcp_stub_read_file_stub","input":{}}]}
+{"kind":"turn_record","turn":2,"modelOutput":[{"type":"text","text":"Read the stub file."}]}

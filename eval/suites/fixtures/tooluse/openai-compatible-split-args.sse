@@ -1,0 +1,19 @@
+data: {"id":"t1","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"edit_file","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"t1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"greeting.txt\",\"oper"}}]},"finish_reason":null}]}
+
+data: {"id":"t1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ation\":\"replace\",\"old_string\":\"old\","}}]},"finish_reason":null}]}
+
+data: {"id":"t1","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"new_string\":\"new\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"t1","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+
+---
+
+data: {"id":"t2","choices":[{"index":0,"delta":{"role":"assistant","content":"Updated greeting.txt."},"finish_reason":null}]}
+
+data: {"id":"t2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]

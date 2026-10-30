@@ -49,6 +49,7 @@ stirrup/
     cmd/eval/main.go         # CLI: run, compare, baseline, mine-failures, drift, compare-to-production
     judge/                   # test-command, file-exists, file-contains, composite
     runner/                  # Suite runner (live + replay) and replay evaluator
+    fixtureserver/           # Loopback servers the runner starts per task (`fixture_server` block)
     reporter/                # Comparison reporter and text formatting
     lakehouse/               # TraceLakehouse adapters: file-based FileStore
     suites/                  # Eval suite definitions (HCLv2)
@@ -164,6 +165,7 @@ The API executor (`executor/api.go`) implements the `Executor` interface for rea
 - **Golden sets** (`eval/golden/`) — loads and validates labelled diff-review cases (unified diffs or before/after fixtures) and the `diff-review-seed.json` seed set.
 - **Calibration** (`eval/calibrate/`) — judges a golden set through the real diff-review path and computes agreement metrics with Wilson intervals; backs `stirrup-eval judge-calibrate`.
 - **Runner** (`eval/runner/`) — loads `EvalSuite` HCL (`.hcl` extension required), creates temp workspaces, optionally clones repos, invokes the harness binary, parses JSONL traces, and applies judges. Supports bounded concurrency.
+- **Fixture servers** (`eval/fixtureserver/`, started and stopped in `eval/runner/runner.go::runTask`, URL substitution in `eval/runner/fixture.go`) — per-task loopback servers declared by a task's `fixture_server` block. The `sse` mode plays canned provider responses so a real OpenAI-wire adapter's stream parser runs without a credential; the `mcp` mode serves a Streamable-HTTP MCP stub advertising one hyphenated tool.
 - **Replay evaluator** (`eval/runner/replay.go`) — re-evaluates recorded runs through judges without re-running the harness.
 - **Reporter** (`eval/reporter/`) — diffs two `SuiteResult` sets and formats human-readable reports.
 - **Lakehouse** (`eval/lakehouse/filestore.go`) — file-backed `TraceLakehouse` adapter for production trace metrics and recordings.

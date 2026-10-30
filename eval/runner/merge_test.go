@@ -318,6 +318,27 @@ func TestMergeOverrides_AllOverlayFields(t *testing.T) {
 	})
 }
 
+func TestMergeOverrides_MCPServersReplaceBaselineAndAreCopied(t *testing.T) {
+	must := require.New(t)
+	baseline := baselineRunConfig()
+	baseline.Tools.MCPServers = []types.MCPServerConfig{{Name: "base", URI: "https://base.example.com"}}
+	servers := []types.MCPServerConfig{{Name: "stub"}}
+	got := mergeOverrides(baseline, &types.RunConfigOverrides{MCPServers: servers})
+	must.Equal([]types.MCPServerConfig{{Name: "stub"}}, got.Tools.MCPServers)
+
+	got.Tools.MCPServers[0].URI = "http://127.0.0.1:9"
+	must.Empty(servers[0].URI, "merge aliased the overlay's server slice")
+}
+
+func TestMergeOverrides_NilMCPServersKeepBaseline(t *testing.T) {
+	must := require.New(t)
+	baseline := baselineRunConfig()
+	baseline.Tools.MCPServers = []types.MCPServerConfig{{Name: "base", URI: "https://base.example.com"}}
+	turns := 3
+	got := mergeOverrides(baseline, &types.RunConfigOverrides{MaxTurns: &turns})
+	must.Equal([]types.MCPServerConfig{{Name: "base", URI: "https://base.example.com"}}, got.Tools.MCPServers)
+}
+
 // TestMergeOverrides_ZeroModeDoesNotOverwrite confirms the Mode
 // sentinel contract: the empty string on the overlay means "unset"
 // and must not clobber a baseline that already carries a concrete

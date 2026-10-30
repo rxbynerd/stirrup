@@ -60,6 +60,25 @@ type runConfigOverridesSpec struct {
 	EditStrategy         *editStrategySpec         `hcl:"edit_strategy,block"`
 	Verifier             *verifierSpec             `hcl:"verifier,block"`
 	ToolChoiceEscalation *toolChoiceEscalationSpec `hcl:"tool_choice_escalation,block"`
+	Tools                *toolsOverridesSpec       `hcl:"tools,block"`
+}
+
+// toolsOverridesSpec is the per-task subset of the tools block: the
+// mcp_server blocks it holds replace the baseline's as a whole.
+type toolsOverridesSpec struct {
+	MCPServers []mcpServerSpec `hcl:"mcp_server,block"`
+}
+
+// mcpServerSpec mirrors types.MCPServerConfig. The label is the server name,
+// which prefixes the registered tool names. A task with an mcp fixture_server
+// leaves uri unset and the runner supplies it.
+type mcpServerSpec struct {
+	Name            string   `hcl:"name,label"`
+	URI             string   `hcl:"uri,optional"`
+	APIKeyRef       string   `hcl:"api_key_ref,optional"`
+	AllowedTools    []string `hcl:"allowed_tools,optional"`
+	AllowedMCPHosts []string `hcl:"allowed_mcp_hosts,optional"`
+	Optional        bool     `hcl:"optional,optional"`
 }
 
 type providerSpec struct {
@@ -227,6 +246,7 @@ type toolsSpec struct {
 	CommandOutput *commandOutputSpec `hcl:"command_output,block"`
 	PostEdit      []postEditSpec     `hcl:"post_edit,block"`
 	LazyLoading   *lazyLoadingSpec   `hcl:"lazy_loading,block"`
+	MCPServers    []mcpServerSpec    `hcl:"mcp_server,block"`
 }
 
 // lazyLoadingSpec mirrors types.LazyToolLoadingConfig so a suite can pair a
@@ -310,7 +330,7 @@ type observabilitySpec struct {
 // so authors see the diagnostic at HCL parse time with the field path
 // named. Must stay in lockstep with every secret-bearing field the HCL
 // grammar accepts (providerSpec / runConfigOverridesSpec / executorSpec /
-// guardRailSpec) or a new field creates a parse-time hole.
+// guardRailSpec / mcpServerSpec) or a new field creates a parse-time hole.
 func validateInlineAPIKeyRefs(cfg *types.RunConfig, overrides *types.RunConfigOverrides) error {
 	checkRef := func(path, ref string) error {
 		if ref == "" {
@@ -318,8 +338,8 @@ func validateInlineAPIKeyRefs(cfg *types.RunConfig, overrides *types.RunConfigOv
 		}
 		if !strings.HasPrefix(ref, "secret://") {
 			return fmt.Errorf(
-				"%s %q: raw credentials are not permitted; use a secret:// reference",
-				path, ref,
+				"%s: raw credentials are not permitted; use a secret:// reference",
+				path,
 			)
 		}
 		return nil
@@ -336,10 +356,22 @@ func validateInlineAPIKeyRefs(cfg *types.RunConfig, overrides *types.RunConfigOv
 		if err := checkGuardRailRefs(cfg.GuardRail, "guard_rail", checkRef); err != nil {
 			return err
 		}
+		for _, server := range cfg.Tools.MCPServers {
+			if err := checkRef(fmt.Sprintf("tools.mcp_server %q api_key_ref", server.Name), server.APIKeyRef); err != nil {
+				return err
+			}
+		}
 	}
 	if overrides != nil && overrides.Provider != nil {
 		if err := checkRef("run_config_overrides.provider.api_key_ref", overrides.Provider.APIKeyRef); err != nil {
 			return err
+		}
+	}
+	if overrides != nil {
+		for _, server := range overrides.MCPServers {
+			if err := checkRef(fmt.Sprintf("run_config_overrides.tools.mcp_server %q api_key_ref", server.Name), server.APIKeyRef); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -419,7 +451,7 @@ func runConfigSpecToType(s *runConfigSpec) *types.RunConfig {
 		out.TraceEmitter = traceEmitterSpecToType(s.TraceEmitter)
 	}
 	if s.Tools != nil {
-		out.Tools = types.ToolsConfig{BuiltIn: s.Tools.BuiltIn}
+		out.Tools = types.ToolsConfig{BuiltIn: s.Tools.BuiltIn, MCPServers: mcpServerSpecsToType(s.Tools.MCPServers)}
 		if co := s.Tools.CommandOutput; co != nil {
 			out.Tools.CommandOutput = types.CommandOutputConfig{
 				Enabled:               co.Enabled,
@@ -515,6 +547,29 @@ func runConfigOverridesSpecToType(s *runConfigOverridesSpec) *types.RunConfigOve
 		out.Verifier = &v
 	}
 	out.ToolChoiceEscalation = toolChoiceEscalationSpecToType(s.ToolChoiceEscalation)
+	if s.Tools != nil {
+		out.MCPServers = mcpServerSpecsToType(s.Tools.MCPServers)
+	}
+	return out
+}
+
+// mcpServerSpecsToType converts mcp_server blocks in declaration order,
+// returning nil when there are none.
+func mcpServerSpecsToType(specs []mcpServerSpec) []types.MCPServerConfig {
+	if len(specs) == 0 {
+		return nil
+	}
+	out := make([]types.MCPServerConfig, 0, len(specs))
+	for _, s := range specs {
+		out = append(out, types.MCPServerConfig{
+			Name:            s.Name,
+			URI:             s.URI,
+			APIKeyRef:       s.APIKeyRef,
+			AllowedTools:    s.AllowedTools,
+			AllowedMCPHosts: s.AllowedMCPHosts,
+			Optional:        s.Optional,
+		})
+	}
 	return out
 }
 
@@ -543,14 +598,20 @@ func AnchorRunConfigPaths(cfg *types.RunConfig, baseDir string) {
 }
 
 func anchorReplayFile(provider *types.ProviderConfig, baseDir string) {
-	if provider.ReplayFile == "" || filepath.IsAbs(provider.ReplayFile) {
-		return
+	provider.ReplayFile = anchorPath(provider.ReplayFile, baseDir)
+}
+
+// anchorPath resolves a relative path against baseDir to an absolute path.
+// An empty or already absolute path is returned unchanged.
+func anchorPath(path, baseDir string) string {
+	if path == "" || filepath.IsAbs(path) {
+		return path
 	}
-	joined := filepath.Join(baseDir, provider.ReplayFile)
+	joined := filepath.Join(baseDir, path)
 	if abs, err := filepath.Abs(joined); err == nil {
 		joined = abs
 	}
-	provider.ReplayFile = joined
+	return joined
 }
 
 func providerSpecToType(s *providerSpec) types.ProviderConfig {

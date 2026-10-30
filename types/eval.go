@@ -95,6 +95,34 @@ type EvalTask struct {
 	// EvalSuite.RunConfig). Nil means "no per-task overrides"; only set
 	// fields are layered onto the baseline.
 	RunConfigOverrides *RunConfigOverrides `json:"runConfigOverrides,omitempty"`
+
+	// FixtureServer, when set, makes the runner start a local fixture server
+	// for the task's run and point the harness at it. Nil means the task
+	// needs no server.
+	FixtureServer *FixtureServerConfig `json:"fixtureServer,omitempty"`
+}
+
+// Fixture server modes.
+const (
+	// FixtureModeSSE plays canned SSE responses back as an OpenAI-wire
+	// provider; the runner sets the server's URL as the provider's base URL.
+	FixtureModeSSE = "sse"
+
+	// FixtureModeMCP serves a Streamable-HTTP MCP server advertising one
+	// hyphenated tool; the runner sets the server's URL as the URI of each
+	// tools.mcpServers entry that has none.
+	FixtureModeMCP = "mcp"
+)
+
+// FixtureServerConfig describes a loopback server the runner starts for one
+// task trial and stops when the harness exits.
+type FixtureServerConfig struct {
+	// Mode selects the server's behaviour: FixtureModeSSE or FixtureModeMCP.
+	Mode string `json:"mode"`
+
+	// StreamFile is the canned response file an sse server plays back, one
+	// turn per request. Required for sse and rejected for mcp.
+	StreamFile string `json:"streamFile,omitempty"`
 }
 
 // EvalJudge describes how to judge a run's outcome.
@@ -514,4 +542,7 @@ type RunConfigOverrides struct {
 	// ToolChoiceEscalation replaces the baseline's tool-choice escalation
 	// block for one task; nil keeps the baseline's.
 	ToolChoiceEscalation *ToolChoiceEscalationConfig `json:"toolChoiceEscalation,omitempty"`
+	// MCPServers replaces the baseline's tools.mcpServers for one task when
+	// non-nil; nil keeps the baseline's.
+	MCPServers []MCPServerConfig `json:"mcpServers,omitempty"`
 }

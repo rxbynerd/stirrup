@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rxbynerd/stirrup/eval"
+	"github.com/rxbynerd/stirrup/eval/fixtureserver"
 	"github.com/rxbynerd/stirrup/eval/judge"
 	"github.com/rxbynerd/stirrup/types"
 	tracereader "github.com/rxbynerd/stirrup/types/trace"
@@ -453,6 +454,23 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 		return errorResult(task.ID, start, mergeErr)
 	}
 
+	if task.FixtureServer != nil {
+		if merged == nil {
+			return errorResult(task.ID, start, fmt.Errorf("task declares a fixture_server and needs a suite run_config or run_config_file baseline"))
+		}
+		server, err := fixtureserver.Start(*task.FixtureServer)
+		if err != nil {
+			return errorResult(task.ID, start, err)
+		}
+		defer func() { _ = server.Close() }()
+		if err := applyFixtureServer(merged, *task.FixtureServer, server.URL); err != nil {
+			return errorResult(task.ID, start, err)
+		}
+		if task.FixtureServer.Mode == types.FixtureModeSSE {
+			cfg = withoutProviderFlags(cfg)
+		}
+	}
+
 	configPath := ""
 	if merged != nil {
 		// Route the trace path through the merged config rather than
@@ -860,6 +878,19 @@ func dryRunTask(task types.EvalTask, baseline *types.RunConfig) eval.TaskResult 
 	merged, err := buildMergedConfig(baseline, task.RunConfigOverrides)
 	if err != nil {
 		return errorResult(task.ID, time.Now(), err)
+	}
+	if task.FixtureServer != nil {
+		if merged == nil {
+			return errorResult(task.ID, time.Now(), fmt.Errorf("task declares a fixture_server and needs a suite run_config or run_config_file baseline"))
+		}
+		if err := applyFixtureServer(merged, *task.FixtureServer, dryRunFixtureURL); err != nil {
+			return errorResult(task.ID, time.Now(), err)
+		}
+		if task.FixtureServer.Mode == types.FixtureModeSSE {
+			if _, err := fixtureserver.LoadTurns(task.FixtureServer.StreamFile); err != nil {
+				return errorResult(task.ID, time.Now(), err)
+			}
+		}
 	}
 	if merged != nil {
 		if vErr := types.ValidateRunConfig(merged); vErr != nil {

@@ -137,11 +137,13 @@ suite → task layering:
 Per-task `run_config_overrides` follows the existing
 `types.RunConfigOverrides` shape and currently surfaces `provider`,
 `model_router`, `context_strategy`, `edit_strategy`, `verifier`,
-`tool_choice_escalation`, and `max_turns`. Only fields explicitly set
-on the overlay take effect; everything else passes the baseline
-through unchanged, except that a `provider` block replaces the
-baseline's provider block as a whole rather than merging into it. A
-`provider` block's `replay_file` resolves against the suite file's
+`tool_choice_escalation`, `max_turns`, and a `tools` block holding
+`mcp_server` blocks (see [MCP servers](#mcp-servers)). Only fields
+explicitly set on the overlay take effect; everything else passes the
+baseline through unchanged, except that a `provider` block replaces the
+baseline's provider block as a whole rather than merging into it, and
+the `mcp_server` blocks of a `tools` block replace the baseline's list
+as a whole. A `provider` block's `replay_file` resolves against the suite file's
 directory, on the baseline and on an override alike, so a suite can
 ship its recordings beside it (see [Replay doubles](#replay-doubles));
 a `run_config_file` baseline's `replayFile` resolves against that JSON
@@ -298,12 +300,44 @@ grows dedicated handling:
 - `providers` (named multi-provider lineup, `map[string]ProviderConfig`)
 - `dynamic_context` (`map[string]DynamicContextValue`)
 - `guard_rail.custom_criteria` (`map[string]string`)
-- `tools.mcp_servers` (slice of structs)
 - `transport` (the eval runner is stdio-only)
 
 Setting these via `run_config_file` is the recommended escape
 hatch; the suite still benefits from inline `run_config_overrides`
 for the supported subset.
+
+#### MCP servers
+
+`mcp_server` blocks inside a `tools` block register MCP servers for the
+run, in the suite's `run_config` or in a task's `run_config_overrides`.
+The label is the server name, which prefixes the registered tool names
+(`mcp_<name>_<tool>`), and the attributes mirror `tools.mcpServers` in
+the [`RunConfig`](configuration.md):
+
+| Attribute           | Meaning |
+|---------------------|---------|
+| `uri`               | Server URL. May be omitted only for a task whose `fixture_server` has mode `mcp` (see [Fixture servers](#fixture-servers)); every other server needs it. |
+| `api_key_ref`       | `secret://` reference to the bearer token. A literal value is rejected at load time. |
+| `allowed_tools`     | Allowlist of the server's advertised tool names. |
+| `allowed_mcp_hosts` | Pins the hostnames `uri` may use. |
+| `optional`          | Lets the run proceed when the server is unreachable. |
+
+```hcl
+run_config_overrides {
+  tools {
+    mcp_server "docs" {
+      uri         = "https://docs.example.com/mcp"
+      api_key_ref = "secret://DOCS_MCP_KEY"
+    }
+  }
+}
+```
+
+A `tools` block in `run_config_overrides` carries only `mcp_server`
+blocks, which replace the baseline's server list as a whole. A server
+registers MCP tools that are treated as mutating and approval-requiring,
+so the permission policy must allow them. Plain `http://` is accepted
+only for a loopback host.
 
 ### Judges
 
@@ -1201,12 +1235,119 @@ runs the same tasks live: the harness drops the recording path when
 its provider is switched on the command line, so one suite serves both
 forms. The runner refuses `--model`, `--base-url` or `--api-key-ref`
 without `--provider` on such a suite, since the tasks would keep
-replaying while the result named the requested model. `eval/suites/tooluse.hcl` is built this way and runs in the
-`verify` CI job from the recordings under `eval/suites/fixtures/`;
+replaying while the result named the requested model.
+`eval/suites/tooluse.hcl` is built this way and runs in the `verify` CI
+job from the recordings under `eval/suites/fixtures/`;
 `harness/internal/core/tooluse_replay_test.go` pins the same
-behaviours in process, including two a replay cannot reach (MCP name
-normalization, which needs an MCP server, and streaming tool-call
-parsing, which is an adapter wire property).
+behaviours in process, including the ones a replay cannot reach, which
+the suite covers with [fixture servers](#fixture-servers).
+
+#### Fixture servers
+
+A replay replaces the model, so it cannot exercise an adapter's wire
+parsing. A task that needs the real adapter, or another dependency of
+the harness, to talk to something scripted declares a `fixture_server`
+block. The runner starts the server on a loopback port before the
+task's harness run, points the run's configuration at it, and closes it
+when the run ends. Each trial gets its own server.
+
+```hcl
+task "streaming-split-args-openai-compatible" {
+  # prompt, files, judge ...
+
+  fixture_server {
+    mode        = "sse"
+    stream_file = "fixtures/tooluse/openai-compatible-split-args.sse"
+  }
+
+  run_config_overrides {
+    provider {
+      type        = "openai-compatible"
+      api_key_ref = ""
+    }
+    model_router {
+      type     = "static"
+      provider = "openai-compatible"
+      model    = "fixture-model"
+    }
+  }
+}
+```
+
+| Attribute     | Meaning |
+|---------------|---------|
+| `mode`        | Required. `sse` plays back canned provider responses; `mcp` serves an MCP stub. |
+| `stream_file` | Required for `sse` and rejected for `mcp`. Path to the canned responses, resolved against the suite file's directory. |
+
+The task needs a suite-level `run_config` or `run_config_file`, as every
+merged configuration does.
+
+**`sse` mode.** The server answers every `POST`, whatever the path, so
+it stands in for an `openai-compatible` or `openai-responses` endpoint.
+The runner sets the provider's `base_url` to the server's URL, so the
+task must leave `base_url` unset. The task must also leave
+`api_key_ref`, `credential` and `query_params` unset, so no credential
+reaches the server: both adapters accept an empty key reference once a
+custom base URL is set, and the harness does not substitute a default
+key reference in that case. Any other provider type is rejected, since
+it would ignore the base URL and run live. The stream file holds the raw
+SSE text of each turn's response in that adapter's wire format, with
+turns separated by a line containing only `---`. The n-th
+request receives the n-th turn, and each SSE record is written and
+flushed on its own, so a tool call whose arguments are split across
+records reaches the adapter's parser as separate network reads. A
+request past the last turn fails with HTTP 400 so a run that loops
+longer than its stream fails visibly. The file is capped at 1 MiB.
+
+The server does not inspect the requests it receives. The judges assert
+on the run's outcome, so a task passes only if the adapter reassembled
+the split arguments into a call that dispatched.
+
+An `sse` task never receives the live-model flags of the invocation
+(`--provider`, `--model`, `--prompt-model`, `--base-url`,
+`--api-key-ref` and the Anthropic federation flags). They retarget the
+other tasks of the suite, and the task is a test of the adapter its
+block names. An `mcp` task does receive them, since the stub stands in
+for a tool server rather than for the model: under `--provider`, the
+live model is offered the stub's tool. `--dry-run` validates the merged
+configuration with a placeholder URL and checks that an `sse` task's
+stream file loads, without starting a server.
+
+**`mcp` mode.** The server speaks the Streamable-HTTP transport the
+harness's MCP client uses (JSON-RPC over `POST`) and implements
+`tools/list` and `tools/call`, plus `initialize` for clients that send
+it. It advertises one tool, `read-file-stub`, whose every call
+returns the text `stub file contents`. The task declares an
+[`mcp_server`](#mcp-servers) with no `uri`, and the runner sets the
+server's URL as the `uri` of each such server; the task fails if it
+declares none. The hyphens in the tool name exercise provider-facing
+name normalization: for a server named `stub` the registry name is
+`mcp_stub_read-file-stub`, and a provider whose naming policy forbids
+hyphens is shown `mcp_stub_read_file_stub`, which the normalizer maps
+back when the model calls it. The replay provider is held to the
+strictest policy, so a recording for such a task calls the underscore
+form (`fixtures/tooluse/mcp-name-normalization.jsonl`), and a judge
+asserts the call under the registry name.
+
+```hcl
+fixture_server {
+  mode = "mcp"
+}
+
+run_config_overrides {
+  provider {
+    type        = "replay"
+    replay_file = "fixtures/tooluse/mcp-name-normalization.jsonl"
+  }
+  tools {
+    mcp_server "stub" {}
+  }
+}
+```
+
+The Gemini adapter has no fixture task: its endpoint is derived from a
+project and location rather than a `base_url`, and it needs Google
+credentials, so a RunConfig cannot point it at a loopback server.
 
 #### Where recordings come from
 
