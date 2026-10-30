@@ -488,6 +488,9 @@ func (l *AgenticLoop) preflightToolCall(call types.ToolCall, t *tool.Tool) (json
 		if msg, ok := renamedToolHint(call.Name); ok {
 			return nil, msg, observability.ToolFailureUnknownTool
 		}
+		if name, ok := caseFoldedToolName(call.Name, l.Tools.List()); ok && !l.unloadedTool(name) {
+			return nil, "Unknown tool: " + call.Name + ". Tool names are case-sensitive; call " + name + " instead.", observability.ToolFailureUnknownTool
+		}
 		return nil, "Unknown tool: " + call.Name, observability.ToolFailureUnknownTool
 	}
 	if l.LazyTools != nil && l.LazyTools.Unloaded(t.Name) {
@@ -1120,6 +1123,34 @@ func estimateLoadedToolDefinitionTokens(tools []types.ToolDefinition, loaded fun
 		total += len(t.InputSchema) / tokenEstimationDivisor
 	}
 	return total
+}
+
+// caseFoldedToolName returns the one presented tool whose name differs
+// from name only in letter case. The call is still rejected rather than
+// remapped: permission policies, Cedar and the guards key on the tool name,
+// and a model-controlled name must not reach them through a rewrite.
+func caseFoldedToolName(name string, tools []types.ToolDefinition) (string, bool) {
+	match := ""
+	for _, td := range tools {
+		if td.Name == name || !strings.EqualFold(td.Name, name) {
+			continue
+		}
+		if match != "" {
+			return "", false
+		}
+		match = td.Name
+	}
+	return match, match != ""
+}
+
+// unloadedTool reports whether name resolves to a tool lazy loading has
+// deferred and no search has loaded yet, which a hint must not suggest.
+func (l *AgenticLoop) unloadedTool(name string) bool {
+	if l.LazyTools == nil {
+		return false
+	}
+	t := l.Tools.Resolve(name)
+	return t != nil && l.LazyTools.Unloaded(t.Name)
 }
 
 // renamedToolHint maps legacy tool names to a directional error message
