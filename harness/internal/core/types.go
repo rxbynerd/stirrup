@@ -258,6 +258,11 @@ type AgenticLoop struct {
 	// cacheKey is the provider cache key of the current run's requests.
 	cacheKey string
 
+	// requestBinding is the thinking binding of the current run's latest
+	// provider request, or before its first one the binding of the carried
+	// history it continues; nil when the history has not been sent.
+	requestBinding *thinkingBinding
+
 	// clock is the wind-down time source; nil means time.Now.
 	clock func() time.Time
 

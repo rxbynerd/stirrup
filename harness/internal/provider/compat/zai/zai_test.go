@@ -336,16 +336,17 @@ func TestZAICompatRules_GLM410IsAKnownGap(t *testing.T) {
 }
 
 // TestZAICompatRules_GatewayPrefixResolution pins the OpenRouter
-// gateway rule (z-ai/glm-*): legacy max_tokens and reasoning_content
-// replay, but tool_stream and thinking absent (vendor extras
-// unverified through gateways).
+// gateway rule (z-ai/glm-*): legacy max_tokens and no replay, since
+// OpenRouter streams the reasoning as delta.reasoning, never
+// reasoning_content; tool_stream and thinking stay absent (vendor
+// extras unverified through gateways).
 func TestZAICompatRules_GatewayPrefixResolution(t *testing.T) {
 	must := require.New(t)
-	q := zaiRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "z-ai/glm-4.7"})
+	q := zaiRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "z-ai/glm-5.3"})
 	openAI := q.BehaviourFlags.OpenAI
 
 	must.Equal(quirks.TokenFieldMaxTokens, openAI.TokenField)
-	must.Contains(q.ReplayFields, "reasoning_content")
+	must.Empty(q.ReplayFields)
 
 	// Vendor extras are unverified through gateways, so they must not be sent.
 	must.NotContains(openAI.ExtraBodyFields, "tool_stream")

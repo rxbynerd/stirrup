@@ -909,6 +909,7 @@ func (l *AgenticLoop) runInnerLoop(
 		// these consume context but aren't in the message history.
 		toolDefs, search := l.visibleTools(selection)
 		l.turnSearch = search
+		messages = l.bindRequestThinking(ctx, systemPrompt, toolDefs, messages)
 		structuredResults := l.sendsStructuredResults(selection.Provider, selection.Model)
 		currentTokens := estimateCurrentTokens(messages, structuredResults) +
 			estimateSystemPromptTokens(systemPrompt) +

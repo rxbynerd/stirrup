@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/guard"
+	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/ruleoftwo"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
@@ -420,6 +421,81 @@ func TestRunFollowUpLoop_ContinueKeepsThinkingStrippedAfterRewrite(t *testing.T)
 
 	must.Len(prov.sent, 3, "provider requests")
 	check.Empty(thinkingSignatures(prov.sent[2]), "follow-up replayed thinking from a rewritten history")
+}
+
+// thinkingOnCallsProvider answers the calls numbered in thinkOn (from 1)
+// with a signed thinking block and a call to tool (test_tool when empty),
+// and every other call with end_turn text. sent records each request.
+type thinkingOnCallsProvider struct {
+	thinkOn map[int]bool
+	tool    string
+	sent    []types.StreamParams
+}
+
+func (p *thinkingOnCallsProvider) Stream(_ context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
+	p.sent = append(p.sent, params)
+	call := len(p.sent)
+	ch := make(chan types.StreamEvent, 4)
+	if p.thinkOn[call] {
+		name := p.tool
+		if name == "" {
+			name = "test_tool"
+		}
+		ch <- types.StreamEvent{Type: "thinking", ThoughtSignature: fmt.Sprintf("sig-%d", call)}
+		ch <- types.StreamEvent{Type: "tool_call", ID: fmt.Sprintf("tc_%d", call), Name: name, Input: map[string]any{}}
+		ch <- types.StreamEvent{Type: "message_complete", StopReason: "tool_use"}
+	} else {
+		ch <- types.StreamEvent{Type: "text_delta", Text: "done"}
+		ch <- types.StreamEvent{Type: "message_complete", StopReason: "end_turn"}
+	}
+	close(ch)
+	return ch, nil
+}
+
+// perRunPromptBuilder returns a different system prompt on every Build.
+type perRunPromptBuilder struct{ builds int }
+
+func (b *perRunPromptBuilder) Build(context.Context, prompt.PromptContext) (string, error) {
+	b.builds++
+	return fmt.Sprintf("system prompt of run %d", b.builds), nil
+}
+
+// TestRunFollowUpLoop_ContinueDropsCarriedThinkingUnderAChangedSystemPrompt
+// pins that a follow-up whose system prompt differs from the previous
+// run's sends none of the carried thinking blocks, which Anthropic binds to
+// the system prompt they were produced under, while a follow-up under the
+// same system prompt replays them. The follow-up's own thinking is kept.
+func TestRunFollowUpLoop_ContinueDropsCarriedThinkingUnderAChangedSystemPrompt(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		changePrompt  bool
+		wantFirst     []string
+		wantFollowUps []string
+	}{
+		{name: "same system prompt", wantFirst: []string{"sig-1"}, wantFollowUps: []string{"sig-1", "sig-3"}},
+		{name: "changed system prompt", changePrompt: true, wantFirst: nil, wantFollowUps: []string{"sig-3"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			prov := &thinkingOnCallsProvider{thinkOn: map[int]bool{1: true, 3: true}}
+			loop, tr := buildUserInputTestLoop(&recordingScriptProvider{script: [][]types.StreamEvent{scriptEndTurn}})
+			loop.Provider = prov
+			if tc.changePrompt {
+				loop.Prompt = &perRunPromptBuilder{}
+			}
+			config := buildTestConfig()
+			config.FollowUpHistory = types.FollowUpHistoryContinue
+
+			traces := followUpSession(t, loop, tr, config, "carry on")
+
+			must.Len(traces, 2)
+			check.Equal("success", traces[1].Outcome, "follow-up outcome")
+			must.Len(prov.sent, 4, "provider requests")
+			check.Equal(tc.wantFirst, thinkingSignatures(prov.sent[2].Messages), "follow-up's first request")
+			check.Equal(tc.wantFollowUps, thinkingSignatures(prov.sent[3].Messages), "follow-up's second request")
+		})
+	}
 }
 
 func TestRetainHistory_CarriesOnlyContinuableRuns(t *testing.T) {
@@ -877,17 +953,19 @@ func TestBeginRunState_ResetsStateFromCarriedHistory(t *testing.T) {
 	config := buildTestConfig()
 	own := providerCacheKey(config.RunID)
 	history := []types.Message{userText("task"), assistantText("done")}
+	sent := &thinkingBinding{system: "carried system"}
 	cases := []struct {
-		name      string
-		carried   *carriedHistory
-		wantKey   string
-		wantCalls int
+		name        string
+		carried     *carriedHistory
+		wantKey     string
+		wantCalls   int
+		wantBinding *thinkingBinding
 	}{
 		{name: "no carried history", wantKey: own},
-		{name: "withheld history", carried: &carriedHistory{withheld: "guardrail_blocked", cacheKey: "k", toolCalls: 3}, wantKey: own},
-		{name: "empty messages", carried: &carriedHistory{cacheKey: "k", toolCalls: 3}, wantKey: own},
+		{name: "withheld history", carried: &carriedHistory{withheld: "guardrail_blocked", cacheKey: "k", toolCalls: 3, binding: sent}, wantKey: own},
+		{name: "empty messages", carried: &carriedHistory{cacheKey: "k", toolCalls: 3, binding: sent}, wantKey: own},
 		{name: "carried history without a key", carried: &carriedHistory{messages: history, toolCalls: 2}, wantKey: own, wantCalls: 2},
-		{name: "carried history", carried: &carriedHistory{messages: history, cacheKey: "k", toolCalls: 2}, wantKey: "k", wantCalls: 2},
+		{name: "carried history", carried: &carriedHistory{messages: history, cacheKey: "k", toolCalls: 2, binding: sent}, wantKey: "k", wantCalls: 2, wantBinding: sent},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -896,9 +974,11 @@ func TestBeginRunState_ResetsStateFromCarriedHistory(t *testing.T) {
 			// State from an earlier run must not leak into this one.
 			loop.cacheKey = "stale"
 			loop.carriedToolCalls = 9
+			loop.requestBinding = &thinkingBinding{system: "stale"}
 			loop.beginRunState(config, tc.carried)
 			must.Equal(tc.wantKey, loop.cacheKey, "cache key")
 			must.Equal(tc.wantCalls, loop.carriedToolCalls, "carried tool calls")
+			must.Equal(tc.wantBinding, loop.requestBinding, "thinking binding")
 		})
 	}
 }

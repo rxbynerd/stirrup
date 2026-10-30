@@ -1346,7 +1346,10 @@ description. It is neither BM25 nor semantic search. The best-scoring
 tools not yet loaded are loaded, and the next turn sends their full
 definitions. Tools that match but are already loaded are not loaded
 again and do not count toward the limit; the result names them on an
-`Already loaded:` line.
+`Already loaded:` line. Anthropic rejects a signed thinking block
+replayed under a tool list other than the one the block was produced
+under, so the turn after a load drops the thinking blocks of all
+earlier turns from the history.
 
 The harness search also keeps one group from filling every slot. A
 group is an MCP server, the MCP tools no configured server claims,
@@ -2047,16 +2050,18 @@ signatures) is persisted and replayed exactly as before.
 | Adapter | `auto` | `off` |
 |---|---|---|
 | `anthropic` | Streams thinking the request already enables through `reasoningEffort`; no request change. | No request change; the loop forwards no `thinking_delta`. |
-| `openai-compatible` | Streams each `reasoning_content` delta the server sends (DeepSeek, GLM, Qwen), or `reasoning` delta (OpenRouter); no request change, because Chat Completions has no reasoning-summary control. | No request change; the loop forwards no `thinking_delta`. |
+| `openai-compatible` | Streams each `reasoning_content` delta the server sends (DeepSeek, GLM, Qwen), or each `reasoning` delta (OpenRouter); no request change, because Chat Completions has no reasoning-summary control. | No request change; the loop forwards no `thinking_delta`. |
 | `openai-responses` | Adds `reasoning.summary: "auto"` to any request that carries `reasoning.effort`, and streams `response.reasoning_summary_text.delta`. A request with no projected effort carries no `reasoning` object and no summary. | Sends no `reasoning.summary`. An empty value does the same. |
 | `gemini` | Sends `generationConfig.thinkingConfig.includeThoughts: true` when the model's quirks accept a thinking config (Gemini 3.6, 3.7, 3.8, 3.1 Pro and 2.5 Flash) or `reasoningEffort` is set, and streams each `thought: true` part. Other models get no `thinkingConfig`, because models that do not think reject one. Thought parts never become answer text or tool input. | Sends no `includeThoughts`. |
 | `bedrock` | No effect: the adapter streams no reasoning text and has no request control for it. | No effect. |
 
 `openai-responses` requests summaries only on an explicit `auto`
 because OpenAI may require organisation verification before it returns
-them on its newest reasoning models, and the control has not been
-probed live; an unset value leaves the request as unverified
-organisations can send it.
+them on its newest reasoning models, and that requirement has not
+been probed against OpenAI's own API; an unset value sends no
+`reasoning.summary`, which unverified organisations can send. OpenRouter's Responses endpoint
+accepts the control and streams the summary (see
+[provider quirks](provider-quirks.md#9-open-risks), risk 12).
 
 Each turn record's `request.reasoningSummary` holds the value resolved
 for the selected adapter, so an unset field is recorded as `off` on

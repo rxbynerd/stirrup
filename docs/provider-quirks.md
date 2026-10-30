@@ -115,8 +115,10 @@ harness/internal/provider/testdata/quirks/
     openai-compatible/<model>/{request.json, response.sse}
     openai-compatible/<deepseek-model>/{request.json, response.sse, replay.json}
     openai-compatible/deepseek/<model>/response.sse   # live OpenRouter capture
+    openai-compatible/z-ai/<model>/response.sse       # live OpenRouter capture
     gemini/<model>/{request.json, response.sse[, replay.json]}
     openai-responses/<model>/{request.json[, response.sse, replay.json]}
+    openai-responses/openai/<model>/response.sse      # live OpenRouter capture
 ```
 
 A gateway-prefixed model id (e.g. `deepseek/deepseek-v4.1-flash-1017`)
@@ -856,7 +858,7 @@ the projection, not a provider-specific field:
 |---|---|---|---|
 | `anthropic` | nothing; thinking is configured by `reasoningEffort` | as `auto` | n/a |
 | `openai-compatible` | nothing; `reasoning_content` deltas are streamed as sent | as `auto` | no request control exists |
-| `openai-responses` | `reasoning.summary: "auto"`, only beside a projected `reasoning.effort` | nothing, as `off` | documented, not probed |
+| `openai-responses` | `reasoning.summary: "auto"`, only beside a projected `reasoning.effort` | nothing, as `off` | through OpenRouter only (`openai/gpt-5.6-luna`, 2026-10-29); first-party OpenAI not probed |
 | `gemini` | `generationConfig.thinkingConfig.includeThoughts: true`, for models whose quirks accept a thinking config or when `reasoningEffort` is set | as `auto` | Gemini 3.6 / 3.7 / 3.8 Flash and 3.1 Pro on Vertex AI and AI Studio, and 2.5 Flash on Vertex AI (2026-10-17) |
 | `bedrock` | nothing; the adapter streams no reasoning text | nothing | n/a |
 
@@ -872,9 +874,12 @@ only beside a configured `reasoningEffort`, which already sends a
 
 `openai-responses` requests summaries only on an explicit `auto`
 because OpenAI may require organisation verification before it returns
-them on its newest reasoning models, and the control has not been
-probed: a default-on summary could make requests from an unverified
-organisation fail.
+them on its newest reasoning models. That requirement has not been
+probed against OpenAI's own API, so a default-on summary could make
+requests from an unverified organisation fail. OpenRouter's Responses
+endpoint accepts `reasoning.summary: "auto"` and streams the summary as
+`response.reasoning_summary_text.delta` events (see
+[§9](#9-open-risks) risk 12).
 
 ## 4. Composition with the NormalizingAdapter
 
@@ -985,7 +990,7 @@ its fields:
 | `glm-4.[5-9]*`   | + replay `reasoning_content`; + `thinking: {"type":"enabled"}` | GLM-4.5/4.6/4.7 thinking family; the dot excludes the hyphenated legacy line |
 | `glm-5*`         | same as `glm-4.[5-9]*`                                        | GLM-5/5.1/5.3 thinking family |
 | `glm-5.3*`       | + `reasoning_effort` allow-list `low`/`high`/`max`           | GLM-5.3 defaults to `max` and maps any unlisted value to `max`, so `medium` is rejected before send |
-| `z-ai/glm-*`     | legacy `max_tokens`; + replay `reasoning_content`            | OpenRouter gateway-prefixed ids (`*` does not cross `/`); no `tool_stream`/`thinking` — vendor extras unverified through gateways |
+| `z-ai/glm-*`     | legacy `max_tokens`                                          | OpenRouter gateway-prefixed ids (`*` does not cross `/`); OpenRouter streams the reasoning as `delta.reasoning` and needs no replay (probed 2026-10-29); no `tool_stream`/`thinking` — vendor extras unverified through gateways |
 
 `reasoning_content` threading (the `(threaded)` ReplayFields suffix in
 [§3.1](#31-replayfields-rules)) now applies to the GLM-4.5+ thinking
@@ -1173,7 +1178,9 @@ concerns are tracked separately:
    OpenRouter routes to DeepSeek's own host and passes
    `reasoning_content` through, the gateway rules do not replay it.
    Unverified: requests that OpenRouter routes to DeepSeek's own
-   host (the probe account's privacy setting excluded it), and
+   host (the probe account's privacy setting excluded it, again on
+   2026-10-29 with a new key: "Filter by Guardrails removed deepseek
+   (Paid model training violation (account settings))"), and
    whether a replay is required on that route. The Chat Completions
    adapter shows `delta.reasoning` as thinking deltas beside
    `reasoning_content`; it is never replayed. The 180-day staleness
@@ -1332,3 +1339,70 @@ concerns are tracked separately:
     output cap; record the HTTP status and the error body (never the
     request headers). If the row returns 400, set the flag on a rule
     scoped to that provider and model.
+
+12. **Reasoning streaming and carried-history replay.** Probed live on
+    2026-10-29. The Anthropic rows called the Messages API directly
+    (`anthropic-version: 2023-06-01`, non-streaming, `max_tokens` 2000,
+    no `thinking` parameter, `output_config.effort` `high`). The turn
+    that produced the `claude-sonnet-5-5` thinking block ran at `max`,
+    because that model returned no thinking block at `high` on two
+    prompts; the replaying requests ran at `high`. Both models returned
+    signed thinking blocks with empty thinking text. The OpenRouter rows
+    called `https://openrouter.ai/api/v1` on default routing; they show
+    OpenRouter's wire, not the first-party Z.ai, Alibaba or OpenAI APIs.
+
+    | Probe | Model | Surface | Result |
+    |---|---|---|---|
+    | Assistant message holding only signed thinking, mid-history: user, thinking-only assistant, user | `claude-haiku-5-5`, `claude-sonnet-5-5` | Messages API | 200 |
+    | The same followed by a text turn and another user turn | `claude-haiku-5-5` | Messages API | 200 |
+    | Carried signed thinking, same system prompt and tools: a plain turn, and a turn ending in an answered `tool_use` | `claude-haiku-5-5` | Messages API | 200 |
+    | Carried signed thinking under a changed system prompt | `claude-haiku-5-5`, `claude-sonnet-5-5` | Messages API | 400 `invalid_request_error`: "Invalid `signature` in `thinking` block. The block is bound to a different conversation. … The `system` prompt differs from the one this block was created with." |
+    | The same with one tool added, or with every tool removed | `claude-haiku-5-5` | Messages API | 400, "The `tools` list differs from the one this block was created with." |
+    | The same with the user message before the block edited | `claude-haiku-5-5` | Messages API | 400, "Content before this block differs from when it was created" |
+    | The same `claude-haiku-5-5` block with `output_config.effort` changed, or with the request sent to `claude-sonnet-5-5` | `claude-haiku-5-5`, `claude-sonnet-5-5` | Messages API | 200; whether `claude-sonnet-5-5` used or dropped the block is not observable |
+    | Changed system prompt with the thinking block removed | `claude-haiku-5-5` | Messages API | 200 |
+    | Changed system prompt with `anthropic-beta: thinking-binding-controls-2026-08-01` and `thinking: {"type": "adaptive", "block_binding": {"prefix_mismatch_behavior": "drop_block"}}` | `claude-haiku-5-5` | Messages API | 200; without `thinking.type` the request is a 400 ("thinking.type: Field required") |
+    | `reasoning: {"effort": "low", "summary": "auto"}`, streamed | `openai/gpt-5.6-luna` | OpenRouter `/responses` | 200; one `reasoning_summary_part.added`, 81 `reasoning_summary_text.delta`, then the answer; the reasoning item carries the summary and `encrypted_content`. Every record is `data:` only, with no `event:` line. With `reasoning: {"effort": "low"}` and no `summary`: 200, no summary events. With no `reasoning` object at all: 200, and a summary streams (70 deltas); the response echoes `reasoning: null` |
+    | Harness run, `--provider openai-responses`, `--reasoning-summary auto` | `openai/gpt-5.6-luna` | OpenRouter `/responses` | Before the data-only fix: outcome `error`, "provider returned an empty stop reason". After it: `success`, with the summary streamed as `thinking_delta`. The adapter sent no `reasoning` object (no effort rule matches the `openai/` id, so the effort was dropped with a warning), which is the case where OpenRouter streams a summary by default |
+    | Reasoning field, streamed with one tool | `z-ai/glm-5.3` (served by Relace) | OpenRouter Chat Completions | `delta.reasoning` plus `reasoning_details`; no `reasoning_content` |
+    | Tool-result turn replaying the reasoning as `reasoning_content`, as `reasoning`, or not at all | `z-ai/glm-5.3` (served by Relace) | OpenRouter Chat Completions | 200 for all three |
+    | Reasoning field, streamed with one tool | `qwen/qwen3.6-27b` (served by Reka) | OpenRouter Chat Completions | `delta.reasoning` plus `reasoning_details`; no `reasoning_content`. Replay not probed: the model answered without a tool call, and no `qwen/` rule replays anything |
+    | Harness run, `--provider openai-compatible` | `z-ai/glm-5.3` | OpenRouter Chat Completions | `success`; the reasoning streamed as 8 `thinking_delta` events |
+    | Harness run, `--lazy-tools --lazy-tools-strategy harness`, one search then a loaded tool | `claude-haiku-5-5` | Messages API | Before the binding fix: the turn after the search failed with the `tools` 400. After it: `success` in 3 turns, with the thinking stripped from the `tool_use` turn the request answers. Other Claude models are unprobed for that shape |
+    | First-party DeepSeek through OpenRouter (`provider.order: ["DeepSeek"]`) | `deepseek/deepseek-v4.1-flash-1017` | OpenRouter Chat Completions | unprobed: 404, the account's privacy setting removes the DeepSeek host (see risk 9) |
+    | `reasoning_content` from first-party Z.ai and Alibaba endpoints | GLM, Qwen | Z.ai, DashScope | unprobed: no credential for either |
+    | A thinking-only turn followed by a tool round trip | Claude 5.5 | Messages API | unprobed: the one attempt placed a `tool_use` turn after content that was not present when its block was created, so its 400 ("content before this block that was not present when it was created") reflects the probe's construction, not the thinking-only turn |
+    | `reasoning.summary` on OpenAI's own API, and its organisation-verification requirement | GPT-5.x | OpenAI Responses | unprobed: no OpenAI credential |
+
+    A signed thinking block is bound to the system prompt, the tool
+    list and every message before it. The loop
+    (`core/thinkingbinding.go`) therefore records each request's system
+    prompt and tool definitions and strips the history's thinking blocks
+    before a request where either differs from the request the
+    history was last sent with. This happens on a follow-up that
+    continues the history (the system prompt is rebuilt per run and
+    lists the workspace's files and git status), and within a run whose
+    tool list changes, as harness-strategy lazy loading does after a
+    search. The
+    comparison uses the tool definitions before native tool search
+    un-defers loaded tools on the wire; whether that un-deferral breaks
+    the binding is unprobed. No registry rule or adapter fixture is
+    involved: only the Anthropic streaming and batch adapters produce
+    thinking blocks, the adapter sends what the loop gives it, and the
+    rejection depends on what earlier requests carried, which a
+    single-request wire fixture cannot express. The core tests pin the
+    strip instead. The loop strips rather than sending the
+    `drop_block` beta because the strip needs no beta header or
+    `thinking` parameter, which the adapter does not send, and behaves
+    the same on accounts that do not enforce the check. A thinking-only
+    turn followed by more text turns needs no change; the same turn
+    followed by a tool round trip is unprobed.
+
+    The `openai-compatible` adapter already streams `delta.reasoning` as
+    `thinking_delta`; the GLM capture is now a fixture beside the
+    DeepSeek one. The `z-ai/glm-*` rule no longer replays
+    `reasoning_content`, which OpenRouter never sends. The
+    `openai-responses` adapter reads a data-only record's event name
+    from its payload `type`, so it streams from OpenRouter's Responses
+    endpoint; gateway-prefixed `openai/gpt-5*` ids still resolve no
+    effort, replay or tool-search rules there.

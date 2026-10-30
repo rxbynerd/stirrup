@@ -1,0 +1,43 @@
+# captured: live OpenRouter stream, 2026-10-29, z-ai/glm-5.3 on default routing (served by Relace), one tool (get_weather) offered, no reasoning_effort. OpenRouter emits reasoning as delta.reasoning plus delta.reasoning_details and never reasoning_content.
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"An","reasoning_details":[{"type":"reasoning.text","text":"An","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"agram of \"","reasoning_details":[{"type":"reasoning.text","text":"agram of \"","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"SPAIR\" →","reasoning_details":[{"type":"reasoning.text","text":"SPAIR\" →","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" PARIS.","reasoning_details":[{"type":"reasoning.text","text":" PARIS.","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" Paris is a capital","reasoning_details":[{"type":"reasoning.text","text":" Paris is a capital","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" (","reasoning_details":[{"type":"reasoning.text","text":" (","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":"of","reasoning_details":[{"type":"reasoning.text","text":"of","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":" France).","reasoning_details":[{"type":"reasoning.text","text":" France).","format":"unknown","index":0}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":"R","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":"earranging the","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":" letters S,","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":" P, A, I","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":", R gives","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":" PAR","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":"IS —","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":" the capital of France.","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"id":"call_91c39354e7d749cba9c323d9","type":"function","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"{\"city\": \"Paris\"}"}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","choices":[{"index":0,"delta":{"content":"","role":"assistant","reasoning":null},"finish_reason":"tool_calls","native_finish_reason":"tool_calls"}]}
+
+data: {"id":"gen-1793277573-HrjZpUKlkYFNM1Ih8yvB","object":"chat.completion.chunk","created":1793277573,"model":"z-ai/glm-5.3","provider":"Relace","service_tier":null,"choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"tool_calls","native_finish_reason":"tool_calls"}],"usage":{"prompt_tokens":181,"completion_tokens":55,"total_tokens":236,"cost":0.0002538608,"is_byok":false,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":0,"audio_tokens":0,"video_tokens":0},"cost_details":{"upstream_inference_cost":0.0002538608,"upstream_inference_prompt_cost":0.0000127243,"upstream_inference_completions_cost":0.0002411365},"completion_tokens_details":{"reasoning_tokens":16,"image_tokens":0,"audio_tokens":0}}}
+
+data: [DONE]
+

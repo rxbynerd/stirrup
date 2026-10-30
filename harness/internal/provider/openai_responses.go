@@ -1943,8 +1943,8 @@ func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Resp
 		// early return below still leaves a clean slate. We do this
 		// via explicit assignment because we need the captured values
 		// inside the dispatch.
-		eventName := currentEvent
 		data := strings.Join(dataParts, "\n")
+		eventName := responsesRecordEvent(currentEvent, data)
 		currentEvent = ""
 		dataParts = dataParts[:0]
 		dataLen = 0
@@ -2176,6 +2176,22 @@ func responsesLoadedToolNames(raw json.RawMessage) ([]string, error) {
 		return nil, err
 	}
 	return names, nil
+}
+
+// responsesRecordEvent returns an SSE record's event name: its event
+// field, or the payload's type for a server such as OpenRouter that sends
+// data-only records.
+func responsesRecordEvent(event, data string) string {
+	if event != "" || data == "" {
+		return event
+	}
+	var payload struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(data), &payload) != nil {
+		return ""
+	}
+	return payload.Type
 }
 
 // dispatchEvent handles a single completed SSE record. It returns false to

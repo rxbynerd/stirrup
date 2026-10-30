@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -182,6 +183,47 @@ func TestOpenAIResponsesAdapter_ReasoningSummary_PartsAreParagraphs(t *testing.T
 			thinking, text := splitDeltas(events)
 			must.Equal(strings.Join(tc.want, "|"), strings.Join(thinking, "|"), "thinking_delta fragments")
 			must.Equal("done", text, "answer text")
+		})
+	}
+}
+
+// OpenRouter's Responses endpoint sends data-only SSE records; the event
+// name is read from each payload's type, so the captured stream's summary
+// arrives as thinking and its answer as text.
+func TestOpenAIResponsesAdapter_DataOnlyRecords_StreamSummaryAndText(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	script := newResponsesScript(t, streamFixtureSSE(t, "testdata/quirks/openai-responses/openai/gpt-5.6-luna/response.sse"))
+	adapter := script.adapter(nil)
+
+	params := effortParams("openai/gpt-5.6-luna", "", true)
+	params.ReasoningSummary = types.ReasoningSummaryAuto
+	ch, err := adapter.Stream(context.Background(), params)
+	must.NoError(err, "Stream")
+	events := drainStream(t, ch)
+
+	thinking, text := splitDeltas(events)
+	check.Equal("Paris", text, "answer text")
+	summary := strings.Join(thinking, "")
+	check.True(strings.HasPrefix(summary, "**Figuring out the anagram**\n\n"), "summary = %q", summary)
+	check.Contains(summary, `rearranges to form "PARIS,"`)
+	check.Equal("end_turn", messageComplete(t, events).StopReason)
+}
+
+func TestResponsesRecordEvent_FallsBackToPayloadType(t *testing.T) {
+	cases := []struct {
+		name, event, data, want string
+	}{
+		{"event field wins", "response.created", `{"type":"response.completed"}`, "response.created"},
+		{"data-only record", "", `{"type":"response.output_text.delta","delta":"x"}`, "response.output_text.delta"},
+		{"done sentinel", "", "[DONE]", ""},
+		{"payload without type", "", `{"delta":"x"}`, ""},
+		{"empty record", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			check := assert.New(t)
+			check.Equal(tc.want, responsesRecordEvent(tc.event, tc.data))
 		})
 	}
 }

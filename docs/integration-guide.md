@@ -672,8 +672,15 @@ re-provisioning the sandbox.
     on: the next follow-up starts from its prompt alone and the harness
     sends a `warning` saying so. The system prompt, dynamic context and
     repository guidance are rebuilt for every run and are not part of
-    the carried history. Each run re-sends the carried history, so its
-    input tokens count against that run's `maxTokenBudget`, and the
+    the carried history. Anthropic rejects a signed thinking block
+    replayed under a system prompt or tool list other than the one the
+    block was produced under. The rebuilt system prompt often differs,
+    because it lists the workspace's files and git status. A follow-up
+    whose system prompt or tool list differs from those the carried
+    history was last sent with therefore drops the carried thinking
+    blocks; the follow-up's own thinking is replayed as usual. Each run re-sends the
+    carried history, so its input tokens count against that run's
+    `maxTokenBudget`, and the
     configured context strategy compacts a long session the same way it
     compacts a long run. The Rule-of-Two latch spans the whole session
     in both modes: once tripped, it stays tripped for every later run.

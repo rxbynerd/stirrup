@@ -25,6 +25,8 @@ type carriedHistory struct {
 	toolCalls int
 	// cacheKey is the provider cache key the history was produced under.
 	cacheKey string
+	// binding is the thinking binding the history was last sent under.
+	binding *thinkingBinding
 }
 
 func (c *carriedHistory) rewrote() bool {
@@ -51,6 +53,7 @@ func (l *AgenticLoop) retainHistory(config *types.RunConfig, outcome string, mes
 		rewritten:  l.historyRewritten,
 		toolCalls:  countToolUses(committed),
 		cacheKey:   l.cacheKey,
+		binding:    l.requestBinding,
 	}
 }
 
@@ -61,12 +64,14 @@ func (c *carriedHistory) continuesHistory() bool {
 }
 
 // beginRunState sets the per-run state a run's inner loops share: the
-// tool-call count escalation starts from and the provider cache key. A run
-// continuing carried history inherits both; any other run counts zero and
-// keys on its own run ID.
+// tool-call count escalation starts from, the provider cache key, and the
+// thinking binding the history was last sent under. A run continuing
+// carried history inherits all three; any other run counts zero, keys on
+// its own run ID, and has sent nothing.
 func (l *AgenticLoop) beginRunState(config *types.RunConfig, carried *carriedHistory) {
 	l.carriedToolCalls = 0
 	l.cacheKey = providerCacheKey(config.RunID)
+	l.requestBinding = nil
 	if !carried.continuesHistory() {
 		return
 	}
@@ -74,6 +79,7 @@ func (l *AgenticLoop) beginRunState(config *types.RunConfig, carried *carriedHis
 	if carried.cacheKey != "" {
 		l.cacheKey = carried.cacheKey
 	}
+	l.requestBinding = carried.binding
 }
 
 func countToolUses(messages []types.Message) int {
