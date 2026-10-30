@@ -823,8 +823,11 @@ it terminates with `stop_reason: "stalled"`. The loop terminates with
 
 ## Heartbeat and health probes
 
-The agentic loop emits `heartbeat` events on the transport every 30
-seconds during execution. For K8s jobs, file-based probes
+The agentic loop emits `heartbeat` events on the transport during
+execution, every 30 seconds unless `RunConfig.heartbeatSeconds` sets
+another interval (5-600 s). The factory resolves the interval into
+`AgenticLoop.HeartbeatInterval`, so the loop never reads the config for
+it. For K8s jobs, file-based probes
 (`harness/internal/health/probe.go`) distinguish liveness from
 readiness: `/tmp/healthy` is written after the ready event and
 removed only on shutdown (liveness — alive through the whole run),
@@ -875,6 +878,7 @@ Full reference: [`eval.md`](eval.md).
 | `MaxTurns` | 20 | 100 |
 | `Timeout` (wall-clock) | 600 s | 3600 s |
 | `FollowUpGrace` | 0 s | 3600 s |
+| `HeartbeatSeconds` | 30 s | 600 s (minimum 5 s) |
 | `MaxTokenBudget` | unset | 50 M |
 | `MaxCostBudget` (validated, not enforced) | unset | $100 |
 | File read/write size | 10 MB | — |

@@ -320,6 +320,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 	transportAddr, _ := f.GetString("transport-addr")
 	followUpGrace, _ := f.GetInt("followup-grace")
 	followUpHistory, _ := f.GetString("followup-history")
+	heartbeatSeconds, _ := f.GetInt("heartbeat-seconds")
 	logLevel, _ := f.GetString("log-level")
 	executorType, _ := f.GetString("executor")
 	editStrategyType, _ := f.GetString("edit-strategy")
@@ -461,6 +462,7 @@ func buildFlagOnlyRunConfig(cmd *cobra.Command, args []string) (*types.RunConfig
 		TransportAddr:                transportAddr,
 		FollowUpGrace:                followUpGrace,
 		FollowUpHistory:              followUpHistory,
+		HeartbeatSeconds:             heartbeatSeconds,
 		Temperature:                  temperature,
 		ReasoningEffort:              reasoningEffort,
 		ReasoningSummary:             reasoningSummary,

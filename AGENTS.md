@@ -86,6 +86,7 @@ Requires `ANTHROPIC_API_KEY` environment variable for the default Anthropic prov
 | `--transport` | `stdio` | Transport type: stdio, grpc |
 | `--transport-addr` | (none) | gRPC target address, required when transport is grpc |
 | `--followup-grace` | `0` | Seconds to keep gRPC open for follow-ups (env: `STIRRUP_FOLLOWUP_GRACE`) |
+| `--heartbeat-seconds` | `0` (→ 30) | Seconds between `heartbeat` events; 5-600 when set |
 | `--followup-history` | (unset → `reset`) | History a follow-up starts from: `reset` (prompt alone) or `continue` (previous run's committed history) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--config` | (none) | JSON `RunConfig` path. Use `-` for stdin; auto-detected on a non-TTY pipe. |
@@ -185,7 +186,7 @@ The `guard` package (`guard/`) provides an LLM-based safety classifier called at
 - **SecretStore**: resolves `secret://` references from env vars, files, and AWS SSM. API keys are not stored in `RunConfig`.
 - **LogScrubber**: regex-based redaction of 19 secret patterns in log/trace output.
 - **Input validation**: JSON Schema Draft 2020-12 validation via `santhosh-tekuri/jsonschema`, with external schema loading disabled and prototype pollution keys stripped.
-- **RunConfig validation**: hard security invariants for read-only modes, bounded max turns/timeout, `FollowUpGrace <= 3600s`, `MaxCostBudget <= $100` (a config-time bound only — the budget itself is never enforced), and `MaxTokenBudget <= 50M`.
+- **RunConfig validation**: hard security invariants for read-only modes, bounded max turns/timeout, `FollowUpGrace <= 3600s`, `HeartbeatSeconds` 0 or 5-600, `MaxCostBudget <= $100` (a config-time bound only — the budget itself is never enforced), and `MaxTokenBudget <= 50M`.
 - **HTTP client timeouts**: provider adapters and MCP/web fetch clients use explicit HTTP clients with timeouts.
 - **Environment filtering**: command execution allowlists safe env vars and blocks API keys/cloud credentials.
 - **Untrusted context delimiters**: dynamic context wrapped in `<untrusted_context>` tags.

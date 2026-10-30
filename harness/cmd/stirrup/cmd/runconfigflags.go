@@ -57,6 +57,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("transport", "stdio", "Transport type: stdio, grpc")
 	f.String("transport-addr", "", "gRPC target address (required when transport is grpc)")
 	f.Int("followup-grace", 0, "Seconds to keep gRPC transport open for follow-up requests (0 = disabled; env: STIRRUP_FOLLOWUP_GRACE)")
+	f.Int("heartbeat-seconds", 0, "Seconds between heartbeat events while a run is in progress. 0 selects the default (30); otherwise 5-600. Mirrors heartbeatSeconds.")
 	f.String("followup-history", "", "History a follow-up run starts from: \"reset\" (default) starts it from its prompt alone; \"continue\" starts it from the previous run's committed history with the prompt appended")
 	f.Float64("temperature", 0, "Sampling temperature forwarded to the provider on every turn. Range 0.0-2.0 (union of provider ranges). Unset leaves the harness default (0.1); explicit 0 sets greedy decoding.")
 	f.String("reasoning-effort", "", "Reasoning depth requested from the model: \"minimal\", \"low\", \"medium\", \"high\", \"xhigh\", or \"max\". Empty leaves the model on its provider default. Provider-neutral: adapters project it onto the model's native control (Gemini thinkingLevel, Anthropic output_config.effort, OpenAI reasoning effort); models with no probed control ignore it. Per-model acceptance may be narrower — e.g. Gemini 3.7 Flash rejects \"minimal\" and no Claude model accepts it.")

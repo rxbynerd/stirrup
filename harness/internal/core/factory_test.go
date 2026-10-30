@@ -1777,6 +1777,51 @@ func TestBuildLoopWithTransport_HooksWiredAsExecRunner(t *testing.T) {
 	must.Same(config.Hooks, execRunner.Hooks, "ExecRunner.Hooks must be the config's own HooksConfig instance")
 }
 
+func TestBuildLoopWithTransport_HeartbeatIntervalFromConfig(t *testing.T) {
+	for name, tc := range map[string]struct {
+		seconds int
+		want    time.Duration
+	}{
+		"unset selects the default": {0, 30 * time.Second},
+		"configured value":          {45, 45 * time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			t.Setenv("TEST_OPENAI_KEY", "test-key")
+			server := newOpenAIServer(t, nil, nil, nil)
+			defer server.Close()
+
+			timeout := 30
+			config := &types.RunConfig{
+				RunID:            "factory-heartbeat-test",
+				Mode:             "execution",
+				Prompt:           "hello",
+				Provider:         types.ProviderConfig{Type: "openai-compatible", APIKeyRef: "secret://TEST_OPENAI_KEY", BaseURL: server.URL},
+				ModelRouter:      types.ModelRouterConfig{Type: "static", Provider: "openai-compatible", Model: "test"},
+				PromptBuilder:    types.PromptBuilderConfig{Type: "default"},
+				ContextStrategy:  types.ContextStrategyConfig{Type: "sliding-window"},
+				Executor:         types.ExecutorConfig{Type: "local", Workspace: t.TempDir()},
+				EditStrategy:     types.EditStrategyConfig{Type: "multi"},
+				Verifier:         types.VerifierConfig{Type: "none"},
+				PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+				GitStrategy:      types.GitStrategyConfig{Type: "none"},
+				TraceEmitter:     types.TraceEmitterConfig{Type: "jsonl"},
+				RuleOfTwo:        disableRuleOfTwo(),
+				MaxTurns:         2,
+				Timeout:          &timeout,
+				HeartbeatSeconds: tc.seconds,
+			}
+
+			tp := transport.NewStdioTransport(&bytes.Buffer{}, &bytes.Buffer{})
+			loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+			must.NoError(err)
+			defer func() { _ = loop.Close() }()
+
+			must.Equal(tc.want, loop.HeartbeatInterval)
+		})
+	}
+}
+
 // An empty edit strategy type must resolve to "multi" across the whole factory
 // path, not only in ValidateRunConfig or buildEditStrategy alone. The
 // execution-mode code scanner wraps the strategy, so the test unwraps it.

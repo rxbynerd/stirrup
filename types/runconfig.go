@@ -26,6 +26,15 @@ const (
 	// maxFollowUpGrace is the maximum allowed follow-up grace period in seconds.
 	maxFollowUpGrace = 3600
 
+	// DefaultHeartbeatSeconds is the heartbeat interval used when
+	// RunConfig.HeartbeatSeconds is zero.
+	DefaultHeartbeatSeconds = 30
+
+	// minHeartbeatSeconds and maxHeartbeatSeconds bound a non-zero
+	// RunConfig.HeartbeatSeconds.
+	minHeartbeatSeconds = 5
+	maxHeartbeatSeconds = 600
+
 	// maxCostBudget is the maximum accepted cost budget in dollars. The
 	// budget itself is never enforced; see RunConfig.MaxCostBudget.
 	maxCostBudget = 100.0
@@ -171,6 +180,12 @@ type RunConfig struct {
 	// that starts the next run. The window restarts after every run. A
 	// value of zero or nil disables the grace period (default behaviour).
 	FollowUpGrace *int `json:"followUpGrace,omitempty"`
+
+	// HeartbeatSeconds is the interval in seconds between heartbeat events
+	// while a run is in progress. Zero selects DefaultHeartbeatSeconds;
+	// any other value is bounded to [minHeartbeatSeconds,
+	// maxHeartbeatSeconds] by ValidateRunConfig.
+	HeartbeatSeconds int `json:"heartbeatSeconds,omitempty"`
 
 	// FollowUpHistory selects the history a follow-up run starts from:
 	// "reset" (the default, also selected by "") starts it from its prompt
@@ -373,6 +388,16 @@ const (
 // previous run's committed history.
 func (rc *RunConfig) ContinuesFollowUpHistory() bool {
 	return rc != nil && rc.FollowUpHistory == FollowUpHistoryContinue
+}
+
+// EffectiveHeartbeatSeconds resolves the heartbeat interval in seconds:
+// DefaultHeartbeatSeconds when HeartbeatSeconds is unset, otherwise the
+// configured value (already bounded by ValidateRunConfig).
+func (rc *RunConfig) EffectiveHeartbeatSeconds() int {
+	if rc == nil || rc.HeartbeatSeconds == 0 {
+		return DefaultHeartbeatSeconds
+	}
+	return rc.HeartbeatSeconds
 }
 
 // DefaultModel is the model the harness falls back to when neither the
@@ -2811,6 +2836,13 @@ func ValidateRunConfig(config *RunConfig) error {
 	// followUpGrace must be bounded
 	if config.FollowUpGrace != nil && *config.FollowUpGrace > maxFollowUpGrace {
 		errs = append(errs, fmt.Sprintf("followUpGrace must be <= %d seconds", maxFollowUpGrace))
+	}
+
+	if config.HeartbeatSeconds != 0 &&
+		(config.HeartbeatSeconds < minHeartbeatSeconds || config.HeartbeatSeconds > maxHeartbeatSeconds) {
+		errs = append(errs, fmt.Sprintf(
+			"heartbeatSeconds must be 0 (default %d) or between %d and %d",
+			DefaultHeartbeatSeconds, minHeartbeatSeconds, maxHeartbeatSeconds))
 	}
 
 	switch config.FollowUpHistory {

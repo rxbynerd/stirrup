@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -125,4 +126,47 @@ func TestStartHeartbeat_CancelBeforeFirstTick(t *testing.T) {
 
 	must.LessOrEqual(rec.heartbeatCount(), 1,
 		"expected at most 1 heartbeat when the context is cancelled before the first tick")
+}
+
+func TestHeartbeatInterval_ZeroSelectsDefault(t *testing.T) {
+	check := assert.New(t)
+	check.Equal(time.Duration(types.DefaultHeartbeatSeconds)*time.Second, (&AgenticLoop{}).heartbeatInterval())
+}
+
+func TestHeartbeatInterval_ConfiguredValueIsKept(t *testing.T) {
+	check := assert.New(t)
+	check.Equal(5*time.Second, (&AgenticLoop{HeartbeatInterval: 5 * time.Second}).heartbeatInterval())
+}
+
+// delayedProvider holds each Stream call open for delay before answering,
+// keeping the run alive long enough for heartbeats to fire.
+type delayedProvider struct {
+	mockProvider
+	delay time.Duration
+}
+
+func (p *delayedProvider) Stream(ctx context.Context, params types.StreamParams) (<-chan types.StreamEvent, error) {
+	time.Sleep(p.delay)
+	return p.mockProvider.Stream(ctx, params)
+}
+
+func TestRun_EmitsHeartbeatsAtTheConfiguredInterval(t *testing.T) {
+	must := require.New(t)
+	prov := &delayedProvider{
+		mockProvider: mockProvider{events: []types.StreamEvent{
+			{Type: "text_delta", Text: "done"},
+			{Type: "message_complete", StopReason: "end_turn"},
+		}},
+		delay: 200 * time.Millisecond,
+	}
+	loop := buildTestLoop(&prov.mockProvider)
+	loop.Provider = prov
+	rec := &recordingTransport{}
+	loop.Transport = rec
+	loop.HeartbeatInterval = 20 * time.Millisecond
+
+	_, err := loop.Run(context.Background(), buildTestConfig())
+	must.NoError(err)
+
+	must.GreaterOrEqual(rec.heartbeatCount(), 3)
 }

@@ -8516,3 +8516,37 @@ func TestValidateRunConfig_ReplayProvider_AllowedInProvidersMap(t *testing.T) {
 	c.ModelRouter = ModelRouterConfig{Type: "static", Provider: "recorded", Model: "replay"}
 	must.NoError(ValidateRunConfig(c))
 }
+
+func TestValidateRunConfig_HeartbeatSecondsBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		seconds int
+		wantErr bool
+	}{
+		{"unset selects the default", 0, false},
+		{"lower bound", minHeartbeatSeconds, false},
+		{"upper bound", maxHeartbeatSeconds, false},
+		{"below lower bound", minHeartbeatSeconds - 1, true},
+		{"above upper bound", maxHeartbeatSeconds + 1, true},
+		{"negative", -1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.HeartbeatSeconds = tc.seconds
+			err := ValidateRunConfig(c)
+			if tc.wantErr {
+				must.ErrorContains(err, "heartbeatSeconds must be 0 (default 30) or between 5 and 600")
+				return
+			}
+			must.NoError(err)
+		})
+	}
+}
+
+func TestRunConfig_EffectiveHeartbeatSeconds_DefaultsWhenUnset(t *testing.T) {
+	check := assert.New(t)
+	check.Equal(DefaultHeartbeatSeconds, (&RunConfig{}).EffectiveHeartbeatSeconds(), "unset")
+	check.Equal(45, (&RunConfig{HeartbeatSeconds: 45}).EffectiveHeartbeatSeconds(), "set")
+	check.Equal(DefaultHeartbeatSeconds, (*RunConfig)(nil).EffectiveHeartbeatSeconds(), "nil receiver")
+}

@@ -197,8 +197,9 @@ service HarnessService {
 //                   ControlEvent's request_id so the sender can retry.
 //
 //   "heartbeat"
-//     - (no additional fields) Sent every 30 seconds during execution to
-//       signal liveness. The control plane should treat absence of heartbeats
+//     - (no additional fields) Sent during execution to signal liveness,
+//       every 30 seconds unless RunConfig.heartbeat_seconds sets another
+//       interval. The control plane should treat absence of heartbeats
 //       as a potential hang.
 //
 //   "batch_submission"
@@ -753,6 +754,10 @@ message RunConfig {
   // with the follow-up prompt appended to it. The primary run, and a
   // session without a follow-up window, are unaffected.
   string follow_up_history = 60;
+
+  // Optional. Seconds between "heartbeat" events while a run is in
+  // progress. 0 or unset selects the default of 30. Otherwise range: 5-600.
+  int32 heartbeat_seconds = 61;
 
   // Optional. Structured log verbosity for this run.
   // Valid values: "debug", "info", "warn", "error". Default: "info".

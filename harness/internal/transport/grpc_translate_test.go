@@ -846,6 +846,15 @@ func TestRunConfigFromProto_FollowUpHistoryCarried(t *testing.T) {
 	check.Empty(runConfigFromProto(&pb.RunConfig{}).FollowUpHistory, "absent value")
 }
 
+// TestRunConfigFromProto_HeartbeatSecondsCarried pins heartbeat_seconds
+// across the wire boundary: without the copy a control plane's cadence
+// would silently fall back to the 30 s default.
+func TestRunConfigFromProto_HeartbeatSecondsCarried(t *testing.T) {
+	check := assert.New(t)
+	check.Equal(15, runConfigFromProto(&pb.RunConfig{HeartbeatSeconds: 15}).HeartbeatSeconds, "set value")
+	check.Zero(runConfigFromProto(&pb.RunConfig{}).HeartbeatSeconds, "absent value")
+}
+
 // TestProviderConfigFromProto_GeminiFieldsCarried pins that the four
 // Gemini provider fields survive the proto boundary. Before this test
 // existed they were silently dropped by providerConfigFromProto, which

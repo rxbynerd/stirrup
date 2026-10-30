@@ -426,7 +426,8 @@ The most security-relevant invariants:
   exclude `write_file`, `run_command`, and `edit_file` from
   `tools.builtIn`, and must not use `permissionPolicy.type=allow-all`.
 - **Bounded budgets:** `maxTurns` ≤ 100, `timeout` ≤ 3600 s,
-  `followUpGrace` ≤ 3600 s, `maxCostBudget` ≤ $100,
+  `followUpGrace` ≤ 3600 s, `heartbeatSeconds` 0 or 5-600 s,
+  `maxCostBudget` ≤ $100,
   `maxTokenBudget` ≤ 50 M. These are config-time bounds; of the two
   budgets only `maxTokenBudget` is enforced at runtime
   (`maxCostBudget` is validated and warned about, never enforced — see
@@ -862,7 +863,7 @@ everything else in this document, and worth being explicit about:
   failure semantics.
 
 **Heartbeat caveat:** the agentic loop's `heartbeat` transport event
-(every 30 s, see [`architecture.md`
+(every 30 s by default, see [`architecture.md`
 "Heartbeat and health probes"](architecture.md#heartbeat-and-health-probes))
 is emitted on `runCtx` — the run's own wall-clock-bounded context — and
 stops the instant that context is done, at the run's `timeout` deadline

@@ -29,7 +29,7 @@ sequenceDiagram
     H->>CP: HarnessEvent{type:"run_started", id: run ID, trace_reference?}
     H-->>CP: user_message (the prompt)
     loop For each turn
-        H->>CP: heartbeat (every 30s)
+        H->>CP: heartbeat (every 30s by default)
         H-->>CP: turn_started
         H-->>CP: text_delta · thinking_delta · tool_call · tool_result
         H-->>CP: turn_committed or turn_abandoned · user_message
@@ -170,7 +170,7 @@ IMDS, GitHub Actions OIDC). See
    `tool_call`, `tool_result`, `turn_committed` or `turn_abandoned`, and
    `user_message` (see
    [Watching a run live](integration-guide.md#watching-a-run-live)) —
-   plus `heartbeat` (every 30 s) and, depending on the permission
+   plus `heartbeat` (every 30 s unless `heartbeatSeconds` is set) and, depending on the permission
    policy, `permission_request` events. Tools declared in
    `tools.controlPlane` emit `tool_result_request` and block on
    `tool_result_response`; the request's `trace_context`, when
