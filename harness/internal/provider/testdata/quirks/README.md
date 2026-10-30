@@ -16,7 +16,7 @@ testdata/quirks/<provider-type>/<model>/
 ```
 
 `<provider-type>` is the `RunConfig` provider type (`anthropic`,
-`openai-compatible`, `openai-responses`, `gemini`); `<model>` is the model the
+`bedrock`, `openai-compatible`, `openai-responses`, `gemini`); `<model>` is the model the
 fixture was captured for — a gateway-prefixed id such as
 `deepseek/deepseek-v4-flash` maps onto a nested directory verbatim. Not every
 provider/model carries all three files — add only what the test asserts.
@@ -49,6 +49,17 @@ fixture is acceptable for a shape the harness fully controls.
 3. Add a test that rebuilds the same request and calls
    `quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks",
    <provider>, <model>, "request.json"), body)`.
+
+### Bedrock
+
+The Bedrock adapter builds an SDK input struct, not a JSON body, so its
+fixtures hold the AWS SDK's own serialisation instead of a builder's
+output. `captureBedrockConverseRequest` in `bedrock_contract_test.go`
+sends the request through the real `bedrockruntime` client to a local
+server and returns the body it received. To add or refresh one, call
+that helper with the fixture's params, indent the returned body, and
+write it under `testdata/quirks/bedrock/<model id>/request.json` with a
+`# synthetic:` line.
 
 ## Refreshing a fixture after an intentional wire change
 
