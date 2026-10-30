@@ -34,7 +34,7 @@ var (
 // responsesToolSearchQuirks resolves quirks with hosted tool search on or off and
 // strict mode off, so a test pins one concern at a time.
 func responsesToolSearchQuirks(supported bool) quirks.ProviderQuirks {
-	return quirks.NewRegistry([]quirks.Rule{{
+	return openAIResponsesQuirksIn(quirks.NewRegistry([]quirks.Rule{{
 		ProviderType: "openai-responses",
 		ModelMatch:   responsesToolSearchModel,
 		Description:  "test: hosted tool search",
@@ -42,7 +42,7 @@ func responsesToolSearchQuirks(supported bool) quirks.ProviderQuirks {
 		Apply: func(q *quirks.ProviderQuirks) {
 			q.ToolSearch = quirks.ToolSearchCapability{Supported: supported, Variant: "hosted"}
 		},
-	}}).Resolve(quirks.Target{ProviderType: "openai-responses", Model: responsesToolSearchModel})
+	}}), responsesToolSearchModel)
 }
 
 func responsesToolSearchParams() types.StreamParams {

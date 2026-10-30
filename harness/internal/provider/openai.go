@@ -160,6 +160,12 @@ func NewOpenAICompatibleAdapter(bearer credential.BearerTokenFunc, baseURL strin
 	}
 }
 
+// quirksTarget is the registry lookup key for a request to model through
+// this adapter.
+func (o *OpenAICompatibleAdapter) quirksTarget(model string) quirks.Target {
+	return quirks.Target{ProviderType: "openai-compatible", Endpoint: o.EndpointProfile, Model: model}
+}
+
 // WireTap wraps the adapter's HTTP transport so every request/response
 // is dumped UNREDACTED to out. Only the factory calls it, and only on a
 // debug build with --trace-wire — see docs/security.md#debug-builds.
@@ -1108,7 +1114,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	if registry == nil {
 		registry = quirks.DefaultRegistry()
 	}
-	q, appliedRules := registry.ResolveWithRules(quirks.Target{ProviderType: "openai-compatible", Endpoint: o.EndpointProfile, Model: params.Model})
+	q, appliedRules := registry.ResolveWithRules(o.quirksTarget(params.Model))
 
 	logger := o.Logger
 	if logger == nil {

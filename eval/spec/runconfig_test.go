@@ -1179,3 +1179,87 @@ func TestAnchorRunConfigPaths_ResolvesRelativeReplayFiles(t *testing.T) {
 	must.Empty(cfg.Providers["live"].ReplayFile)
 	AnchorRunConfigPaths(nil, base)
 }
+
+func TestLoadSuiteHCL_ProviderEndpointAndCompatProfile_ReachProviderConfig(t *testing.T) {
+	must := require.New(t)
+	src := `
+suite "s" {
+  run_config {
+    provider {
+      type             = "openai-compatible"
+      base_url         = "https://relay.example/v1"
+      endpoint_profile = "azure-openai"
+      compat_profile   = "zai-glm"
+    }
+  }
+
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+
+    run_config_overrides {
+      provider {
+        type             = "openai-responses"
+        endpoint_profile = "openai"
+      }
+    }
+
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "provider-profiles.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	must.NoError(err)
+
+	t.Run("suite baseline carries both profiles", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		must.NotNil(got.RunConfig)
+		check.Equal(types.EndpointProfileAzureOpenAI, got.RunConfig.Provider.EndpointProfile)
+		check.Equal("zai-glm", got.RunConfig.Provider.CompatProfile)
+	})
+
+	t.Run("task override carries the endpoint profile", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		must.Len(got.Tasks, 1)
+		ov := got.Tasks[0].RunConfigOverrides
+		must.NotNil(ov)
+		must.NotNil(ov.Provider)
+		check.Equal(types.EndpointProfileOpenAI, ov.Provider.EndpointProfile)
+		check.Empty(ov.Provider.CompatProfile)
+	})
+}
+
+func TestLoadSuiteHCL_ProviderProfilesAreNotValidatedByParser(t *testing.T) {
+	must := require.New(t)
+	src := `
+suite "s" {
+  run_config {
+    provider {
+      type             = "openai-compatible"
+      endpoint_profile = "not-a-profile"
+      compat_profile   = "not-a-compat"
+    }
+  }
+
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "provider-profiles-unvalidated.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	must.NoError(err)
+	must.Equal("not-a-profile", got.RunConfig.Provider.EndpointProfile)
+	must.Equal("not-a-compat", got.RunConfig.Provider.CompatProfile)
+}

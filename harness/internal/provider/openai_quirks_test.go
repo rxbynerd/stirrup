@@ -48,7 +48,7 @@ func quirksCanonicalParams(model string) types.StreamParams {
 func TestOpenAIQuirks_O1Mini_OmitsSamplingParams(t *testing.T) {
 	must := require.New(t)
 	params := quirksCanonicalParams("o1-mini")
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
+	q := openAICompatibleQuirks(params.Model)
 	must.True(q.BehaviourFlags.OpenAI.OmitSamplingParams, "o1-mini: rule not firing")
 	req, err := buildOpenAIRequest(params, true, q, nil)
 	must.NoError(err, "build")
@@ -63,7 +63,7 @@ func TestOpenAIQuirks_O1Mini_OmitsSamplingParams(t *testing.T) {
 func TestOpenAIQuirks_GPT5Nano_OmitsSamplingParams(t *testing.T) {
 	must := require.New(t)
 	params := quirksCanonicalParams("gpt-5-nano")
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
+	q := openAICompatibleQuirks(params.Model)
 	must.True(q.BehaviourFlags.OpenAI.OmitSamplingParams, "gpt-5-nano: rule not firing")
 	req, err := buildOpenAIRequest(params, true, q, nil)
 	must.NoError(err, "build")
@@ -78,7 +78,7 @@ func TestOpenAIQuirks_GPT5Nano_OmitsSamplingParams(t *testing.T) {
 func TestOpenAIQuirks_GPT5ChatLatest_KeepsSamplingParams(t *testing.T) {
 	must := require.New(t)
 	params := quirksCanonicalParams("gpt-5-chat-latest")
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
+	q := openAICompatibleQuirks(params.Model)
 	must.False(q.BehaviourFlags.OpenAI.OmitSamplingParams,
 		"gpt-5-chat-latest: carve-out should clear OmitSamplingParams (specificity order broken)")
 	req, err := buildOpenAIRequest(params, true, q, nil)
@@ -95,7 +95,7 @@ func TestOpenAIQuirks_GPT5ChatLatest_KeepsSamplingParams(t *testing.T) {
 func TestOpenAIQuirks_GPT4o_NoQuirksApply(t *testing.T) {
 	must := require.New(t)
 	params := quirksCanonicalParams("gpt-4o")
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
+	q := openAICompatibleQuirks(params.Model)
 	must.False(q.BehaviourFlags.OpenAI.OmitSamplingParams, "gpt-4o: rule misfire")
 	must.Equal(quirks.TokenFieldMaxCompletionTokens, q.BehaviourFlags.OpenAI.TokenField, "gpt-4o token field")
 	req, err := buildOpenAIRequest(params, true, q, nil)
@@ -141,7 +141,7 @@ func TestOpenAIQuirks_DeepSeekV4Flash_RequestShape(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
 	params := deepseekReplayParams("deepseek-v4-flash")
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
+	q := openAICompatibleQuirks(params.Model)
 	must.True(q.BehaviourFlags.OpenAI.OmitSamplingParams, "deepseek-v4-flash: rule not firing")
 	must.Equal(quirks.TokenFieldMaxTokens, q.BehaviourFlags.OpenAI.TokenField, "deepseek-v4-flash token field")
 	req, err := buildOpenAIRequest(params, true, q, nil)
@@ -262,7 +262,7 @@ func TestOpenAIQuirks_Qwen36_RequestShape(t *testing.T) {
 	for _, model := range []string{"qwen/qwen3.6-27b", "qwen3.6-35b-a3b-mlx"} {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
-			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: model})
+			q := openAICompatibleQuirks(model)
 			must.Empty(q.ReplayFields, "expected no ReplayFields")
 			must.False(q.BehaviourFlags.OpenAI.OmitSamplingParams,
 				"Qwen recommends sampling params; OmitSamplingParams must stay false")
@@ -287,7 +287,7 @@ func TestOpenAIQuirks_Qwen36_RequestShape(t *testing.T) {
 func TestOpenAIQuirks_NoReplayRule_OmitsReplayState(t *testing.T) {
 	must := require.New(t)
 	params := deepseekReplayParams("gpt-4o")
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
+	q := openAICompatibleQuirks(params.Model)
 	must.Empty(q.ReplayFields, "gpt-4o: expected no ReplayFields")
 	req, err := buildOpenAIRequest(params, true, q, nil)
 	must.NoError(err, "build")
@@ -316,7 +316,7 @@ func TestNoRegressionMaxCompletionTokensDefault(t *testing.T) {
 		t.Run(model, func(t *testing.T) {
 			must := require.New(t)
 			params := quirksCanonicalParams(model)
-			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: model})
+			q := openAICompatibleQuirks(model)
 			req, err := buildOpenAIRequest(params, true, q, nil)
 			must.NoError(err, "build")
 			body, err := json.Marshal(req)

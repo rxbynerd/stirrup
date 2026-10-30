@@ -49,7 +49,7 @@ func TestOpenAIChat_NonStrictModel_DisablesParallelAndFoldsExamples(t *testing.T
 		MaxTokens:         100,
 		ParallelToolCalls: &disable,
 	}
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
+	q := openAICompatibleQuirks(params.Model)
 	req, err := buildOpenAIRequest(params, true, q, nil)
 	must.NoError(err)
 	body, err := json.Marshal(req)
@@ -73,7 +73,7 @@ func TestOpenAIChat_StrictModel_OmitsExamplesAndSetsStrict(t *testing.T) {
 		Tools:     []types.ToolDefinition{demoToolWithExample()},
 		MaxTokens: 100,
 	}
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
+	q := openAICompatibleQuirks(params.Model)
 	req, err := buildOpenAIRequest(params, true, q, newStrictSchemaCache())
 	must.NoError(err)
 	body, err := json.Marshal(req)
@@ -99,7 +99,7 @@ func TestOpenAIChat_UnsetParallel_OmitsField(t *testing.T) {
 		Tools:     []types.ToolDefinition{demoToolWithExample()},
 		MaxTokens: 100,
 	}
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
+	q := openAICompatibleQuirks(params.Model)
 	req, err := buildOpenAIRequest(params, true, q, nil)
 	must.NoError(err)
 	body, err := json.Marshal(req)
@@ -119,7 +119,7 @@ func TestResponses_EnabledParallel_EmitsTrueAndFoldsExamples(t *testing.T) {
 		MaxTokens:         100,
 		ParallelToolCalls: &enable,
 	}
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: params.Model})
+	q := openAIResponsesQuirks(params.Model)
 	req, err := buildResponsesRequest(params, q, nil, "")
 	must.NoError(err)
 	body, err := json.Marshal(req)

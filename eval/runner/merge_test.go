@@ -1033,3 +1033,40 @@ func TestLoadRunConfigFile_AnchorsReplayFile(t *testing.T) {
 	must.Equal(filepath.Join(dir, "recordings/run.jsonl"), cfg.Provider.ReplayFile)
 	must.Equal("/abs/run.jsonl", cfg.Providers["abs"].ReplayFile)
 }
+
+func TestDryRun_ProviderEndpointProfile_ValidatesDeclaredValue(t *testing.T) {
+	tests := []struct {
+		name        string
+		profile     string
+		wantOutcome string
+		wantError   string
+	}{
+		{name: "declared profile validates", profile: types.EndpointProfileAzureOpenAI, wantOutcome: "pass"},
+		{name: "unknown profile is rejected", profile: "not-a-profile", wantOutcome: "error", wantError: "not a recognised endpoint profile"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			suite := types.EvalSuite{
+				ID:    "endpoint-profile",
+				Tasks: []types.EvalTask{{ID: "t1", Prompt: "p", Judge: validJudge}},
+				RunConfig: &types.RunConfig{
+					Mode: "execution",
+					Provider: types.ProviderConfig{
+						Type:            "openai-compatible",
+						BaseURL:         "https://relay.example/v1",
+						APIKeyRef:       "secret://OPENAI_API_KEY",
+						EndpointProfile: tc.profile,
+					},
+					MaxTurns:         10,
+					PermissionPolicy: types.PermissionPolicyConfig{Type: "allow-all"},
+				},
+			}
+			result, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true})
+			must.NoError(err)
+			must.Len(result.Tasks, 1)
+			must.Equal(tc.wantOutcome, result.Tasks[0].Outcome, "task error: %q", result.Tasks[0].Error)
+			must.Contains(result.Tasks[0].Error, tc.wantError)
+		})
+	}
+}

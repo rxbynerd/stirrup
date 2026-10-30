@@ -234,7 +234,7 @@ func TestGeminiStructuredToolResult_TextOnlyWhenCapabilityOff(t *testing.T) {
 // serialise identically and the payload must never leak.
 func TestOpenAIStructuredToolResult_AlwaysText(t *testing.T) {
 	must := require.New(t)
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "gpt-4o"})
+	q := openAICompatibleQuirks("gpt-4o")
 	must.False(q.StructuredToolResults.Supported, "precondition: openai must not resolve a structured capability")
 
 	withStructured, err := buildOpenAIRequest(types.StreamParams{
@@ -264,7 +264,7 @@ func TestOpenAIStructuredToolResult_AlwaysText(t *testing.T) {
 // stays text-only and the payload never reaches the wire.
 func TestOpenAIResponsesStructuredToolResult_AlwaysText(t *testing.T) {
 	must := require.New(t)
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "gpt-4o"})
+	q := openAICompatibleQuirks("gpt-4o")
 
 	withStructured, err := buildResponsesRequest(types.StreamParams{
 		Model:    "gpt-4o",

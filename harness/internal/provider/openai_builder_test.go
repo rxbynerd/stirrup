@@ -161,7 +161,7 @@ func TestBuildOpenAIRequest_MatchesStream(t *testing.T) {
 			}
 			captured := <-capturedCh
 
-			q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: tc.params.Model})
+			q := adapter.Registry.Resolve(adapter.quirksTarget(tc.params.Model))
 			must.Equal(string(captured), buildOpenAIBody(t, tc.params, q))
 		})
 	}
@@ -186,7 +186,7 @@ func TestBuildOpenAIRequest_ToolChoice_ProjectsEachMode(t *testing.T) {
 			{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		},
 	}
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: base.Model})
+	q := openAICompatibleQuirks(base.Model)
 
 	cases := []struct {
 		name       string
@@ -235,7 +235,7 @@ func TestBuildOpenAIRequest_ToolChoice_DeterministicKeyOrder(t *testing.T) {
 		Messages:       []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 		Tools:          []types.ToolDefinition{{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)}},
 	}
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
+	q := openAICompatibleQuirks(params.Model)
 
 	first := buildOpenAIBody(t, params, q)
 	for i := 1; i < 20; i++ {
@@ -295,7 +295,7 @@ func TestToolChoiceName_Invalid_WarnsWithoutOffendingName(t *testing.T) {
 		Messages:       []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 		Tools:          []types.ToolDefinition{{Name: "read_file", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`)}},
 	}
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
+	q := openAICompatibleQuirks(params.Model)
 	must.NotContains(buildOpenAIBody(t, params, q), "tool_choice", "invalid name must degrade to auto")
 
 	logged := buf.String()
@@ -334,7 +334,7 @@ func TestBuildOpenAIRequest_StreamFlag(t *testing.T) {
 		MaxTokens: 1024,
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "x"}}}},
 	}
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
+	q := openAICompatibleQuirks(params.Model)
 
 	reqTrue, err := buildOpenAIRequest(params, true, q, nil)
 	must.NoError(err, "build stream=true")

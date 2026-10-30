@@ -52,7 +52,7 @@ func assertThinkingDropped(t *testing.T, adapter string, with, without []byte) {
 
 func TestOpenAICompatibleRequest_DropsThinkingBlocks(t *testing.T) {
 	must := require.New(t)
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: "gpt-4o"})
+	q := openAICompatibleQuirks("gpt-4o")
 	marshal := func(messages []types.Message) []byte {
 		req, err := buildOpenAIRequest(types.StreamParams{Model: "gpt-4o", MaxTokens: 64, Messages: messages}, true, q, nil)
 		must.NoError(err)
@@ -67,7 +67,7 @@ func TestOpenAICompatibleRequest_DropsThinkingBlocks(t *testing.T) {
 
 func TestOpenAIResponsesRequest_DropsThinkingBlocks(t *testing.T) {
 	must := require.New(t)
-	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: "gpt-4o"})
+	q := openAIResponsesQuirks("gpt-4o")
 	marshal := func(messages []types.Message) []byte {
 		req, err := buildResponsesRequest(types.StreamParams{Model: "gpt-4o", MaxTokens: 64, Messages: messages}, q, nil, "")
 		must.NoError(err)

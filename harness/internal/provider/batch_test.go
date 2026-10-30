@@ -484,7 +484,7 @@ func TestFabricateStream_OpenAIResponses_Incomplete(t *testing.T) {
 // Completions request with stream set to false.
 func TestBatchAdapter_marshalRequestBody_OpenAICompatible(t *testing.T) {
 	must := require.New(t)
-	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "", "run-test")
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", types.EndpointProfileOpenAI, "run-test")
 	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "gpt-4o-mini",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -548,7 +548,7 @@ func TestBatchAdapter_MarshalUsesInjectedRegistry(t *testing.T) {
 			q.BehaviourFlags.OpenAI.ExtraBodyFields["tool_stream"] = true
 		},
 	}
-	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "", "run-test")
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", types.EndpointProfileOpenAI, "run-test")
 	a.Registry = quirks.NewRegistry([]quirks.Rule{customRule})
 
 	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
@@ -571,7 +571,7 @@ func TestBatchAdapter_MarshalUsesInjectedRegistry(t *testing.T) {
 // quirks.DefaultRegistry() preserves their behaviour.
 func TestBatchAdapter_MarshalFallsBackToDefaultRegistryWhenNil(t *testing.T) {
 	must := require.New(t)
-	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", "", "run-test")
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-compatible", types.EndpointProfileOpenAI, "run-test")
 	// Registry intentionally left nil.
 	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "o1-mini", // matches the builtin reasoning-class rule
@@ -607,7 +607,7 @@ func TestBatchAdapter_marshalRequestBody_StrictFallbackWarns(t *testing.T) {
 			must := require.New(t)
 			check := assert.New(t)
 			var logs bytes.Buffer
-			a := NewBatchAdapter(tc.inner(slog.New(slog.NewJSONHandler(&logs, nil))), &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, tc.provType, "", "run-test")
+			a := NewBatchAdapter(tc.inner(slog.New(slog.NewJSONHandler(&logs, nil))), &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, tc.provType, EndpointProfileFor(types.ProviderConfig{Type: tc.provType}), "run-test")
 
 			params := effortParams("gpt-5", "", false)
 			params.Tools = strictFallbackTools()
@@ -632,7 +632,7 @@ func TestBatchAdapter_marshalRequestBody_StrictFallbackWarns(t *testing.T) {
 // stripping in buildResponsesRequest).
 func TestBatchAdapter_marshalRequestBody_OpenAIResponses(t *testing.T) {
 	must := require.New(t)
-	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "", "run-test")
+	a := NewBatchAdapter(nil, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", types.EndpointProfileOpenAI, "run-test")
 	body, _, err := a.marshalRequestBody(t.Context(), types.StreamParams{
 		Model:     "gpt-4o-mini",
 		Messages:  []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: "hi"}}}},
@@ -665,7 +665,7 @@ func TestBatchAdapter_marshalRequestBody_OpenAIResponsesReasoningParity(t *testi
 			must := require.New(t)
 			check := assert.New(t)
 			inner := NewOpenAIResponsesAdapter(staticBearer("test-key"), baseURL, OpenAIAuthConfig{})
-			a := NewBatchAdapter(inner, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", "", "run-test")
+			a := NewBatchAdapter(inner, &fakeBatchClient{}, &types.BatchProviderConfig{Enabled: true}, "openai-responses", types.EndpointProfileOpenAI, "run-test")
 			assistant := storedTurn(t, responsesReplayOrigin(tc.model, baseURL),
 				[]types.ContentBlock{{Type: "tool_use", ID: "call_1", Name: "read_file", Input: json.RawMessage(`{"path":"a.go"}`)}},
 				`{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"enc-batch"}`,

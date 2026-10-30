@@ -75,6 +75,14 @@ type RunConfig struct {
 	BaseURL   string
 	APIKeyRef string
 
+	// EndpointProfile and CompatProfile, when non-empty, are forwarded as
+	// --provider-endpoint-profile and --provider-compat-profile. A BaseURL
+	// pointing at a relay or Azure deployment resolves the derived
+	// "generic" endpoint profile unless EndpointProfile declares the real
+	// one. The harness validates both values.
+	EndpointProfile string
+	CompatProfile   string
+
 	// AnthropicWIF, when populated, forwards Anthropic Workload Identity
 	// Federation flags to every harness invocation. See
 	// docs/anthropic-wif.md.
@@ -293,17 +301,17 @@ dispatch:
 // tree is valid, so a misconfigured judge fails before any agent run.
 // checkLiveFlagsAgainstReplay refuses a live-run flag that would not take
 // effect: the harness drops a task's recording only when --provider is
-// switched, so --model, --base-url or --api-key-ref alone would leave a
-// replay-backed suite replaying while its result named the requested
-// model.
+// switched, so --model, --base-url, --api-key-ref or a profile flag alone
+// would leave a replay-backed suite replaying while its result named the
+// requested model.
 func checkLiveFlagsAgainstReplay(suite types.EvalSuite, baseline *types.RunConfig, cfg RunConfig) error {
-	if cfg.Provider != "" || (cfg.Model == "" && cfg.BaseURL == "" && cfg.APIKeyRef == "") {
+	if cfg.Provider != "" || (cfg.Model == "" && cfg.BaseURL == "" && cfg.APIKeyRef == "" && cfg.EndpointProfile == "" && cfg.CompatProfile == "") {
 		return nil
 	}
 	if !suiteReplaysByDefault(suite, baseline) {
 		return nil
 	}
-	return fmt.Errorf("suite %q is replay-backed: --model, --base-url and --api-key-ref apply only to a live run; pass --provider to switch it live", suite.ID)
+	return fmt.Errorf("suite %q is replay-backed: --model, --base-url, --api-key-ref, --endpoint-profile and --compat-profile apply only to a live run; pass --provider to switch it live", suite.ID)
 }
 
 func suiteReplaysByDefault(suite types.EvalSuite, baseline *types.RunConfig) bool {
@@ -523,6 +531,12 @@ func runTask(ctx context.Context, task types.EvalTask, cfg RunConfig, suiteArtif
 	}
 	if cfg.APIKeyRef != "" {
 		args = append(args, "--api-key-ref", cfg.APIKeyRef)
+	}
+	if cfg.EndpointProfile != "" {
+		args = append(args, "--provider-endpoint-profile", cfg.EndpointProfile)
+	}
+	if cfg.CompatProfile != "" {
+		args = append(args, "--provider-compat-profile", cfg.CompatProfile)
 	}
 
 	cmd := exec.CommandContext(ctx, cfg.HarnessPath, args...)

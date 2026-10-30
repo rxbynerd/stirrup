@@ -1174,14 +1174,16 @@ func replayBackedSuite() types.EvalSuite {
 }
 
 // TestRunSuite_ReplaySuite_RejectsLiveFlagsWithoutProvider pins that a
-// model, base URL or key reference given without --provider is refused on
+// model, base URL, key reference or profile given without --provider is refused on
 // a replay-backed suite, since the tasks would keep replaying while the
 // result named the requested model.
 func TestRunSuite_ReplaySuite_RejectsLiveFlagsWithoutProvider(t *testing.T) {
 	cases := map[string]RunConfig{
-		"model":       {Model: "claude-sonnet-5"},
-		"base url":    {BaseURL: "https://example.com/v1"},
-		"api key ref": {APIKeyRef: "secret://KEY"},
+		"model":            {Model: "claude-sonnet-5"},
+		"base url":         {BaseURL: "https://example.com/v1"},
+		"api key ref":      {APIKeyRef: "secret://KEY"},
+		"endpoint profile": {EndpointProfile: "azure-openai"},
+		"compat profile":   {CompatProfile: "zai-glm"},
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -1210,4 +1212,73 @@ func TestRunSuite_ReplaySuite_AcceptsLiveFlagsWithProvider(t *testing.T) {
 		_, err := RunSuite(context.Background(), suite, RunConfig{DryRun: true, Model: "claude-sonnet-5"})
 		must.NoError(err)
 	})
+}
+
+// TestRunSuite_ForwardsProviderProfileFlags pins that EndpointProfile and
+// CompatProfile reach the harness argv under the provider-prefixed flag
+// names. A silent drop leaves a custom --base-url on the derived generic
+// endpoint profile.
+func TestRunSuite_ForwardsProviderProfileFlags(t *testing.T) {
+	must := require.New(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessPath, argvPath := writeArgvRecordingHarness(t)
+
+	suite := types.EvalSuite{
+		ID: "profile-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "profile-task",
+				Prompt: "noop",
+				Judge: types.EvalJudge{
+					Type:  "file-exists",
+					Paths: []string{"unused-by-profile-test.txt"},
+				},
+			},
+		},
+	}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{
+		HarnessPath:     harnessPath,
+		EndpointProfile: "azure-openai",
+		CompatProfile:   "zai-glm",
+	})
+	must.NoError(err)
+
+	requireArgvHas(t, readArgvFile(t, argvPath),
+		"--provider-endpoint-profile", "azure-openai",
+		"--provider-compat-profile", "zai-glm",
+	)
+}
+
+// TestRunSuite_NoProviderProfileFlagsWhenUnset pins that the profile flags
+// are emitted only when set.
+func TestRunSuite_NoProviderProfileFlagsWhenUnset(t *testing.T) {
+	must := require.New(t)
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake harness assumes POSIX sh")
+	}
+	harnessPath, argvPath := writeArgvRecordingHarness(t)
+
+	suite := types.EvalSuite{
+		ID: "no-profile-suite",
+		Tasks: []types.EvalTask{
+			{
+				ID:     "no-profile-task",
+				Prompt: "noop",
+				Judge: types.EvalJudge{
+					Type:  "file-exists",
+					Paths: []string{"unused-by-profile-test.txt"},
+				},
+			},
+		},
+	}
+
+	_, err := RunSuite(context.Background(), suite, RunConfig{HarnessPath: harnessPath})
+	must.NoError(err)
+
+	argv := readArgvFile(t, argvPath)
+	must.NotContains(argv, "--provider-endpoint-profile")
+	must.NotContains(argv, "--provider-compat-profile")
 }
