@@ -5,7 +5,7 @@ go 1.27.3
 require (
 	github.com/rxbynerd/stirrup/gen v0.0.0
 	github.com/stretchr/testify v1.12.1
-	google.golang.org/grpc v1.84.0
+	google.golang.org/grpc v1.85.0
 	google.golang.org/protobuf v1.36.12
 )
 
