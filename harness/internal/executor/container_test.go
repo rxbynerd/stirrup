@@ -368,12 +368,12 @@ func TestContainerExecutor_WriteFile(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		},
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
-			// mkdir -p call
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "mkdir-exec"})
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "guard-exec"})
 		},
 		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+			writeDockerFrame(w, 1, []byte("/workspace/sub/dir/test.txt\n"))
 		},
 		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -617,20 +617,20 @@ func TestContainerAPIClient_ConnectionLevelHang_BoundedByResponseHeaderTimeout(t
 	must.LessOrEqual(elapsed, 5*time.Second, "ping should be bounded by containerResponseHeaderTimeout (~150ms) despite a 10s control-plane ctx budget")
 }
 
-// TestContainerExecutor_WriteFile_MkdirTimeout verifies that WriteFile's
-// "mkdir -p" call is bounded by containerMkdirTimeout (shrunk here for
-// speed) even with no caller-supplied deadline and a wedged daemon, and
+// TestContainerExecutor_WriteFile_GuardTimeout verifies that WriteFile's
+// target guard exec is bounded by containerWriteGuardTimeout (shrunk here
+// for speed) even with no caller-supplied deadline and a wedged daemon, and
 // that the resulting error classifies via ErrTimeout.
-func TestContainerExecutor_WriteFile_MkdirTimeout(t *testing.T) {
+func TestContainerExecutor_WriteFile_GuardTimeout(t *testing.T) {
 	must := require.New(t)
-	withShortTimeout(t, &containerMkdirTimeout, 150*time.Millisecond)
+	withShortTimeout(t, &containerWriteGuardTimeout, 150*time.Millisecond)
 
 	exec, cleanup := newMockContainerExecutor(t, map[string]http.HandlerFunc{
 		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
-			// mkdir -p's exec-create call itself succeeds fast; only the
+			// The guard's exec-create call itself succeeds fast; only the
 			// stream never responds, matching a daemon wedged mid-command.
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "mkdir-exec-hang"})
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "guard-exec-hang"})
 		},
 		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
 			<-r.Context().Done()
@@ -643,9 +643,9 @@ func TestContainerExecutor_WriteFile_MkdirTimeout(t *testing.T) {
 	err := exec.WriteFile(context.Background(), "sub/dir/test.txt", "file content")
 	elapsed := time.Since(start)
 
-	must.Error(err, "expected an error from a daemon wedged mid-mkdir")
+	must.Error(err, "expected an error from a daemon wedged mid-guard")
 	must.ErrorIs(err, ErrTimeout)
-	must.LessOrEqual(elapsed, 5*time.Second, "WriteFile with no caller-supplied deadline should be bounded by containerMkdirTimeout (~150ms)")
+	must.LessOrEqual(elapsed, 5*time.Second, "WriteFile with no caller-supplied deadline should be bounded by containerWriteGuardTimeout (~150ms)")
 }
 
 // TestContainerExecutor_Exec_SlowStreamNotKilledByControlPlaneTimeout

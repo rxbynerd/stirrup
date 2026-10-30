@@ -165,6 +165,96 @@ func TestContainerExecutor_ReadFile_SymlinkEscape_LiveEngine(t *testing.T) {
 	must.Equal("inside", got, "in-workspace symlink should read its target")
 }
 
+// TestContainerExecutor_WriteFile_SymlinkEscape_LiveEngine proves the write
+// guard closes the symlink class against a real engine: writes through a
+// symlinked directory (to /etc, to the writable /tmp, and to the identity
+// token directory, including via a directory whose name ends in a newline)
+// and through a symlinked file all fail with a workspace-escape error and
+// leave everything outside the workspace untouched. Writes inside the
+// workspace, including through an in-workspace file symlink, still land,
+// and a symlink to an in-workspace directory is refused without touching it.
+func TestContainerExecutor_WriteFile_SymlinkEscape_LiveEngine(t *testing.T) {
+	must := require.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	exec := liveContainerExecutor(t, ctx, true)
+
+	const token = "SECRET-TOKEN-VALUE-eyJhbGciOiJFUzI1NiJ9"
+	must.NoError(exec.WriteSandboxIdentityToken(ctx, token), "WriteSandboxIdentityToken")
+	setup := strings.Join([]string{
+		"printf original > /tmp/target.txt",
+		"printf inside > /workspace/real.txt",
+		"ln -sf /etc /workspace/escape",
+		"ln -sf /tmp /workspace/tmpdir",
+		"ln -sf /tmp/target.txt /workspace/filelink",
+		"ln -sf " + SandboxIdentityTokenPath + " /workspace/tokenlink",
+		"ln -sf real.txt /workspace/alias",
+		"mkdir '/workspace/nl\n' '/workspace/tk\n'",
+		"ln -sf /tmp /workspace/nl",
+		"ln -sf " + SandboxIdentityTokenDir + " /workspace/tk",
+		"ln -sf '/workspace/nl\n' /workspace/m",
+		"ln -sf '/workspace/tk\n' /workspace/k",
+		"mkdir /workspace/src && printf keep > /workspace/src/keep.txt",
+		"ln -sf src /workspace/dirlink",
+	}, " && ")
+	res, err := exec.Exec(ctx, setup, 30*time.Second)
+	must.NoError(err, "symlink setup")
+	must.Zero(res.ExitCode, "symlink setup result %+v", res)
+
+	for _, probe := range []string{
+		"escape/stirrup-escape.txt",
+		"escape/stirrup-newdir/x.txt",
+		"tmpdir/stirrup-escape.txt",
+		"tmpdir/stirrup-newdir/x.txt",
+		"filelink",
+		"tokenlink",
+		"m/stirrup-escape.txt",
+		"k/token",
+	} {
+		t.Run(probe, func(t *testing.T) {
+			must := require.New(t)
+			emitter := &mockSecurityEmitter{}
+			exec.Security = emitter
+			err := exec.WriteFile(ctx, probe, "ATTACKER")
+			must.ErrorContains(err, "path escapes workspace")
+			must.Equal(1, emitter.pathTraversalCount, "PathTraversalBlocked emissions")
+		})
+	}
+	exec.Security = nil
+
+	err = exec.WriteFile(ctx, "nl\n/stirrup-escape.txt", "ATTACKER")
+	must.ErrorContains(err, "control character", "a requested path with a newline")
+	err = exec.WriteFile(ctx, "dirlink", "ATTACKER")
+	must.ErrorContains(err, "is a directory", "a symlink to an in-workspace directory")
+	got, err := exec.ReadFile(ctx, "src/keep.txt")
+	must.NoError(err, "ReadFile(src/keep.txt)")
+	must.Equal("keep", got, "the linked directory must survive a refused write")
+	must.NoError(exec.WriteSandboxIdentityToken(ctx, token+"-2"), "token rotation after refused writes")
+
+	verify := strings.Join([]string{
+		"[ ! -e /etc/stirrup-escape.txt ]",
+		"[ ! -e /etc/stirrup-newdir ]",
+		"[ ! -e /tmp/stirrup-escape.txt ]",
+		"[ ! -e /tmp/stirrup-newdir ]",
+		`[ "$(cat /tmp/target.txt)" = original ]`,
+		`[ "$(cat ` + SandboxIdentityTokenPath + `)" = ` + token + `-2 ]`,
+		"! grep -rq ATTACKER /etc /tmp " + SandboxIdentityTokenDir,
+	}, " && ")
+	res, err = exec.Exec(ctx, verify, 30*time.Second)
+	must.NoError(err, "verify outside paths")
+	must.Zero(res.ExitCode, "something landed outside the workspace: %+v", res)
+
+	must.NoError(exec.WriteFile(ctx, "alias", "rewritten"), "WriteFile(alias)")
+	got, err = exec.ReadFile(ctx, "real.txt")
+	must.NoError(err, "ReadFile(real.txt)")
+	must.Equal("rewritten", got, "an in-workspace symlink should be written through")
+
+	must.NoError(exec.WriteFile(ctx, "new/nested/file.txt", "nested"), "WriteFile(new/nested/file.txt)")
+	got, err = exec.ReadFile(ctx, "new/nested/file.txt")
+	must.NoError(err, "ReadFile(new/nested/file.txt)")
+	must.Equal("nested", got)
+}
+
 // TestContainerExecutor_ListDirectory_MarksDirectories_LiveEngine pins the
 // cross-executor listing contract against a real engine: directories carry
 // a trailing slash, files do not, and "." and ".." are absent.

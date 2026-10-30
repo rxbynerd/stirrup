@@ -154,15 +154,19 @@ func (e *podExecCore) ReadFile(ctx context.Context, filePath string) (string, er
 }
 
 // WriteFile streams a one-entry tar archive into the Pod via
-// `tar -C <dir> -xf -`, creating the file at filePath with mode 0644.
-// Parent directories are created first with `mkdir -p`. Content is capped
-// at 10 MB.
+// `tar -C <dir> -xf -`, creating the file with mode 0644 at the path
+// workspaceWriteGuardCommand resolved in-sandbox, since tar -C and mkdir
+// -p follow symlinks. The guard also creates missing parent directories.
+// Content is capped at 10 MB.
 func (e *podExecCore) WriteFile(ctx context.Context, filePath string, content string) error {
 	if int64(len(content)) > k8sMaxOutput {
 		e.emitFileSizeLimit(filePath, int64(len(content)))
 		return errK8sOutputCap
 	}
 
+	if err := checkWorkspaceWritePath(filePath); err != nil {
+		return err
+	}
 	resolved, err := e.resolveFilePath(filePath)
 	if err != nil {
 		return err
@@ -171,19 +175,27 @@ func (e *podExecCore) WriteFile(ctx context.Context, filePath string, content st
 	ctx, cancel := context.WithTimeout(ctx, k8sFileIOTimeout)
 	defer cancel()
 
-	dir := path.Dir(resolved)
-	var mkOut, mkErr bytes.Buffer
-	if mkErrRun := e.streamExec(ctx, []string{"mkdir", "-p", "--", dir}, nil, &mkOut, &mkErr); mkErrRun != nil {
-		if code, ok := extractExitCode(mkErrRun); ok && code != 0 {
-			return fmt.Errorf("create parent directory %s: %s", dir, strings.TrimSpace(mkErr.String()))
+	guardOut := writeCapBuffer{limit: workspaceWriteOutputLimit}
+	guardErr := writeCapBuffer{limit: workspaceWriteOutputLimit}
+	if err := e.streamExec(ctx, workspaceWriteGuardCommand(k8sWorkspace, resolved), nil, &guardOut, &guardErr); err != nil {
+		if code, ok := extractExitCode(err); ok && code != 0 {
+			return classifyWorkspaceWriteExit(code, guardErr.String(), filePath, k8sWorkspace, e.Security)
 		}
-		return fmt.Errorf("create parent directory %s: %w", dir, mkErrRun)
+		return fmt.Errorf("resolve write target %s: %w", filePath, err)
 	}
+	if guardOut.exceeded {
+		return workspaceWriteEscape(filePath, k8sWorkspace, e.Security)
+	}
+	target, err := parseWorkspaceWriteTarget(guardOut.String(), filePath, k8sWorkspace, e.Security)
+	if err != nil {
+		return err
+	}
+	dir := path.Dir(target)
 
 	var archive bytes.Buffer
 	tw := tar.NewWriter(&archive)
 	if err := tw.WriteHeader(&tar.Header{
-		Name: path.Base(resolved),
+		Name: path.Base(target),
 		Mode: 0o644,
 		Size: int64(len(content)),
 	}); err != nil {
@@ -196,7 +208,8 @@ func (e *podExecCore) WriteFile(ctx context.Context, filePath string, content st
 		return fmt.Errorf("close tar writer: %w", err)
 	}
 
-	var xOut, xErr bytes.Buffer
+	xOut := writeCapBuffer{limit: workspaceWriteOutputLimit}
+	xErr := writeCapBuffer{limit: workspaceWriteOutputLimit}
 	if err := e.streamExec(ctx, []string{"tar", "-C", dir, "-xf", "-"}, &archive, &xOut, &xErr); err != nil {
 		if code, ok := extractExitCode(err); ok && code != 0 {
 			return fmt.Errorf("write file %s: %s", filePath, strings.TrimSpace(xErr.String()))
