@@ -145,6 +145,9 @@ type responsesRequest struct {
 	// PromptCacheKey is the wire value for prompt_cache_key. Empty omits
 	// the key.
 	PromptCacheKey string `json:"-"`
+	// TextFormat is the wire value for text.format. A nil pointer omits
+	// the text object.
+	TextFormat *responsesTextFormat `json:"-"`
 	// IncludeEncryptedReasoning emits include:["reasoning.encrypted_content"].
 	IncludeEncryptedReasoning bool `json:"-"`
 
@@ -169,7 +172,7 @@ type responsesRequest struct {
 // MarshalJSON projects the canonical responsesRequest into the Responses
 // wire body the resolved quirks selected. Keys are emitted in a fixed
 // order — model, instructions, input, tools, <token key>, temperature,
-// stream, store, include, parallel_tool_calls, reasoning,
+// stream, store, include, parallel_tool_calls, reasoning, text,
 // prompt_cache_key — and the token-budget key and store value come from
 // the resolved behaviour flags rather than static struct tags.
 //
@@ -190,6 +193,8 @@ type responsesRequest struct {
 //   - "reasoning" — {"effort": ..., "summary": ...}; omitted when
 //     ReasoningEffort is empty, and "summary" omitted when
 //     ReasoningSummary is empty.
+//   - "text" — {"format": {"type": "json_schema", ...}}; omitted when
+//     TextFormat is nil.
 //   - "prompt_cache_key" — omitted when PromptCacheKey is empty.
 func (r responsesRequest) MarshalJSON() ([]byte, error) {
 	if r.InputItemShape != quirks.TypedInputItems {
@@ -294,6 +299,13 @@ func (r responsesRequest) MarshalJSON() ([]byte, error) {
 		}
 	}
 
+	if r.TextFormat != nil {
+		first = writeKey(first, "text")
+		if err := writeRaw(responsesText{Format: r.TextFormat}); err != nil {
+			return nil, err
+		}
+	}
+
 	if r.PromptCacheKey != "" {
 		first = writeKey(first, "prompt_cache_key")
 		if err := writeRaw(r.PromptCacheKey); err != nil {
@@ -392,12 +404,45 @@ func (r *responsesRequest) UnmarshalJSON(data []byte) error {
 		r.ReasoningEffort = reasoning.Effort
 		r.ReasoningSummary = reasoning.Summary
 	}
+	if v, ok := raw["text"]; ok {
+		var text responsesText
+		if err := json.Unmarshal(v, &text); err != nil {
+			return fmt.Errorf("responsesRequest.text: %w", err)
+		}
+		r.TextFormat = text.Format
+	}
 	if v, ok := raw["prompt_cache_key"]; ok {
 		if err := json.Unmarshal(v, &r.PromptCacheKey); err != nil {
 			return fmt.Errorf("responsesRequest.prompt_cache_key: %w", err)
 		}
 	}
 	return nil
+}
+
+// responsesText is the Responses `text` object; only its format member is
+// sent.
+type responsesText struct {
+	Format *responsesTextFormat `json:"format,omitempty"`
+}
+
+// responsesTextFormat is text.format in its json_schema form. Strict is
+// always true for the same reason as openaiResponseFormat.
+type responsesTextFormat struct {
+	Type   string          `json:"type"`
+	Name   string          `json:"name"`
+	Strict bool            `json:"strict"`
+	Schema json.RawMessage `json:"schema"`
+}
+
+// responsesTextFormatFromParams projects StreamParams.OutputSchema onto
+// text.format, or nil when the resolved capability does not advertise
+// support.
+func responsesTextFormatFromParams(params types.StreamParams, capability quirks.OutputSchemaCapability) *responsesTextFormat {
+	schema := projectOutputSchema(params.OutputSchema, capability)
+	if schema == nil {
+		return nil
+	}
+	return &responsesTextFormat{Type: "json_schema", Name: schema.Name, Strict: true, Schema: schema.Schema}
 }
 
 // responsesWireTokenKey returns the wire JSON key for the resolved token
@@ -1691,6 +1736,7 @@ func buildResponsesRequest(params types.StreamParams, q quirks.ProviderQuirks, s
 		ReasoningEffort:   effort,
 		ReasoningSummary:  summary,
 		PromptCacheKey:    cacheKey,
+		TextFormat:        responsesTextFormatFromParams(params, q.OutputSchema),
 		TokenField:        q.BehaviourFlags.OpenAIResponses.TokenField,
 		StoreMode:         q.BehaviourFlags.OpenAIResponses.StoreMode,
 		InputItemShape:    q.BehaviourFlags.OpenAIResponses.InputItemShape,
@@ -1783,6 +1829,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		return nil, err
 	}
 	warnDroppedReasoningEffort(ctx, logger, "openai-responses", params.ReasoningEffort, params.Model, q.BehaviourFlags.OpenAIResponses.ReasoningEffortLevels)
+	logDroppedOutputSchema(ctx, logger, "openai-responses", params.Model, params.OutputSchema, q.OutputSchema)
 
 	replayOrigin := responsesReplayOriginFor(q, params.Model, o.baseURL)
 	reqBody, err := buildResponsesRequest(params, q, o.strictSchemas, replayOrigin)

@@ -112,7 +112,8 @@ func BuildGenerateContentRequest(
 	sendTemperature := params.Temperature != nil && !q.BehaviourFlags.Gemini.OmitSamplingParams
 	includeThoughts := params.ReasoningSummary != types.ReasoningSummaryOff &&
 		(params.ReasoningEffort != "" || q.BehaviourFlags.Gemini.IncludeThoughts || len(q.BehaviourFlags.Gemini.ThinkingLevels) > 0)
-	if params.MaxTokens > 0 || sendTemperature || params.ReasoningEffort != "" || includeThoughts {
+	outputSchema := projectOutputSchema(params.OutputSchema, q.OutputSchema)
+	if params.MaxTokens > 0 || sendTemperature || params.ReasoningEffort != "" || includeThoughts || outputSchema != nil {
 		gc := &geminiGenerationConfig{}
 		if params.MaxTokens > 0 {
 			gc.MaxOutputTokens = params.MaxTokens
@@ -126,6 +127,12 @@ func BuildGenerateContentRequest(
 				ThinkingLevel:   strings.ToUpper(params.ReasoningEffort),
 				IncludeThoughts: includeThoughts,
 			}
+		}
+		if outputSchema != nil {
+			gc.ResponseFormat = []geminiResponseFormat{{Text: &geminiTextResponseFormat{
+				MimeType: "APPLICATION_JSON",
+				Schema:   outputSchema.Schema,
+			}}}
 		}
 		req.GenerationConfig = gc
 	}

@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 )
@@ -314,6 +315,45 @@ type StreamParams struct {
 	// whose resolved quirks do not ignores the flag and sends every tool
 	// loaded. At least one tool in Tools is never deferred.
 	ToolSearch bool `json:"toolSearch,omitempty"`
+
+	// OutputSchema asks the provider to constrain the response text to a
+	// JSON Schema (structured outputs). Nil means free text. An adapter
+	// projects it onto its native field only when the resolved quirks
+	// advertise an OutputSchema capability; otherwise it sends the request
+	// without it, so the caller's prompt must state the same contract and
+	// the caller must still parse the text. Distinct from
+	// RunConfig.OutputSchema, which the loop validates harness-side on the
+	// final answer.
+	OutputSchema *OutputSchema `json:"outputSchema,omitempty"`
+}
+
+// OutputSchema is a JSON Schema a provider is asked to constrain one
+// response to. Name labels the schema on the OpenAI wires, which require
+// one; Schema is the JSON Schema object itself.
+type OutputSchema struct {
+	Name   string          `json:"name"`
+	Schema json.RawMessage `json:"schema"`
+}
+
+// Validate reports whether s is safe to emit onto a provider request body:
+// the name matches the grammar the OpenAI wires enforce on a schema name
+// (the tool-name grammar) and the schema is a JSON object. Adapters
+// degrade to free text rather than send an invalid value.
+func (s *OutputSchema) Validate() error {
+	if s == nil {
+		return errors.New("output schema is nil")
+	}
+	if !toolChoiceNamePattern.MatchString(s.Name) {
+		return fmt.Errorf("output schema name %q must match %s", s.Name, toolChoiceNamePattern.String())
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(s.Schema, &obj); err != nil {
+		return fmt.Errorf("output schema must be a JSON object: %w", err)
+	}
+	if obj == nil {
+		return errors.New("output schema must be a JSON object, got null")
+	}
+	return nil
 }
 
 // Float64Ptr returns a pointer to the given float64 value. It is a

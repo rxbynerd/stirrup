@@ -74,6 +74,14 @@ type ProviderQuirks struct {
 	// advertises no support, so the loop serves the search itself.
 	ToolSearch ToolSearchCapability `json:"toolSearch"`
 
+	// OutputSchema declares whether the resolved (provider, model) accepts
+	// a JSON Schema constraint on the response text (structured outputs).
+	// Top-level because the judges that request one are provider-neutral.
+	// The zero value advertises no support, so an adapter with no rule
+	// sends the request without a schema and the caller's prompt-only
+	// contract applies.
+	OutputSchema OutputSchemaCapability `json:"outputSchema"`
+
 	// ContextWindow is the resolved model's context window in tokens,
 	// input and output together. Zero means no entry: the loop falls back
 	// to contextStrategy.maxTokens or its default window. When both are

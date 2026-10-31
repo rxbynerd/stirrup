@@ -375,11 +375,14 @@ stirrup harness \
 Reuses an existing `ProviderAdapter` (Anthropic, OpenAI-compatible)
 with a cheap default model, `claude-haiku-5-5`. No new SDK
 dependency: it streams a single completion at temperature 0 and low
-reasoning effort, and extracts the verdict from a JSON field in the
-response. Each field reaches the wire only where the model's quirks
-allow it: Claude Haiku 5.5 rejects a non-default temperature, so the
-Anthropic adapter drops it and keeps the effort setting. Use this when the deployment cannot run its own GPU-
-attached vLLM.
+reasoning effort, asks the provider to constrain the response to the
+verdict object as a structured output, and extracts the verdict from
+the response text. Each setting reaches the wire only where the model's
+quirks allow it. Claude Haiku 5.5 rejects a non-default temperature, so
+the Anthropic adapter drops it and keeps the effort setting. A model
+with no advertised structured-output control receives the request
+without the schema. Use this when the deployment cannot run its own
+GPU-attached vLLM.
 
 `cloud-judge` is an escalation-grade classifier, not a fast path:
 every check is a full round trip to a hosted model, on the order of
@@ -406,19 +409,66 @@ containing newlines or quotes cannot add prompt structure. A phase
 the adapter does not recognise is classified under the `post_turn`
 default criteria.
 
+**Structured output.** Every check sets `StreamParams.OutputSchema`
+to the verdict object as a JSON Schema: `nonce`, then `reasoning`,
+then `verdict` as an enum of `allow` and `deny`, every member required
+and no other member allowed. Where the model's quirks advertise the
+capability (see [provider-quirks.md § 3.4](provider-quirks.md#34-structured-outputs)),
+the adapter projects it onto the provider's native field, and the
+provider constrains decoding to the schema, with documented exceptions:
+a refusal, output cut at the token cap, and, on Anthropic, enum values
+that differ only in capitalisation. Elsewhere the request goes out
+without the schema, and the prompt instruction below is the only
+contract. The text parse and the stop-reason check described next run
+in every case. Anthropic and both OpenAI wires have rules; Bedrock has
+none (the Converse API exposes the control, the adapter does not send
+it), and no Gemini model has one because the Vertex AI field is
+unprobed, so judges on those providers are always prompt-only.
+
+The decision records which request was made as `structuredOutput`:
+`json_schema` when the request carried the schema and the built-in
+registry advertises the control for the judge model, `prompt_only`
+otherwise. The value describes what was requested and advertised, not
+what the provider did with it: a gateway can drop the field without
+changing the record, and a `compatProfile` rule set is not consulted
+for it. It is recorded on the `guard.structured_output` span attribute
+for decisions and for failed checks alike, and on the fail-open
+decision, so parse failures can be split by it. In a sequential
+composite the attribute reflects the decisive stage, so a cloud-judge
+allow followed by another stage's allow carries no value.
+
+If the provider rejects the schema-bearing request with a 4xx other
+than 429, the check is sent once more without the schema and recorded
+as `prompt_only`; a provider that silently ignores the field is
+likewise covered by the text parse. A rule that is wrong for a
+deployment therefore costs one extra round trip per check, not the
+guard. The symptom is a `guard_error` naming a provider stream error
+on every check, or repeated denies under the default `failOpen: false`.
+`stirrup providers quirks --provider X --model Y` prints the resolved
+`outputSchema.supported` and the contributing rules, and the adapter's
+`outputSchema ignored` debug line shows when a schema was dropped
+before send. The only lever is the judge model: one without a rule is
+prompt-only from the start.
+
+A schema property named `reasoning` can draw a `refusal` stop from a
+model that treats it as a request for hidden thinking; the prompt asks
+for one sentence to keep it an explanation. A refusal is not `end_turn`,
+so it is an incomplete-stream error and takes the guard-error path.
+
 **Verdict extraction.** The verdict must carry the call's fence
 nonce. The instruction after the fence asks for
-`{"nonce": "<nonce>", "verdict": "allow"|"deny", "reason": "..."}`
+`{"nonce": "<nonce>", "reasoning": "<one sentence>", "verdict": "allow"|"deny"}`
 and states the nonce value; the content was written before the nonce
 existed, so a verdict planted in it cannot carry the right one. The
 adapter scans the response for top-level JSON objects, reads members
 by exact key, and accepts only an object whose `nonce` member equals
-the call's nonce:
+the call's nonce. The verdict is compared case-insensitively, and a
+reasoning member keyed `reason` is read as the reasoning:
 
 - Objects without the nonce, or with a different one, are ignored
   wherever they appear, so a planted verdict the model echoes before
   or after its own answer never decides the call.
-- Braces inside JSON strings are text, so a reason that quotes code
+- Braces inside JSON strings are text, so a reasoning string that quotes code
   parses, and a verdict wrapped in prose or a markdown fence is
   found.
 - A balanced brace pair that is not valid JSON, such as a reasoning
@@ -462,8 +512,12 @@ response stream, not just the time to its first token.
   deadline denies the call, and repeated denies trip the stall
   detector, so provider slowness becomes failed tool calls. The 4 s
   `pre_tool` default leaves headroom over Claude Haiku 5.5, which
-  takes 1 to 3 s per check at low effort. Deployments on a slower
-  model or provider set `timeoutMs` explicitly.
+  takes 1 to 3 s per check at low effort without a schema. Providers
+  compile a new schema into a grammar on its first use and cache it
+  for a period (Anthropic documents a 24 h cache), so the first check
+  after a cold cache pays extra latency; its size on `claude-haiku-5-5`
+  is unmeasured. Deployments on a slower model or provider, or that see
+  a first-check timeout, set `timeoutMs` explicitly.
 - Under `failOpen: true`, a timeout allows the call. The content
   under classification influences how long the classifier takes
   (its length, and what it asks the classifier to write), so a tight
@@ -511,7 +565,7 @@ milliseconds, because each is a hosted-model round trip; see
 
 On a transport error or timeout, the error path costs one adapter
 timeout: `timeoutMs` when set, otherwise the adapter default
-(`granite-guardian` 10 s; `cloud-judge` 2 s at `pre_tool` and 5 s
+(`granite-guardian` 10 s; `cloud-judge` 4 s at `pre_tool` and 5 s
 elsewhere). With `failOpen: true` the request then proceeds. With
 `failOpen: false` (the default) it produces a `Deny` and the
 offending content does not pass.
@@ -698,7 +752,9 @@ Each guard call produces a span named `guard.<phase>` (e.g.
 `post_turn` spans are children of the run's `invoke_agent` span;
 `pre_tool` spans are children of the call's `execute_tool` span.
 Standard attributes: `guard.id`, `guard.criterion`, `guard.score`,
-`guard.verdict`, `guard.latency_ms`.
+`guard.verdict`, `guard.latency_ms`, and, when `cloud-judge` is the
+decisive guard, `guard.structured_output` (`json_schema` or
+`prompt_only`, on decisions and on failed checks alike).
 
 ### OTel metrics
 

@@ -197,6 +197,7 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 			slog.Any("quirk.rules", ruleDescriptions(appliedRules)),
 		)
 	}
+	logDroppedOutputSchema(ctx, logger, "gemini", params.Model, params.OutputSchema, q.OutputSchema)
 
 	body, _, err := BuildGenerateContentRequest(params, g.safety, q)
 	if err != nil {

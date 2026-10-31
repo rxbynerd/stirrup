@@ -85,3 +85,8 @@ func applyToolSearch(variant string) func(*ProviderQuirks) {
 		q.ToolSearch = ToolSearchCapability{Supported: true, Variant: variant}
 	}
 }
+
+// applyOutputSchema advertises JSON Schema structured outputs.
+func applyOutputSchema(q *ProviderQuirks) {
+	q.OutputSchema = OutputSchemaCapability{Supported: true}
+}

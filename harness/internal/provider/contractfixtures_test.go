@@ -122,3 +122,76 @@ func TestResponsesContract_GPT56RequestBody(t *testing.T) {
 	must.NoError(err, "marshal responses request")
 	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "openai-responses", "gpt-5.6-sol", "request.json"), body)
 }
+
+// outputSchemaFixtureParams is a judge-shaped turn: no tools, greedy
+// temperature, a verdict schema the adapter is asked to enforce.
+func outputSchemaFixtureParams(model string) types.StreamParams {
+	return types.StreamParams{
+		Model:            model,
+		System:           "You are a safety classifier.",
+		Messages:         contractFixtureMessages(),
+		MaxTokens:        1024,
+		Temperature:      types.Float64Ptr(0),
+		ReasoningSummary: types.ReasoningSummaryOff,
+		OutputSchema: &types.OutputSchema{
+			Name:   "verdict",
+			Schema: json.RawMessage(`{"type":"object","properties":{"nonce":{"type":"string"},"reasoning":{"type":"string"},"verdict":{"type":"string","enum":["allow","deny"]}},"required":["nonce","reasoning","verdict"],"additionalProperties":false}`),
+		},
+	}
+}
+
+// TestAnthropicContract_OutputSchemaRequestBody pins output_config.format
+// beside output_config.effort on a Claude Haiku 5.5 judge turn.
+func TestAnthropicContract_OutputSchemaRequestBody(t *testing.T) {
+	must := require.New(t)
+	params := outputSchemaFixtureParams("claude-haiku-5-5")
+	params.ReasoningEffort = "low"
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "anthropic", Model: params.Model})
+	body, err := json.Marshal(buildAnthropicRequest(params, true, q))
+	must.NoError(err, "marshal anthropic request")
+	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "anthropic", "claude-haiku-5-5", "request.json"), body)
+}
+
+// TestOpenAIContract_OutputSchemaRequestBody pins response_format on a
+// gpt-5.5 Chat Completions judge turn.
+func TestOpenAIContract_OutputSchemaRequestBody(t *testing.T) {
+	must := require.New(t)
+	params := outputSchemaFixtureParams("gpt-5.5")
+	params.ReasoningEffort = "low"
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-compatible", Model: params.Model})
+	req, err := buildOpenAIRequest(params, true, q, nil)
+	must.NoError(err, "build openai request")
+	body, err := json.Marshal(req)
+	must.NoError(err, "marshal openai request")
+	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "openai-compatible", "gpt-5.5", "request.json"), body)
+}
+
+// TestResponsesContract_OutputSchemaRequestBody pins text.format beside
+// reasoning.effort on a gpt-5.5 Responses judge turn.
+func TestResponsesContract_OutputSchemaRequestBody(t *testing.T) {
+	must := require.New(t)
+	params := outputSchemaFixtureParams("gpt-5.5")
+	params.ReasoningEffort = "low"
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "openai-responses", Model: params.Model})
+	req, err := buildResponsesRequest(params, q, nil, "")
+	must.NoError(err, "build responses request")
+	req.Stream = true
+	body, err := json.Marshal(req)
+	must.NoError(err, "marshal responses request")
+	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "openai-responses", "gpt-5.5", "request.json"), body)
+}
+
+// TestGeminiContract_OutputSchemaRequestBody pins the Vertex AI
+// generationConfig.responseFormat array beside thinkingConfig on a Gemini
+// 3.8 Flash judge turn. No built-in rule grants a Gemini model, so the
+// capability is advertised in-test.
+func TestGeminiContract_OutputSchemaRequestBody(t *testing.T) {
+	must := require.New(t)
+	params := outputSchemaFixtureParams("gemini-3.8-flash")
+	params.ReasoningEffort = "low"
+	q := quirks.DefaultRegistry().Resolve(quirks.Target{ProviderType: "gemini", Model: params.Model})
+	q.OutputSchema = quirks.OutputSchemaCapability{Supported: true}
+	body, _, err := BuildGenerateContentRequest(params, nil, q)
+	must.NoError(err, "build gemini request")
+	quirkstest.AssertWireEqual(t, quirkstest.JoinPath("testdata", "quirks", "gemini", "gemini-3.8-flash", "request.json"), body)
+}

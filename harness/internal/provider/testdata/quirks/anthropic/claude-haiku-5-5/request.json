@@ -1,0 +1,56 @@
+# synthetic: judge-shaped turn (no tools) pinning output_config.format json_schema beside effort low; temperature omitted by the OmitSamplingParams rule. Shape probed live 2026-10-29.
+{
+  "model": "claude-haiku-5-5",
+  "system": [
+    {
+      "type": "text",
+      "text": "You are a safety classifier.",
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "weather in Paris?"
+        }
+      ]
+    }
+  ],
+  "max_tokens": 1024,
+  "output_config": {
+    "effort": "low",
+    "format": {
+      "type": "json_schema",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "nonce": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny"
+            ]
+          }
+        },
+        "required": [
+          "nonce",
+          "reasoning",
+          "verdict"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "stream": true
+}

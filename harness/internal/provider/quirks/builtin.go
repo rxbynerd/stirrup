@@ -659,6 +659,96 @@ func BuiltinRules() []Rule {
 			Apply:        applyContextWindow(128_000),
 		},
 
+		// JSON Schema structured outputs. Each entry is a positive
+		// allow-list: an unlisted model keeps the prompt-only JSON contract
+		// the judges fall back to. The Anthropic 4.5 and 4.6 generations
+		// and Gemini 3 (responseFormat, unprobed on Vertex AI) carry no
+		// rule.
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-opus-4-[7-8]*",
+			Description:  "Anthropic Claude Opus 4.7-4.8: structured outputs via output_config.format json_schema (documented, not probed)",
+			LastVerified: Date("2026-10-29"),
+			Apply:        applyOutputSchema,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-opus-5*",
+			Description:  "Anthropic Claude Opus 5 / 5.5: structured outputs via output_config.format json_schema (documented, not probed)",
+			LastVerified: Date("2026-10-29"),
+			Apply:        applyOutputSchema,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-sonnet-5*",
+			Description:  "Anthropic Claude Sonnet 5 / 5.5: structured outputs via output_config.format json_schema (documented, not probed)",
+			LastVerified: Date("2026-10-29"),
+			Apply:        applyOutputSchema,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-haiku-5*",
+			Description:  "Anthropic Claude Haiku 5.5: structured outputs via output_config.format json_schema, alone and beside effort (probed 2026-10-29: schema-conformant verdict)",
+			LastVerified: Date("2026-10-29"),
+			Apply:        applyOutputSchema,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-fable-5*",
+			Description:  "Anthropic Claude Fable 5 / 5.1: structured outputs via output_config.format json_schema (documented, not probed)",
+			LastVerified: Date("2026-10-29"),
+			Apply:        applyOutputSchema,
+		},
+		{
+			ProviderType: "anthropic",
+			ModelMatch:   "claude-mythos-5*",
+			Description:  "Anthropic Claude Mythos 5 / 5.1: structured outputs via output_config.format json_schema (documented, not probed)",
+			LastVerified: Date("2026-10-29"),
+			Apply:        applyOutputSchema,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "gpt-5*",
+			Description:  "OpenAI gpt-5 family: structured outputs via response_format json_schema strict (documented, not probed)",
+			LastVerified: Date("2026-10-29"),
+			Apply:        applyOutputSchema,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "gpt-6*",
+			Description:  "OpenAI gpt-6 family: structured outputs via response_format json_schema strict (documented, not probed)",
+			LastVerified: Date("2026-10-29"),
+			Apply:        applyOutputSchema,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "*/gpt-5*",
+			Description:  "OpenAI gpt-5 family via gateway prefix: structured outputs via response_format json_schema strict; enforcement depends on the gateway (probed on openai/gpt-5-nano via OpenRouter 2026-10-29: schema-conformant verdict)",
+			LastVerified: Date("2026-10-29"),
+			Apply:        applyOutputSchema,
+		},
+		{
+			ProviderType: "openai-compatible",
+			ModelMatch:   "*/gpt-6*",
+			Description:  "OpenAI gpt-6 family via gateway prefix: structured outputs via response_format json_schema strict; enforcement depends on the gateway (documented, not probed)",
+			LastVerified: Date("2026-10-29"),
+			Apply:        applyOutputSchema,
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-5*",
+			Description:  "OpenAI Responses gpt-5 family: structured outputs via text.format json_schema strict (documented, not probed)",
+			LastVerified: Date("2026-10-29"),
+			Apply:        applyOutputSchema,
+		},
+		{
+			ProviderType: "openai-responses",
+			ModelMatch:   "gpt-6*",
+			Description:  "OpenAI Responses gpt-6 family: structured outputs via text.format json_schema strict (documented, not probed)",
+			LastVerified: Date("2026-10-29"),
+			Apply:        applyOutputSchema,
+		},
+
 		// Native tool search. Anthropic documents tool_search_tool_bm25_20251119
 		// and the regex variant on every model from the 4.5 generation on
 		// (Opus 4.1 and earlier have none); OpenAI documents hosted

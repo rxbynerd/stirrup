@@ -1,0 +1,50 @@
+# synthetic: judge-shaped turn (no tools) pinning response_format json_schema strict; temperature omitted and reasoning_effort absent because gpt-5* on Chat Completions has no probed effort allow-list.
+{
+  "max_completion_tokens": 1024,
+  "messages": [
+    {
+      "role": "system",
+      "content": "You are a safety classifier."
+    },
+    {
+      "role": "user",
+      "content": "weather in Paris?"
+    }
+  ],
+  "model": "gpt-5.5",
+  "response_format": {
+    "type": "json_schema",
+    "json_schema": {
+      "name": "verdict",
+      "strict": true,
+      "schema": {
+        "type": "object",
+        "properties": {
+          "nonce": {
+            "type": "string"
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny"
+            ]
+          }
+        },
+        "required": [
+          "nonce",
+          "reasoning",
+          "verdict"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "stream": true,
+  "stream_options": {
+    "include_usage": true
+  }
+}

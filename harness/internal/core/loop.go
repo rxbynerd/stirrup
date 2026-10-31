@@ -1587,6 +1587,10 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 	}
 	if err != nil {
 		scrubbed := recordSpanError(span, err)
+		structuredOutput := guard.ErrorStructuredOutput(err)
+		if structuredOutput != "" {
+			span.SetAttributes(attribute.String("guard.structured_output", structuredOutput))
+		}
 		span.End()
 		guardID := guardIDFromCheck(decision, err)
 		if l.Metrics != nil {
@@ -1604,9 +1608,10 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 		}
 		if failOpen {
 			return true, &guard.Decision{
-				Verdict: guard.VerdictAllow,
-				Reason:  "fail_open: " + scrubbed,
-				GuardID: guardID,
+				Verdict:          guard.VerdictAllow,
+				Reason:           "fail_open: " + scrubbed,
+				GuardID:          guardID,
+				StructuredOutput: structuredOutput,
 			}, false
 		}
 		return false, nil, false
@@ -1617,6 +1622,9 @@ func (l *AgenticLoop) guardCheck(ctx context.Context, in guard.Input, failOpen b
 		attribute.Float64("guard.score", decision.Score),
 		attribute.Int64("guard.latency_ms", elapsed.Milliseconds()),
 	)
+	if decision.StructuredOutput != "" {
+		span.SetAttributes(attribute.String("guard.structured_output", decision.StructuredOutput))
+	}
 	span.End()
 
 	// Distinct from a regular allow — surfaced as its own metric/event

@@ -1069,6 +1069,13 @@ type StructuredResultSupport func(provider, model string) bool
 // run's primary provider.
 type ToolSearchSupport func(provider, model string) quirks.ToolSearchCapability
 
+// OutputSchemaSupport reports whether the run's primary provider
+// advertises a StreamParams.OutputSchema control for a model. The judges
+// request their verdict schema regardless and record this answer on the
+// verdict, so parse failures can be split by whether the request carried
+// an advertised schema.
+type OutputSchemaSupport func(model string) bool
+
 // sendsStructuredResults resolves StructuredResults for one turn's routing
 // selection.
 func (l *AgenticLoop) sendsStructuredResults(provider, model string) bool {

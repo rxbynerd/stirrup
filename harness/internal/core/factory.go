@@ -377,7 +377,8 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	// 10. GuardRail, built after providers so cloud-judge can reuse the
 	// default ProviderAdapter, and shieldstral can resolve its apiKeyRef.
-	gr, err := buildGuardRail(ctx, config.GuardRail, providers, auxProv, secrets, ledger.reportExternal)
+	outputSchema := buildOutputSchemaSupport(config, quirks.DefaultRegistry())
+	gr, err := buildGuardRail(ctx, config.GuardRail, providers, auxProv, secrets, ledger.reportExternal, outputSchema)
 	if err != nil {
 		cleanup()
 		return nil, fmt.Errorf("build guardrail: %w", err)
@@ -431,7 +432,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// with the appropriate type label. Construction is deferred to here
 	// (rather than step 7) so the metric-recorder wrapping centralised
 	// in buildVerifier sees a non-nil metrics on the only call site.
-	v = buildVerifier(config.Verifier, auxProv, metrics)
+	v = buildVerifier(config.Verifier, auxProv, metrics, outputSchema)
 
 	// Applied before the metrics wrapper so gate denials still land in
 	// stirrup.permission.decisions under the policy label (true
@@ -755,6 +756,15 @@ func buildStructuredResultSupport(config *types.RunConfig, caps capabilityResolv
 	return func(key, model string) bool {
 		c := caps.Resolve(targetFor(config, key, model)).StructuredToolResults
 		return c.Supported && (c.ContentBlockArray || c.ObjectResponse)
+	}
+}
+
+// buildOutputSchemaSupport resolves the OutputSchema capability of the
+// default provider against the registry its adapter gates on, endpoint
+// profile included, so the recorded mode matches what went on the wire.
+func buildOutputSchemaSupport(config *types.RunConfig, caps capabilityResolver) OutputSchemaSupport {
+	return func(model string) bool {
+		return caps.Resolve(targetFor(config, "", model)).OutputSchema.Supported
 	}
 }
 
@@ -1807,12 +1817,12 @@ func buildEditStrategy(cfg types.EditStrategyConfig) edit.EditStrategy {
 // composite at every level) is wrapped with verifier.NewMetricRecorder
 // when metrics is non-nil; metrics=nil skips wrapping (used before the
 // run's Metrics instance exists, ahead of a later rebuild).
-func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter, metrics *observability.Metrics) verifier.Verifier {
+func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter, metrics *observability.Metrics, outputSchema OutputSchemaSupport) verifier.Verifier {
 	switch cfg.Type {
 	case "composite":
 		subs := make([]verifier.Verifier, len(cfg.Verifiers))
 		for i, sub := range cfg.Verifiers {
-			subs[i] = buildVerifier(sub, prov, metrics)
+			subs[i] = buildVerifier(sub, prov, metrics, outputSchema)
 		}
 		return verifier.NewMetricRecorder(verifier.NewCompositeVerifier(subs), metrics, "composite")
 	case "llm-judge":
@@ -1820,7 +1830,7 @@ func buildVerifier(cfg types.VerifierConfig, prov provider.ProviderAdapter, metr
 		if model == "" {
 			model = "claude-haiku-5-5"
 		}
-		return verifier.NewMetricRecorder(verifier.NewLLMJudgeVerifier(prov, model, cfg.Criteria), metrics, "llm-judge")
+		return verifier.NewMetricRecorder(verifier.NewLLMJudgeVerifier(prov, model, cfg.Criteria, outputSchema), metrics, "llm-judge")
 	case "test-runner":
 		timeout := time.Duration(cfg.Timeout) * time.Second
 		return verifier.NewMetricRecorder(verifier.NewTestRunnerVerifier(cfg.Command, timeout), metrics, "test-runner")
@@ -1844,11 +1854,11 @@ var shieldstralDefaultPhases = []string{"pre_turn", "post_turn"}
 // (which may be nil). The outer Phases gate (when non-empty) is applied
 // after the inner guard is built so a misconfigured PhaseGated does not
 // silently bypass the guard at non-listed phases.
-func buildGuardRail(ctx context.Context, cfg *types.GuardRailConfig, providers map[string]provider.ProviderAdapter, defaultProvider provider.ProviderAdapter, secrets security.SecretStore, reportExternal func(types.TokenUsage)) (guard.GuardRail, error) {
+func buildGuardRail(ctx context.Context, cfg *types.GuardRailConfig, providers map[string]provider.ProviderAdapter, defaultProvider provider.ProviderAdapter, secrets security.SecretStore, reportExternal func(types.TokenUsage), outputSchema OutputSchemaSupport) (guard.GuardRail, error) {
 	if cfg == nil || cfg.Type == "" || cfg.Type == "none" {
 		return guard.NewNoop(), nil
 	}
-	return buildGuardRailNode(ctx, cfg, providers, defaultProvider, secrets, reportExternal)
+	return buildGuardRailNode(ctx, cfg, providers, defaultProvider, secrets, reportExternal, outputSchema)
 }
 
 // buildGuardRailNode is the recursive worker for buildGuardRail. It
@@ -1857,7 +1867,7 @@ func buildGuardRail(ctx context.Context, cfg *types.GuardRailConfig, providers m
 // config validation time) — but we still defend in depth by returning
 // an error for any unsupported type so a non-CLI caller bypassing
 // validation gets a clear diagnostic instead of a silent allow.
-func buildGuardRailNode(ctx context.Context, cfg *types.GuardRailConfig, providers map[string]provider.ProviderAdapter, defaultProvider provider.ProviderAdapter, secrets security.SecretStore, reportExternal func(types.TokenUsage)) (guard.GuardRail, error) {
+func buildGuardRailNode(ctx context.Context, cfg *types.GuardRailConfig, providers map[string]provider.ProviderAdapter, defaultProvider provider.ProviderAdapter, secrets security.SecretStore, reportExternal func(types.TokenUsage), outputSchema OutputSchemaSupport) (guard.GuardRail, error) {
 	switch cfg.Type {
 	case "none":
 		return guard.NewNoop(), nil
@@ -1918,9 +1928,10 @@ func buildGuardRailNode(ctx context.Context, cfg *types.GuardRailConfig, provide
 		// FailOpen lives at the GuardRailConfig level (consulted via
 		// guardFailOpen() in the loop). The adapter does not read it.
 		cj, err := guard.NewCloudJudge(guard.CloudJudgeConfig{
-			Provider: defaultProvider,
-			Model:    cfg.Model,
-			Timeout:  time.Duration(cfg.TimeoutMs) * time.Millisecond,
+			Provider:              defaultProvider,
+			Model:                 cfg.Model,
+			Timeout:               time.Duration(cfg.TimeoutMs) * time.Millisecond,
+			OutputSchemaSupported: outputSchema,
 		})
 		if err != nil {
 			return nil, err
@@ -1929,7 +1940,7 @@ func buildGuardRailNode(ctx context.Context, cfg *types.GuardRailConfig, provide
 	case "composite":
 		guards := make([]guard.GuardRail, 0, len(cfg.Stages))
 		for i := range cfg.Stages {
-			stage, err := buildGuardRailNode(ctx, &cfg.Stages[i], providers, defaultProvider, secrets, reportExternal)
+			stage, err := buildGuardRailNode(ctx, &cfg.Stages[i], providers, defaultProvider, secrets, reportExternal, outputSchema)
 			if err != nil {
 				return nil, fmt.Errorf("composite stage %d: %w", i, err)
 			}

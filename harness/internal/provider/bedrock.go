@@ -20,6 +20,7 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
+	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -151,6 +152,11 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 			slog.Int("tool_choice", int(params.ToolChoice)),
 		)
 	}
+
+	// Converse exposes outputConfig.textFormat, but the adapter resolves
+	// no quirks and projects no structured-output field, so the caller's
+	// prompt-only JSON contract applies.
+	logDroppedOutputSchema(ctx, logger, "bedrock", params.Model, params.OutputSchema, quirks.OutputSchemaCapability{})
 
 	input, err := buildConverseStreamInput(params)
 	if err != nil {

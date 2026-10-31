@@ -38,7 +38,29 @@ Do not include any text outside the JSON object.`
 
 	conversationLabel = "CONVERSATION"
 	toolResultLabel   = "TOOL_RESULT"
+
+	// judgeSchemaName labels the verdict schema on wires that need a name.
+	judgeSchemaName = "llm_judge_verdict"
+
+	// judgeVerdictSchema is the verdict object the system prompt describes
+	// as a JSON Schema: reasoning first, then nonce, passed and feedback,
+	// every member required and nothing else allowed.
+	judgeVerdictSchema = `{"type":"object","properties":{"reasoning":{"type":"string"},"nonce":{"type":"string"},"passed":{"type":"boolean"},"feedback":{"type":"string"}},"required":["reasoning","nonce","passed","feedback"],"additionalProperties":false}`
+
+	// detailStructuredOutput is the VerificationResult.Details key
+	// recording whether the request carried the verdict schema for a
+	// model whose quirks advertise the control
+	// (types.JudgeStructuredJSONSchema) or the prompt alone asked for JSON
+	// (types.JudgeStructuredPromptOnly).
+	detailStructuredOutput = "structuredOutput"
 )
+
+// judgeOutputSchema is the StreamParams.OutputSchema every Verify call
+// requests. Adapters whose model has no structured-output control drop
+// it, and the prompt-only contract applies.
+func judgeOutputSchema() *types.OutputSchema {
+	return &types.OutputSchema{Name: judgeSchemaName, Schema: json.RawMessage(judgeVerdictSchema)}
+}
 
 // errJudgeIncomplete marks a judge stream that ended without a normal
 // completion, such as one cut at judgeMaxTokens.
@@ -48,20 +70,32 @@ var errJudgeIncomplete = errors.New("judge stream incomplete")
 // natural-language criteria. This is useful for subjective or complex
 // verification that cannot be reduced to a test command exit code.
 type LLMJudgeVerifier struct {
-	provider provider.ProviderAdapter
-	model    string
-	criteria string
-	entropy  io.Reader // source of per-call fence nonces
+	provider         provider.ProviderAdapter
+	model            string
+	criteria         string
+	entropy          io.Reader // source of per-call fence nonces
+	structuredOutput string    // detailStructuredOutput value recorded on every result
 }
 
-// NewLLMJudgeVerifier creates a verifier that uses the given provider and model
-// to judge conversation output against the specified criteria.
-func NewLLMJudgeVerifier(prov provider.ProviderAdapter, model string, criteria string) *LLMJudgeVerifier {
+// NewLLMJudgeVerifier creates a verifier that uses the given provider and
+// model to judge conversation output against the specified criteria.
+// outputSchemaSupported reports whether the quirks registry advertises a
+// StreamParams.OutputSchema control on prov for a model (the factory
+// resolves it with the lookup the adapter gates on); nil means prompt-only.
+// The verdict schema is requested either way, and the answer decides what
+// the result's structuredOutput detail records and whether a rejected
+// request is retried without the schema.
+func NewLLMJudgeVerifier(prov provider.ProviderAdapter, model string, criteria string, outputSchemaSupported func(model string) bool) *LLMJudgeVerifier {
+	structuredOutput := types.JudgeStructuredPromptOnly
+	if outputSchemaSupported != nil && outputSchemaSupported(model) {
+		structuredOutput = types.JudgeStructuredJSONSchema
+	}
 	return &LLMJudgeVerifier{
-		provider: prov,
-		model:    model,
-		criteria: criteria,
-		entropy:  rand.Reader,
+		provider:         prov,
+		model:            model,
+		criteria:         criteria,
+		entropy:          rand.Reader,
+		structuredOutput: structuredOutput,
 	}
 }
 
@@ -74,7 +108,7 @@ func (v *LLMJudgeVerifier) Verify(ctx context.Context, vc VerifyContext) (*types
 	}
 	userContent := v.buildUserMessage(fence, vc)
 
-	ch, err := v.provider.Stream(ctx, types.StreamParams{
+	params := types.StreamParams{
 		Model:       v.model,
 		System:      judgeSystemPrompt,
 		Messages:    []types.Message{{Role: "user", Content: []types.ContentBlock{{Type: "text", Text: userContent}}}},
@@ -82,20 +116,46 @@ func (v *LLMJudgeVerifier) Verify(ctx context.Context, vc VerifyContext) (*types
 		Temperature: types.Float64Ptr(judgeTemperature),
 		// Only the verdict text is read, so reasoning text is not requested.
 		ReasoningSummary: types.ReasoningSummaryOff,
-	})
+		OutputSchema:     judgeOutputSchema(),
+	}
+	mode := v.structuredOutput
+	ch, err := v.provider.Stream(ctx, params)
+	// A rule that advertises the control for a provider that then rejects
+	// the schema must not turn a working prompt-only judge into a failing
+	// one, so the request is sent once more without it.
+	if err != nil && mode == types.JudgeStructuredJSONSchema && provider.IsRequestRejected(err) {
+		params.OutputSchema = nil
+		mode = types.JudgeStructuredPromptOnly
+		ch, err = v.provider.Stream(ctx, params)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("llm-judge verifier: stream request failed: %w", err)
 	}
 
 	response, err := collectStreamText(ctx, ch)
 	if errors.Is(err, errJudgeIncomplete) {
-		return malformedJudgeResponse(strings.TrimSpace(response), err), nil
+		return recordStructuredOutput(malformedJudgeResponse(strings.TrimSpace(response), err), mode), nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("llm-judge verifier: stream error: %w", err)
 	}
 
-	return parseJudgeResponse(response, fence.Nonce())
+	result, err := parseJudgeResponse(response, fence.Nonce())
+	if err != nil {
+		return nil, err
+	}
+	return recordStructuredOutput(result, mode), nil
+}
+
+// recordStructuredOutput stamps the result with how the verdict was
+// requested, so malformed responses can be split by whether the request
+// carried an advertised schema.
+func recordStructuredOutput(result *types.VerificationResult, mode string) *types.VerificationResult {
+	if result.Details == nil {
+		result.Details = map[string]any{}
+	}
+	result.Details[detailStructuredOutput] = mode
+	return result
 }
 
 // buildUserMessage serializes the criteria and the conversation for the
