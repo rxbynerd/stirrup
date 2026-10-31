@@ -1,6 +1,7 @@
 package spec
 
 import (
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -135,4 +136,48 @@ func TestAcceptanceSuite_JudgeHeredocsTerminate(t *testing.T) {
 		})
 	}
 	must.NotZero(seen, "no judge writes a hidden test file; the heredoc check has nothing to cover")
+}
+
+// TestAcceptanceSuite_PostEditChecksTargetOnlyTheirTasks keeps the
+// suite-level post-edit checks well formed and scoped: each hidden-test
+// heredoc terminates and is removed on exit, and each glob matches the
+// two files its task creates and no file another task's prompt names.
+func TestAcceptanceSuite_PostEditChecksTargetOnlyTheirTasks(t *testing.T) {
+	must := require.New(t)
+	suite := loadAcceptanceSuite(t)
+	must.NotNil(suite.RunConfig, "the suite has no baseline run_config")
+	targets := map[string][]string{
+		"*percent*.go": {"percent.go", "example_percent_test.go"},
+		"*lenient*.go": {"lenient.go", "example_lenient_test.go"},
+	}
+	checks := suite.RunConfig.Tools.PostEdit
+	must.Len(checks, len(targets))
+	for _, check := range checks {
+		t.Run(check.Glob, func(t *testing.T) {
+			must := require.New(t)
+			files, ok := targets[check.Glob]
+			must.True(ok, "unexpected post-edit glob %q", check.Glob)
+			must.Contains(check.Command, "\nCHECK_EOF\n", "check heredoc must terminate with CHECK_EOF at column 0")
+			must.Contains(check.Command, "trap 'rm -f zz_", "check must remove its hidden test file on exit")
+			for _, f := range files {
+				ok, err := path.Match(check.Glob, f)
+				must.NoError(err)
+				must.True(ok, "glob %q must match %s", check.Glob, f)
+			}
+			for _, task := range suite.Tasks {
+				if strings.HasSuffix(task.ID, "-under-post-edit-check") {
+					continue
+				}
+				for _, word := range strings.Fields(task.Prompt) {
+					word = strings.Trim(word, "`.,:;()")
+					if !strings.HasSuffix(word, ".go") {
+						continue
+					}
+					ok, err := path.Match(check.Glob, path.Base(word))
+					must.NoError(err)
+					must.False(ok, "glob %q matches %s, named by task %s", check.Glob, word, task.ID)
+				}
+			}
+		})
+	}
 }

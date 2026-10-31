@@ -18,6 +18,9 @@
 // The `add-function-with-verifier-retry` task also exercises recovery:
 // its verifier rejects the first submission unconditionally, then runs
 // the real tests, and the judge confirms the verifier ran at least twice.
+// The two `*-under-post-edit-check` tasks fail a suite-level post-edit
+// check on their first edit, so A/B runs of feedback features have tasks
+// a first attempt does not pass.
 // A per-task verifier needs a suite baseline, so the suite-level
 // run_config below pins Anthropic Sonnet 5 and a Go-only tool set
 // without web_fetch (the agent must not read the upstream fix). The
@@ -33,7 +36,7 @@
 // eval/suites/README.md.
 
 suite "acceptance" {
-  description = "Opt-in acceptance suite: eight realistic tasks on pinned revisions of small public Go repositories, including a verifier that fails once before it passes."
+  description = "Opt-in acceptance suite: ten realistic tasks on pinned revisions of small public Go repositories, including a verifier that fails once before it passes and two tasks whose first edit fails a post-edit check."
 
   run_config {
     mode      = "execution"
@@ -56,6 +59,127 @@ suite "acceptance" {
 
     tools {
       built_in = ["read_file", "write_file", "edit_file", "list_directory", "grep_files", "find_files", "run_command"]
+
+      // Matches only the files the two *-under-post-edit-check tasks
+      // create. Each check needs both of its task's files and a hidden
+      // conformance test, so the first edit fails it by construction.
+      post_edit {
+        glob            = "*percent*.go"
+        timeout_seconds = 120
+        command         = <<-EOT
+          if ! grep -q '^func ExamplePercent()' example_percent_test.go 2>/dev/null; then
+            echo "example_percent_test.go must define ExamplePercent with an // Output: comment"
+            exit 1
+          fi
+          trap 'rm -f zz_percent_check_test.go' EXIT
+          cat > zz_percent_check_test.go <<'CHECK_EOF'
+          package humanize
+
+          import (
+            "math"
+            "testing"
+          )
+
+          func TestPostEditCheckPercent(t *testing.T) {
+            cases := []struct {
+              part, whole float64
+              decimals    int
+              want        string
+            }{
+              {1, 3, 1, "33.3%"},
+              {2, 3, 0, "67%"},
+              {1, 2, 2, "50.00%"},
+              {3, 2, 0, "150%"},
+              {0, 5, 1, "0.0%"},
+              {1, 8, 0, "13%"},
+              {1, 16, 1, "6.3%"},
+              {-1, 16, 1, "-6.3%"},
+              {-1, 4, 0, "-25%"},
+              {-1, 1000, 0, "0%"},
+              {1, 3, -2, "33%"},
+              {1, 0, 1, "n/a"},
+              {math.NaN(), 1, 1, "n/a"},
+              {1, math.Inf(1), 1, "n/a"},
+              {math.Inf(-1), 1, 1, "n/a"},
+            }
+            for _, tc := range cases {
+              if got := Percent(tc.part, tc.whole, tc.decimals); got != tc.want {
+                t.Errorf("Percent(%v, %v, %d) = %q, want %q", tc.part, tc.whole, tc.decimals, got, tc.want)
+              }
+            }
+          }
+          CHECK_EOF
+          go vet ./... && go test -run 'Percent' ./...
+        EOT
+      }
+
+      post_edit {
+        glob            = "*lenient*.go"
+        timeout_seconds = 120
+        command         = <<-EOT
+          if ! grep -q '^func ExampleParseLenient()' example_lenient_test.go 2>/dev/null; then
+            echo "example_lenient_test.go must define ExampleParseLenient with an // Output: comment"
+            exit 1
+          fi
+          trap 'rm -f zz_lenient_check_test.go' EXIT
+          cat > zz_lenient_check_test.go <<'CHECK_EOF'
+          package xid
+
+          import (
+            "errors"
+            "fmt"
+            "testing"
+          )
+
+          func TestPostEditCheckParseLenient(t *testing.T) {
+            const canonical = "9m4e2mr0ui3e8a215n4g"
+            want, err := FromString(canonical)
+            if err != nil {
+              t.Fatal(err)
+            }
+            for _, in := range []string{
+              canonical,
+              "9M4E2MR0UI3E8A215N4G",
+              "  9m4e2mr0ui3e8a215n4g\n",
+              "xid:9m4e2mr0ui3e8a215n4g",
+              "XID:9m4e2mr0ui3e8a215n4g",
+              "Xid:9M4E2MR0UI3E8A215N4G",
+              "\txid:9m4e2mr0ui3e8a215n4g ",
+            } {
+              got, err := ParseLenient(in)
+              if err != nil || got != want {
+                t.Errorf("ParseLenient(%q) = %v, %v; want %v, nil", in, got, err, want)
+              }
+            }
+            for _, in := range []string{
+              "",
+              "   ",
+              "xid:",
+              "XID:  ",
+              "xid:xid:9m4e2mr0ui3e8a215n4g",
+              "xid: 9m4e2mr0ui3e8a215n4g",
+              "9m4e2mr0ui3e 8a215n4g",
+              "id:9m4e2mr0ui3e8a215n4g",
+              "9m4e2mr0ui3e8a215n4",
+              "9m4e2mr0ui3e8a215n4!",
+            } {
+              got, err := ParseLenient(in)
+              if !errors.Is(err, ErrInvalidID) {
+                t.Errorf("ParseLenient(%q) err = %v, want one wrapping ErrInvalidID", in, err)
+                continue
+              }
+              if wantMsg := fmt.Sprintf("xid: invalid ID: %q", in); err.Error() != wantMsg {
+                t.Errorf("ParseLenient(%q) err = %q, want %q", in, err.Error(), wantMsg)
+              }
+              if got != (ID{}) {
+                t.Errorf("ParseLenient(%q) = %v, want the zero ID on error", in, got)
+              }
+            }
+          }
+          CHECK_EOF
+          go vet ./... && go test -run 'Lenient' ./...
+        EOT
+      }
     }
   }
 
@@ -438,6 +562,144 @@ suite "acceptance" {
           }
         }
       }
+    }
+  }
+
+  task "add-percent-formatter-under-post-edit-check" {
+    description = "Add a formatting function with exact rounding and edge-case rules, plus an example test. The suite's post-edit check on these files needs both of them and runs a hidden conformance test, so the first edit fails it; the judge reruns the hidden test."
+    repo        = "https://github.com/dustin/go-humanize"
+    ref         = "a1b4e66b9a6d890e9e15e7091cf16c8032367d6e"
+    mode        = "execution"
+    prompt      = <<-EOT
+      Add an exported function `Percent(part, whole float64, decimals int) string` to this package in a new file percent.go, and an example function `ExamplePercent` with an `// Output:` comment in a new file example_percent_test.go.
+
+      Percent formats part/whole as a percentage with exactly `decimals` digits after the decimal point, followed by `%`: `Percent(1, 3, 1)` is `33.3%` and `Percent(1, 2, 2)` is `50.00%`. It rounds half away from zero (`Percent(1, 8, 0)` is `13%`), treats a negative `decimals` as 0, never prints a negative zero (`Percent(-1, 1000, 0)` is `0%`), and returns `n/a` when whole is 0 or either argument is NaN or infinite.
+
+      Checks may run after your edits; act on any failure they report. Make sure `go vet ./...` and `go test ./...` pass.
+    EOT
+
+    judge {
+      type = "test-command"
+      command = <<-EOT
+        grep -q '^func ExamplePercent()' example_percent_test.go || exit 1
+        trap 'rm -f zz_judge_test.go' EXIT
+        cat > zz_judge_test.go <<'JUDGE_EOF'
+        package humanize
+
+        import (
+          "math"
+          "testing"
+        )
+
+        func TestJudgePercent(t *testing.T) {
+          cases := []struct {
+            part, whole float64
+            decimals    int
+            want        string
+          }{
+            {1, 3, 1, "33.3%"},
+            {2, 3, 0, "67%"},
+            {1, 2, 2, "50.00%"},
+            {3, 2, 0, "150%"},
+            {0, 5, 1, "0.0%"},
+            {1, 8, 0, "13%"},
+            {1, 16, 1, "6.3%"},
+            {-1, 16, 1, "-6.3%"},
+            {-1, 4, 0, "-25%"},
+            {-1, 1000, 0, "0%"},
+            {1, 3, -2, "33%"},
+            {1, 0, 1, "n/a"},
+            {math.NaN(), 1, 1, "n/a"},
+            {1, math.Inf(1), 1, "n/a"},
+            {math.Inf(-1), 1, 1, "n/a"},
+          }
+          for _, tc := range cases {
+            if got := Percent(tc.part, tc.whole, tc.decimals); got != tc.want {
+              t.Errorf("Percent(%v, %v, %d) = %q, want %q", tc.part, tc.whole, tc.decimals, got, tc.want)
+            }
+          }
+        }
+        JUDGE_EOF
+        go vet ./... && go test ./...
+      EOT
+    }
+  }
+
+  task "add-lenient-parser-under-post-edit-check" {
+    description = "Add a lenient ID parser with exact acceptance and error-message rules, plus an example test. The suite's post-edit check on these files needs both of them and runs a hidden conformance test, so the first edit fails it; the judge reruns the hidden test."
+    repo        = "https://github.com/rs/xid"
+    ref         = "1b855c3d62f5df92838d8ab14261cc5dbf2fd046"
+    mode        = "execution"
+    prompt      = <<-EOT
+      Add an exported function `ParseLenient(s string) (ID, error)` to this package in a new file lenient.go, and an example function `ExampleParseLenient` with an `// Output:` comment in a new file example_lenient_test.go.
+
+      ParseLenient accepts what FromString accepts, and also: surrounding whitespace, trimmed once before anything else; one optional `xid:` prefix in any letter case; and the ID's characters in upper case. Whitespace anywhere else, a repeated prefix, or anything else FromString would reject is invalid. On invalid input it returns the zero ID and an error that wraps ErrInvalidID (so `errors.Is(err, ErrInvalidID)` holds) and whose message is `xid: invalid ID: ` followed by the original, untrimmed input quoted as with `%q`.
+
+      Checks may run after your edits; act on any failure they report. Make sure `go vet ./...` and `go test ./...` pass.
+    EOT
+
+    judge {
+      type = "test-command"
+      command = <<-EOT
+        grep -q '^func ExampleParseLenient()' example_lenient_test.go || exit 1
+        trap 'rm -f zz_judge_test.go' EXIT
+        cat > zz_judge_test.go <<'JUDGE_EOF'
+        package xid
+
+        import (
+          "errors"
+          "fmt"
+          "testing"
+        )
+
+        func TestJudgeParseLenient(t *testing.T) {
+          const canonical = "9m4e2mr0ui3e8a215n4g"
+          want, err := FromString(canonical)
+          if err != nil {
+            t.Fatal(err)
+          }
+          for _, in := range []string{
+            canonical,
+            "9M4E2MR0UI3E8A215N4G",
+            "  9m4e2mr0ui3e8a215n4g\n",
+            "xid:9m4e2mr0ui3e8a215n4g",
+            "XID:9m4e2mr0ui3e8a215n4g",
+            "Xid:9M4E2MR0UI3E8A215N4G",
+            "\txid:9m4e2mr0ui3e8a215n4g ",
+          } {
+            got, err := ParseLenient(in)
+            if err != nil || got != want {
+              t.Errorf("ParseLenient(%q) = %v, %v; want %v, nil", in, got, err, want)
+            }
+          }
+          for _, in := range []string{
+            "",
+            "   ",
+            "xid:",
+            "XID:  ",
+            "xid:xid:9m4e2mr0ui3e8a215n4g",
+            "xid: 9m4e2mr0ui3e8a215n4g",
+            "9m4e2mr0ui3e 8a215n4g",
+            "id:9m4e2mr0ui3e8a215n4g",
+            "9m4e2mr0ui3e8a215n4",
+            "9m4e2mr0ui3e8a215n4!",
+          } {
+            got, err := ParseLenient(in)
+            if !errors.Is(err, ErrInvalidID) {
+              t.Errorf("ParseLenient(%q) err = %v, want one wrapping ErrInvalidID", in, err)
+              continue
+            }
+            if wantMsg := fmt.Sprintf("xid: invalid ID: %q", in); err.Error() != wantMsg {
+              t.Errorf("ParseLenient(%q) err = %q, want %q", in, err.Error(), wantMsg)
+            }
+            if got != (ID{}) {
+              t.Errorf("ParseLenient(%q) = %v, want the zero ID on error", in, got)
+            }
+          }
+        }
+        JUDGE_EOF
+        go vet ./... && go test ./...
+      EOT
     }
   }
 }

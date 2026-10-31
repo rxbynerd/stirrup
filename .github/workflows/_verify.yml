@@ -132,6 +132,19 @@ jobs:
             -ldflags="-X github.com/rxbynerd/stirrup/types/version.version=${VERSION_LABEL} -X github.com/rxbynerd/stirrup/types/version.commit=${COMMIT_SHA}" \
             -o stirrup-eval ./eval/cmd/eval
 
+      # A build or test that rewrites a committed checksum file means the
+      # commit is missing that change. Failing here keeps the drift from
+      # reappearing as an uncommitted diff in every contributor's checkout.
+      - name: Check module checksum files are committed
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- go.work.sum ':(glob)**/go.sum'
+          untracked="$(git ls-files --others --exclude-standard -- go.work.sum ':(glob)**/go.sum')"
+          if [ -n "$untracked" ]; then
+            echo "::error::uncommitted checksum files: ${untracked}"
+            exit 1
+          fi
+
       # Runs the tool-use suite through the binaries built above from its
       # recordings: no provider credential, no network. `stirrup-eval run`
       # exits zero on failed tasks (gating is the compare subcommand's

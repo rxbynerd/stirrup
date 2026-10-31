@@ -113,12 +113,17 @@ func TestEvalOutcomeFor_MapsRunOutcomes(t *testing.T) {
 		{name: "hook_failed", trace: RunTrace{Outcome: "hook_failed"}, want: EvalInconclusive},
 		{name: "handoff_failed", trace: RunTrace{Outcome: "handoff_failed"}, want: EvalInconclusive},
 		{name: "control_stream_lost", trace: RunTrace{Outcome: "control_stream_lost"}, want: EvalInconclusive},
+		{name: "guardrail_blocked", trace: RunTrace{Outcome: "guardrail_blocked"}, want: EvalInconclusive},
+		{name: "rule_of_two_violation", trace: RunTrace{Outcome: "rule_of_two_violation"}, want: EvalInconclusive},
+		{name: "command_output_capture_failed", trace: RunTrace{Outcome: "command_output_capture_failed"}, want: EvalInconclusive},
+		{name: "command_output_archive_failed", trace: RunTrace{Outcome: "command_output_archive_failed"}, want: EvalInconclusive},
 
 		// Unknown / empty outcomes fall through to inconclusive so a
 		// future outcome class added upstream cannot silently land in
 		// the wrong bucket.
 		{name: "empty outcome", trace: RunTrace{Outcome: ""}, want: EvalInconclusive},
-		{name: "unknown outcome", trace: RunTrace{Outcome: "guardrail_blocked"}, want: EvalInconclusive},
+		{name: "unknown outcome", trace: RunTrace{Outcome: "some_future_outcome"}, want: EvalInconclusive},
+		{name: "provider stop reason", trace: RunTrace{Outcome: "refusal"}, want: EvalInconclusive},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -148,6 +153,13 @@ func TestRunHealthFor_MapsRunOutcomes(t *testing.T) {
 		{name: "budget_exceeded", outcome: "budget_exceeded", want: RunDegraded},
 		{name: "stalled", outcome: "stalled", want: RunDegraded},
 		{name: "cancelled", outcome: "cancelled", want: RunDegraded},
+		{name: "context_exhausted", outcome: "context_exhausted", want: RunDegraded},
+		{name: "handoff_failed", outcome: "handoff_failed", want: RunDegraded},
+		{name: "control_stream_lost", outcome: "control_stream_lost", want: RunDegraded},
+		{name: "guardrail_blocked", outcome: "guardrail_blocked", want: RunDegraded},
+		{name: "rule_of_two_violation", outcome: "rule_of_two_violation", want: RunDegraded},
+		{name: "command_output_capture_failed", outcome: "command_output_capture_failed", want: RunDegraded},
+		{name: "command_output_archive_failed", outcome: "command_output_archive_failed", want: RunDegraded},
 		{name: "refusal", outcome: "refusal", want: RunDegraded},
 		{name: "unknown future outcome", outcome: "some_future_outcome", want: RunDegraded},
 		{name: "empty outcome", outcome: "", want: RunDegraded},

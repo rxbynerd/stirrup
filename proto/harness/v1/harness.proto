@@ -2588,12 +2588,40 @@ message TraceEmitterConfig {
   // by the "gcs" emitter.
   string object_prefix = 8;
 
+  // Optional. Destination for the compressed command-output sidecar
+  // archive. When unset, jsonl and gcs traces place the archive beside
+  // the trace and other emitters keep a local archive whose path is
+  // reported as the RunResult's commandOutputArchive. See
+  // docs/configuration.md#command-output-capture.
+  TraceArchiveConfig archive = 14;
+
   // Credential override for the "gcs" emitter is intentionally NOT
   // surfaced on the wire today. The runtime resolves credentials via
   // workload-identity against the host's metadata server, which is
   // appropriate for Cloud Run / GKE. Adding a wire-level credential
   // override requires a follow-up CredentialConfig sub-message and
   // matching translation.
+}
+
+// TraceArchiveConfig selects where the command-output sidecar archive is
+// written. Mirrors RunConfig `traceEmitter.archive`. The credential
+// override has no wire field, for the same reason as
+// TraceEmitterConfig's: a "gcs" archive uses workload identity.
+message TraceArchiveConfig {
+  // Required. "local" or "gcs".
+  string type = 1;
+
+  // For "local": filesystem path of the archive. Required for "local";
+  // rejected for "gcs".
+  string file_path = 2;
+
+  // For "gcs": destination bucket. Required for "gcs"; rejected for
+  // "local".
+  string bucket = 3;
+
+  // For "gcs": object-name prefix joined with the archive name. Must not
+  // contain ".." segments; rejected for "local".
+  string object_prefix = 4;
 }
 
 // ---------------------------------------------------------------------------
@@ -2678,6 +2706,16 @@ message ToolsConfig {
   // Optional. Lazy tool loading. Mirrors RunConfig `tools.lazyLoading`;
   // off when unset (see docs/configuration.md#lazy-tool-loading).
   LazyToolLoadingConfig lazy_loading = 11;
+
+  // Optional. Model-facing presentation of the registered tools; changes
+  // only the names and descriptions the model sees, never dispatch
+  // identities or permission gating. Closed set:
+  //   "" or "default" — internal tool names (identity presentation).
+  //   "coding-classic" — terse coding-CLI aliases (grep_files → grep,
+  //                      find_files → find, run_command → bash).
+  // Mirrors RunConfig `tools.profile`; see
+  // docs/configuration.md#toolset-profiles.
+  string profile = 12;
 }
 
 // LazyToolLoadingConfig keeps the tool definitions a turn carries small:

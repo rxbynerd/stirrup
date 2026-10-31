@@ -45,6 +45,7 @@ stirrup/
       security/              # SecretStore, LogScrubber, input validation, judge-prompt data fences
       jsonextract/           # Nonce-bound JSON verdict extraction from free-form model output (guard + verifier)
       mcp/                   # MCP client: remote tool discovery via Streamable HTTP
+      invariants/            # Test-only go/ast checks for cross-package properties: run ledger, scrubbing, sandbox boundary, byte bounds, proto mirror, outcomes
   eval/                      # Eval framework
     cmd/eval/main.go         # CLI: run, compare, baseline, mine-failures, drift, compare-to-production
     judge/                   # test-command, file-exists, file-contains, composite
@@ -216,24 +217,20 @@ The `guard` package (`guard/`) provides an LLM-based safety classifier called at
 A `Justfile` is provided for common tasks:
 
 ```sh
+just check        # before pushing: build every module, test, lint
 just              # build + test
 just build        # build stirrup + eval binaries
-just test         # go test ./harness/... ./types/... ./eval/...
-just lint         # golangci-lint run ./harness/... ./types/... ./eval/...
+just test         # go test over harness, types, eval, examples/controlplane
+just lint         # golangci-lint over the same packages
 just proto        # buf generate
 just buf-lint     # buf lint
 just docker       # build stirrup Docker image
 just clean        # remove built binaries
 ```
 
-Or directly:
-
-```sh
-go test ./harness/... ./types/... ./eval/...
-go build ./harness/... ./types/... ./eval/...
-buf generate
-buf lint
-```
+Run `just check` before pushing. `go build ./...` at the repository
+root fails because the root is not a module; `just build-modules`
+compiles every module listed in `go.work`.
 
 ### Known Issue: gopls False Positives
 
@@ -251,8 +248,7 @@ the expected flow is:
    [`CONTRIBUTING.md#writing-tests`](CONTRIBUTING.md#writing-tests):
    `testify/require` assertions in `(t, want, got)` order, and
    `Test<Subject>_<Behaviour>[_<Detail>]` names that read on their own.
-4. Run targeted verification, broadening to `just test` when the blast radius
-   warrants it.
+4. Run targeted verification, then `just check` before pushing.
 5. Create a focused branch and commit the verified change.
 6. Push the branch and open a draft pull request for review.
 

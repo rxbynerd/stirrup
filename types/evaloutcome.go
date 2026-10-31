@@ -1,5 +1,10 @@
 package types
 
+import (
+	"maps"
+	"slices"
+)
+
 // EvalOutcome describes the *quality* of a harness run, collapsing
 // RunTrace.Outcome and RunTrace.VerificationResults onto
 // passed / failed / inconclusive so eval aggregates and mining
@@ -25,26 +30,60 @@ const (
 	EvalInconclusive EvalOutcome = "inconclusive"
 )
 
+// outcomeClass is how one RunTrace.Outcome value is judged.
+type outcomeClass struct {
+	eval   EvalOutcome
+	health RunHealth
+}
+
+// runOutcomes classifies every outcome the harness sets on
+// RunTrace.Outcome, plus "max_tokens", the provider stop reason the
+// harness relies on. Other provider stop reasons pass through verbatim
+// and fall to the unknown-outcome defaults. A new outcome is added here
+// and nowhere else.
+var runOutcomes = map[string]outcomeClass{
+	"success":                       {EvalPassed, RunHealthy},
+	"error":                         {EvalFailed, RunFailed},
+	"tool_failures":                 {EvalFailed, RunFailed},
+	"verification_failed":           {EvalFailed, RunFailed},
+	"structured_output_failed":      {EvalFailed, RunFailed},
+	"verification_error":            {EvalInconclusive, RunFailed},
+	"setup_failed":                  {EvalInconclusive, RunFailed},
+	"hook_failed":                   {EvalInconclusive, RunFailed},
+	"max_turns":                     {EvalInconclusive, RunDegraded},
+	"budget_exceeded":               {EvalInconclusive, RunDegraded},
+	"timeout":                       {EvalInconclusive, RunDegraded},
+	"max_tokens":                    {EvalInconclusive, RunDegraded},
+	"stalled":                       {EvalInconclusive, RunDegraded},
+	"cancelled":                     {EvalInconclusive, RunDegraded},
+	"context_exhausted":             {EvalInconclusive, RunDegraded},
+	"handoff_failed":                {EvalInconclusive, RunDegraded},
+	"control_stream_lost":           {EvalInconclusive, RunDegraded},
+	"guardrail_blocked":             {EvalInconclusive, RunDegraded},
+	"rule_of_two_violation":         {EvalInconclusive, RunDegraded},
+	"command_output_capture_failed": {EvalInconclusive, RunDegraded},
+	"command_output_archive_failed": {EvalInconclusive, RunDegraded},
+}
+
+// RunOutcomes returns every RunTrace.Outcome value the harness sets, plus
+// "max_tokens", sorted. Provider stop reasons passed through as the
+// outcome, such as "refusal", are not listed.
+func RunOutcomes() []string {
+	return slices.Sorted(maps.Keys(runOutcomes))
+}
+
 // EvalOutcomeFor maps a RunTrace's termination outcome and verifier
 // verdict onto an EvalOutcome. See docs/eval.md for the full table.
 func EvalOutcomeFor(t RunTrace) EvalOutcome {
-	switch t.Outcome {
-	case "success":
-		if verifierFailed(t.VerificationResults) {
-			return EvalFailed
-		}
-		return EvalPassed
-	case "verification_failed", "error", "tool_failures", "structured_output_failed":
+	if t.Outcome == "success" && verifierFailed(t.VerificationResults) {
 		return EvalFailed
-	case "max_turns", "budget_exceeded", "timeout", "max_tokens", "stalled",
-		"cancelled", "verification_error", "setup_failed", "hook_failed",
-		"handoff_failed", "control_stream_lost", "context_exhausted":
-		return EvalInconclusive
-	default:
-		// Conservative default: an unknown/future outcome must not be
-		// treated as a quality pass.
-		return EvalInconclusive
 	}
+	if class, ok := runOutcomes[t.Outcome]; ok {
+		return class.eval
+	}
+	// Conservative default: an unknown/future outcome must not be
+	// treated as a quality pass.
+	return EvalInconclusive
 }
 
 // verifierFailed reports whether the last recorded verifier attempt
@@ -85,16 +124,11 @@ func RunHealthFor(t *RunTrace, harnessFailed bool) RunHealth {
 	if t == nil || harnessFailed {
 		return RunFailed
 	}
-	switch t.Outcome {
-	case "success":
-		return RunHealthy
-	case "error", "tool_failures", "verification_failed", "verification_error",
-		"setup_failed", "hook_failed", "structured_output_failed":
-		return RunFailed
-	default:
-		// Limit hits, interruptions, and unknown or future outcomes.
-		return RunDegraded
+	if class, ok := runOutcomes[t.Outcome]; ok {
+		return class.health
 	}
+	// Provider stop reasons and unknown or future outcomes.
+	return RunDegraded
 }
 
 // VerificationStatus is the verifier verdict of a run: the last

@@ -7,6 +7,14 @@ build:
 test:
     go test ./harness/... ./types/... ./eval/... ./examples/controlplane/...
 
+# The repository root is not a module, so `go build ./...` there fails.
+# Compile every module listed in go.work.
+build-modules:
+    go build ./types/... ./gen/... ./harness/... ./eval/... ./examples/controlplane/...
+
+# Run before pushing: build every workspace module, test, and lint.
+check: build-modules test lint
+
 # Race-detector pass over the goroutine-heavy packages (executor —
 # which includes egressproxy — provider, core, and sandboxidentity,
 # whose no-token-in-logs proof must hold against the live refresher
@@ -200,6 +208,119 @@ int-test-openai-responses: build
         --trace /tmp/stirrup-int-test-openai-responses.jsonl \
         --prompt "Reply with the single word 'ok' and nothing else."
     jq -e 'select(.kind == "run_finished") | .trace.outcome == "success"' /tmp/stirrup-int-test-openai-responses.jsonl
+
+# === Live-probe keys ===
+#
+# Load provider keys from 1Password into a tmux session that live probes
+# then run in, so one 1Password approval per key serves every command.
+# Arguments are NAME=op://vault/item/field pairs, for example
+# ANTHROPIC_API_KEY, OPENAI_API_KEY or OPENROUTER_API_KEY; the repository
+# holds no vault paths. Each key is read inside the session, exported
+# only when non-empty, and reported as KEY_OK or KEY_MISSING; a value is
+# never printed or written to disk. The recipe waits up to 180 seconds for
+# the 1Password approvals and exits non-zero when any key is missing; a key
+# approved after that is exported but reported missing. op-session-check
+# repeats the presence check later, and is the check to run before
+# claiming a live probe ran. See CONTRIBUTING.md#live-provider-keys.
+
+# Load NAME=op://... keys into tmux session `session`.
+[positional-arguments]
+op-session session +refs:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    session="$1"
+    shift
+    # 1Password references name vaults, items and fields by these
+    # characters (others need IDs). Paths are typed into the session's
+    # shell, so nothing else, control characters included, may pass.
+    path_re='^op://[A-Za-z0-9 ._/?=-]+$'
+    for ref in "$@"; do
+        name="${ref%%=*}"
+        path="${ref#*=}"
+        if [[ ! "$name" =~ ^[A-Z_][A-Z0-9_]*$ || "$ref" != *=* ]]; then
+            echo "op-session: ${ref%%=*} is not NAME=op://vault/item/field" >&2
+            exit 2
+        fi
+        if [[ ! "$path" =~ $path_re ]]; then
+            echo "op-session: the path for ${name} must be op:// followed by letters, digits, spaces and . _ / ? = -" >&2
+            exit 2
+        fi
+    done
+    status_dir="$(mktemp -d)"
+    trap 'rm -rf "$status_dir"' EXIT
+    status="${status_dir}/status"
+    : > "$status"
+    if ! tmux has-session -t "=${session}" 2>/dev/null; then
+        tmux new-session -d -s "$session"
+    fi
+    for ref in "$@"; do
+        name="${ref%%=*}"
+        path="${ref#*=}"
+        # The leading space keeps the line, which holds the vault path but
+        # never the value, out of history in shells that ignore
+        # space-prefixed commands.
+        tmux send-keys -t "=${session}:" -l " __v=\"\$(op read '${path}')\"; if [ -n \"\$__v\" ]; then export ${name}=\"\$__v\"; echo KEY_OK ${name} >> '${status}'; else echo KEY_MISSING ${name} >> '${status}'; fi; unset __v"
+        tmux send-keys -t "=${session}:" Enter
+    done
+    tmux send-keys -t "=${session}:" -l " echo DONE >> '${status}'"
+    tmux send-keys -t "=${session}:" Enter
+    for _ in $(seq 1 180); do
+        grep -qx DONE "$status" && break
+        sleep 1
+    done
+    missing=0
+    for ref in "$@"; do
+        name="${ref%%=*}"
+        if grep -qx "KEY_OK ${name}" "$status"; then
+            echo "KEY_OK ${name}"
+        else
+            echo "KEY_MISSING ${name}"
+            missing=1
+        fi
+    done
+    exit "$missing"
+
+# Print KEY_OK or KEY_MISSING per variable in tmux session `session`.
+[positional-arguments]
+op-session-check session +names:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    session="$1"
+    shift
+    if ! tmux has-session -t "=${session}" 2>/dev/null; then
+        echo "op-session-check: no tmux session ${session}" >&2
+        exit 2
+    fi
+    for name in "$@"; do
+        if [[ ! "$name" =~ ^[A-Z_][A-Z0-9_]*$ ]]; then
+            echo "op-session-check: ${name} is not a variable name" >&2
+            exit 2
+        fi
+    done
+    status_dir="$(mktemp -d)"
+    trap 'rm -rf "$status_dir"' EXIT
+    status="${status_dir}/status"
+    : > "$status"
+    for name in "$@"; do
+        tmux send-keys -t "=${session}:" -l " if [ -n \"\${${name}:-}\" ]; then echo KEY_OK ${name}; else echo KEY_MISSING ${name}; fi >> '${status}'"
+        tmux send-keys -t "=${session}:" Enter
+    done
+    tmux send-keys -t "=${session}:" -l " echo DONE >> '${status}'"
+    tmux send-keys -t "=${session}:" Enter
+    for _ in $(seq 1 30); do
+        grep -qx DONE "$status" && break
+        sleep 1
+    done
+    missing=0
+    for name in "$@"; do
+        if grep -qx "KEY_OK ${name}" "$status"; then
+            echo "KEY_OK ${name}"
+        else
+            echo "KEY_MISSING ${name}"
+            missing=1
+        fi
+    done
+    exit "$missing"
 
 # Remove every local worktree whose branch has been merged into origin/main,
 # then delete the now-orphaned local branch. Fetches first so the merged

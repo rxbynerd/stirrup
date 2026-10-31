@@ -6075,7 +6075,13 @@ type TraceEmitterConfig struct {
 	// GCS object name (e.g. "traces/" + runID + ".jsonl"). Empty is
 	// allowed; trailing slash is normalised by validation. Only consulted
 	// by the "gcs" emitter.
-	ObjectPrefix  string `protobuf:"bytes,8,opt,name=object_prefix,json=objectPrefix,proto3" json:"object_prefix,omitempty"`
+	ObjectPrefix string `protobuf:"bytes,8,opt,name=object_prefix,json=objectPrefix,proto3" json:"object_prefix,omitempty"`
+	// Optional. Destination for the compressed command-output sidecar
+	// archive. When unset, jsonl and gcs traces place the archive beside
+	// the trace and other emitters keep a local archive whose path is
+	// reported as the RunResult's commandOutputArchive. See
+	// docs/configuration.md#command-output-capture.
+	Archive       *TraceArchiveConfig `protobuf:"bytes,14,opt,name=archive,proto3" json:"archive,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6201,6 +6207,92 @@ func (x *TraceEmitterConfig) GetObjectPrefix() string {
 	return ""
 }
 
+func (x *TraceEmitterConfig) GetArchive() *TraceArchiveConfig {
+	if x != nil {
+		return x.Archive
+	}
+	return nil
+}
+
+// TraceArchiveConfig selects where the command-output sidecar archive is
+// written. Mirrors RunConfig `traceEmitter.archive`. The credential
+// override has no wire field, for the same reason as
+// TraceEmitterConfig's: a "gcs" archive uses workload identity.
+type TraceArchiveConfig struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. "local" or "gcs".
+	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	// For "local": filesystem path of the archive. Required for "local";
+	// rejected for "gcs".
+	FilePath string `protobuf:"bytes,2,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`
+	// For "gcs": destination bucket. Required for "gcs"; rejected for
+	// "local".
+	Bucket string `protobuf:"bytes,3,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	// For "gcs": object-name prefix joined with the archive name. Must not
+	// contain ".." segments; rejected for "local".
+	ObjectPrefix  string `protobuf:"bytes,4,opt,name=object_prefix,json=objectPrefix,proto3" json:"object_prefix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TraceArchiveConfig) Reset() {
+	*x = TraceArchiveConfig{}
+	mi := &file_harness_v1_harness_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TraceArchiveConfig) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TraceArchiveConfig) ProtoMessage() {}
+
+func (x *TraceArchiveConfig) ProtoReflect() protoreflect.Message {
+	mi := &file_harness_v1_harness_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TraceArchiveConfig.ProtoReflect.Descriptor instead.
+func (*TraceArchiveConfig) Descriptor() ([]byte, []int) {
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *TraceArchiveConfig) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *TraceArchiveConfig) GetFilePath() string {
+	if x != nil {
+		return x.FilePath
+	}
+	return ""
+}
+
+func (x *TraceArchiveConfig) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *TraceArchiveConfig) GetObjectPrefix() string {
+	if x != nil {
+		return x.ObjectPrefix
+	}
+	return ""
+}
+
 // ToolsConfig selects which tools are available to the model during the run.
 type ToolsConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -6273,14 +6365,25 @@ type ToolsConfig struct {
 	PostEdit []*PostEditCheck `protobuf:"bytes,10,rep,name=post_edit,json=postEdit,proto3" json:"post_edit,omitempty"`
 	// Optional. Lazy tool loading. Mirrors RunConfig `tools.lazyLoading`;
 	// off when unset (see docs/configuration.md#lazy-tool-loading).
-	LazyLoading   *LazyToolLoadingConfig `protobuf:"bytes,11,opt,name=lazy_loading,json=lazyLoading,proto3" json:"lazy_loading,omitempty"`
+	LazyLoading *LazyToolLoadingConfig `protobuf:"bytes,11,opt,name=lazy_loading,json=lazyLoading,proto3" json:"lazy_loading,omitempty"`
+	// Optional. Model-facing presentation of the registered tools; changes
+	// only the names and descriptions the model sees, never dispatch
+	// identities or permission gating. Closed set:
+	//
+	//	"" or "default" — internal tool names (identity presentation).
+	//	"coding-classic" — terse coding-CLI aliases (grep_files → grep,
+	//	                   find_files → find, run_command → bash).
+	//
+	// Mirrors RunConfig `tools.profile`; see
+	// docs/configuration.md#toolset-profiles.
+	Profile       string `protobuf:"bytes,12,opt,name=profile,proto3" json:"profile,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ToolsConfig) Reset() {
 	*x = ToolsConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[49]
+	mi := &file_harness_v1_harness_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6292,7 +6395,7 @@ func (x *ToolsConfig) String() string {
 func (*ToolsConfig) ProtoMessage() {}
 
 func (x *ToolsConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[49]
+	mi := &file_harness_v1_harness_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6305,7 +6408,7 @@ func (x *ToolsConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ToolsConfig.ProtoReflect.Descriptor instead.
 func (*ToolsConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{49}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *ToolsConfig) GetBuiltIn() []string {
@@ -6364,6 +6467,13 @@ func (x *ToolsConfig) GetLazyLoading() *LazyToolLoadingConfig {
 	return nil
 }
 
+func (x *ToolsConfig) GetProfile() string {
+	if x != nil {
+		return x.Profile
+	}
+	return ""
+}
+
 // LazyToolLoadingConfig keeps the tool definitions a turn carries small:
 // tools outside the eager set are deferred and reach the model only after
 // it searches for them. A deferred tool stays registered and
@@ -6396,7 +6506,7 @@ type LazyToolLoadingConfig struct {
 
 func (x *LazyToolLoadingConfig) Reset() {
 	*x = LazyToolLoadingConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[50]
+	mi := &file_harness_v1_harness_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6408,7 +6518,7 @@ func (x *LazyToolLoadingConfig) String() string {
 func (*LazyToolLoadingConfig) ProtoMessage() {}
 
 func (x *LazyToolLoadingConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[50]
+	mi := &file_harness_v1_harness_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6421,7 +6531,7 @@ func (x *LazyToolLoadingConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LazyToolLoadingConfig.ProtoReflect.Descriptor instead.
 func (*LazyToolLoadingConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{50}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *LazyToolLoadingConfig) GetEnabled() bool {
@@ -6478,7 +6588,7 @@ type CommandOutputConfig struct {
 
 func (x *CommandOutputConfig) Reset() {
 	*x = CommandOutputConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[51]
+	mi := &file_harness_v1_harness_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6490,7 +6600,7 @@ func (x *CommandOutputConfig) String() string {
 func (*CommandOutputConfig) ProtoMessage() {}
 
 func (x *CommandOutputConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[51]
+	mi := &file_harness_v1_harness_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6503,7 +6613,7 @@ func (x *CommandOutputConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandOutputConfig.ProtoReflect.Descriptor instead.
 func (*CommandOutputConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{51}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *CommandOutputConfig) GetEnabled() bool {
@@ -6572,7 +6682,7 @@ type PostEditCheck struct {
 
 func (x *PostEditCheck) Reset() {
 	*x = PostEditCheck{}
-	mi := &file_harness_v1_harness_proto_msgTypes[52]
+	mi := &file_harness_v1_harness_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6584,7 +6694,7 @@ func (x *PostEditCheck) String() string {
 func (*PostEditCheck) ProtoMessage() {}
 
 func (x *PostEditCheck) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[52]
+	mi := &file_harness_v1_harness_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6597,7 +6707,7 @@ func (x *PostEditCheck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostEditCheck.ProtoReflect.Descriptor instead.
 func (*PostEditCheck) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{52}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *PostEditCheck) GetGlob() string {
@@ -6652,7 +6762,7 @@ type ControlPlaneToolConfig struct {
 
 func (x *ControlPlaneToolConfig) Reset() {
 	*x = ControlPlaneToolConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[53]
+	mi := &file_harness_v1_harness_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6664,7 +6774,7 @@ func (x *ControlPlaneToolConfig) String() string {
 func (*ControlPlaneToolConfig) ProtoMessage() {}
 
 func (x *ControlPlaneToolConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[53]
+	mi := &file_harness_v1_harness_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6677,7 +6787,7 @@ func (x *ControlPlaneToolConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlPlaneToolConfig.ProtoReflect.Descriptor instead.
 func (*ControlPlaneToolConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{53}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *ControlPlaneToolConfig) GetName() string {
@@ -6750,7 +6860,7 @@ type MCPServerConfig struct {
 
 func (x *MCPServerConfig) Reset() {
 	*x = MCPServerConfig{}
-	mi := &file_harness_v1_harness_proto_msgTypes[54]
+	mi := &file_harness_v1_harness_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6762,7 +6872,7 @@ func (x *MCPServerConfig) String() string {
 func (*MCPServerConfig) ProtoMessage() {}
 
 func (x *MCPServerConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_harness_v1_harness_proto_msgTypes[54]
+	mi := &file_harness_v1_harness_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6775,7 +6885,7 @@ func (x *MCPServerConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MCPServerConfig.ProtoReflect.Descriptor instead.
 func (*MCPServerConfig) Descriptor() ([]byte, []int) {
-	return file_harness_v1_harness_proto_rawDescGZIP(), []int{54}
+	return file_harness_v1_harness_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *MCPServerConfig) GetName() string {
@@ -7275,7 +7385,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"policyFile\x12\x1a\n" +
 	"\bfallback\x18\x04 \x01(\tR\bfallback\"'\n" +
 	"\x11GitStrategyConfig\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\"\xcd\x05\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\"\x8f\x06\n" +
 	"\x12TraceEmitterConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1b\n" +
 	"\tfile_path\x18\x02 \x01(\tR\bfilePath\x12\x1a\n" +
@@ -7290,13 +7400,19 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x19capture_content_max_bytes\x18\v \x01(\x05R\x16captureContentMaxBytes\x12\x1a\n" +
 	"\bplatform\x18\f \x01(\tR\bplatform\x12f\n" +
 	"\x10platform_options\x18\r \x03(\v2;.stirrup.harness.v1.TraceEmitterConfig.PlatformOptionsEntryR\x0fplatformOptions\x12#\n" +
-	"\robject_prefix\x18\b \x01(\tR\fobjectPrefix\x1a:\n" +
+	"\robject_prefix\x18\b \x01(\tR\fobjectPrefix\x12@\n" +
+	"\aarchive\x18\x0e \x01(\v2&.stirrup.harness.v1.TraceArchiveConfigR\aarchive\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +
 	"\x14PlatformOptionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xff\x03\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x82\x01\n" +
+	"\x12TraceArchiveConfig\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1b\n" +
+	"\tfile_path\x18\x02 \x01(\tR\bfilePath\x12\x16\n" +
+	"\x06bucket\x18\x03 \x01(\tR\x06bucket\x12#\n" +
+	"\robject_prefix\x18\x04 \x01(\tR\fobjectPrefix\"\x99\x04\n" +
 	"\vToolsConfig\x12\x19\n" +
 	"\bbuilt_in\x18\x01 \x03(\tR\abuiltIn\x12D\n" +
 	"\vmcp_servers\x18\x02 \x03(\v2#.stirrup.harness.v1.MCPServerConfigR\n" +
@@ -7307,7 +7423,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x17protected_write_targets\x18\b \x03(\tR\x15protectedWriteTargets\x12>\n" +
 	"\tpost_edit\x18\n" +
 	" \x03(\v2!.stirrup.harness.v1.PostEditCheckR\bpostEdit\x12L\n" +
-	"\flazy_loading\x18\v \x01(\v2).stirrup.harness.v1.LazyToolLoadingConfigR\vlazyLoading\"\x84\x01\n" +
+	"\flazy_loading\x18\v \x01(\v2).stirrup.harness.v1.LazyToolLoadingConfigR\vlazyLoading\x12\x18\n" +
+	"\aprofile\x18\f \x01(\tR\aprofile\"\x84\x01\n" +
 	"\x15LazyToolLoadingConfig\x12\x18\n" +
 	"\aenabled\x18\x01 \x01(\bR\aenabled\x12\x1a\n" +
 	"\bstrategy\x18\x02 \x01(\tR\bstrategy\x12\x14\n" +
@@ -7356,7 +7473,7 @@ func file_harness_v1_harness_proto_rawDescGZIP() []byte {
 	return file_harness_v1_harness_proto_rawDescData
 }
 
-var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 66)
+var file_harness_v1_harness_proto_msgTypes = make([]protoimpl.MessageInfo, 67)
 var file_harness_v1_harness_proto_goTypes = []any{
 	(*HarnessEvent)(nil),               // 0: stirrup.harness.v1.HarnessEvent
 	(*TraceReference)(nil),             // 1: stirrup.harness.v1.TraceReference
@@ -7407,24 +7524,25 @@ var file_harness_v1_harness_proto_goTypes = []any{
 	(*PermissionPolicyConfig)(nil),     // 46: stirrup.harness.v1.PermissionPolicyConfig
 	(*GitStrategyConfig)(nil),          // 47: stirrup.harness.v1.GitStrategyConfig
 	(*TraceEmitterConfig)(nil),         // 48: stirrup.harness.v1.TraceEmitterConfig
-	(*ToolsConfig)(nil),                // 49: stirrup.harness.v1.ToolsConfig
-	(*LazyToolLoadingConfig)(nil),      // 50: stirrup.harness.v1.LazyToolLoadingConfig
-	(*CommandOutputConfig)(nil),        // 51: stirrup.harness.v1.CommandOutputConfig
-	(*PostEditCheck)(nil),              // 52: stirrup.harness.v1.PostEditCheck
-	(*ControlPlaneToolConfig)(nil),     // 53: stirrup.harness.v1.ControlPlaneToolConfig
-	(*MCPServerConfig)(nil),            // 54: stirrup.harness.v1.MCPServerConfig
-	nil,                                // 55: stirrup.harness.v1.RunConfig.DynamicContextEntry
-	nil,                                // 56: stirrup.harness.v1.RunConfig.ProvidersEntry
-	nil,                                // 57: stirrup.harness.v1.CorrelationConfig.LabelsEntry
-	nil,                                // 58: stirrup.harness.v1.ResultSinkConfig.AttributesEntry
-	nil,                                // 59: stirrup.harness.v1.RepositoryGuidanceConfig.PinnedSha256Entry
-	nil,                                // 60: stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
-	nil,                                // 61: stirrup.harness.v1.ProviderConfig.QueryParamsEntry
-	nil,                                // 62: stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
-	nil,                                // 63: stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
-	nil,                                // 64: stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
-	nil,                                // 65: stirrup.harness.v1.TraceEmitterConfig.PlatformOptionsEntry
-	(*structpb.Struct)(nil),            // 66: google.protobuf.Struct
+	(*TraceArchiveConfig)(nil),         // 49: stirrup.harness.v1.TraceArchiveConfig
+	(*ToolsConfig)(nil),                // 50: stirrup.harness.v1.ToolsConfig
+	(*LazyToolLoadingConfig)(nil),      // 51: stirrup.harness.v1.LazyToolLoadingConfig
+	(*CommandOutputConfig)(nil),        // 52: stirrup.harness.v1.CommandOutputConfig
+	(*PostEditCheck)(nil),              // 53: stirrup.harness.v1.PostEditCheck
+	(*ControlPlaneToolConfig)(nil),     // 54: stirrup.harness.v1.ControlPlaneToolConfig
+	(*MCPServerConfig)(nil),            // 55: stirrup.harness.v1.MCPServerConfig
+	nil,                                // 56: stirrup.harness.v1.RunConfig.DynamicContextEntry
+	nil,                                // 57: stirrup.harness.v1.RunConfig.ProvidersEntry
+	nil,                                // 58: stirrup.harness.v1.CorrelationConfig.LabelsEntry
+	nil,                                // 59: stirrup.harness.v1.ResultSinkConfig.AttributesEntry
+	nil,                                // 60: stirrup.harness.v1.RepositoryGuidanceConfig.PinnedSha256Entry
+	nil,                                // 61: stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
+	nil,                                // 62: stirrup.harness.v1.ProviderConfig.QueryParamsEntry
+	nil,                                // 63: stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
+	nil,                                // 64: stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
+	nil,                                // 65: stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
+	nil,                                // 66: stirrup.harness.v1.TraceEmitterConfig.PlatformOptionsEntry
+	(*structpb.Struct)(nil),            // 67: google.protobuf.Struct
 }
 var file_harness_v1_harness_proto_depIdxs = []int32{
 	21, // 0: stirrup.harness.v1.HarnessEvent.trace:type_name -> stirrup.harness.v1.RunTrace
@@ -7435,9 +7553,9 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	4,  // 5: stirrup.harness.v1.ControlEvent.allowed:type_name -> stirrup.harness.v1.OptionalBool
 	4,  // 6: stirrup.harness.v1.ControlEvent.is_error:type_name -> stirrup.harness.v1.OptionalBool
 	3,  // 7: stirrup.harness.v1.ControlEvent.trace_context:type_name -> stirrup.harness.v1.TraceContext
-	55, // 8: stirrup.harness.v1.RunConfig.dynamic_context:type_name -> stirrup.harness.v1.RunConfig.DynamicContextEntry
+	56, // 8: stirrup.harness.v1.RunConfig.dynamic_context:type_name -> stirrup.harness.v1.RunConfig.DynamicContextEntry
 	29, // 9: stirrup.harness.v1.RunConfig.provider:type_name -> stirrup.harness.v1.ProviderConfig
-	56, // 10: stirrup.harness.v1.RunConfig.providers:type_name -> stirrup.harness.v1.RunConfig.ProvidersEntry
+	57, // 10: stirrup.harness.v1.RunConfig.providers:type_name -> stirrup.harness.v1.RunConfig.ProvidersEntry
 	35, // 11: stirrup.harness.v1.RunConfig.model_router:type_name -> stirrup.harness.v1.ModelRouterConfig
 	36, // 12: stirrup.harness.v1.RunConfig.prompt_builder:type_name -> stirrup.harness.v1.PromptBuilderConfig
 	37, // 13: stirrup.harness.v1.RunConfig.context_strategy:type_name -> stirrup.harness.v1.ContextStrategyConfig
@@ -7447,7 +7565,7 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	46, // 17: stirrup.harness.v1.RunConfig.permission_policy:type_name -> stirrup.harness.v1.PermissionPolicyConfig
 	47, // 18: stirrup.harness.v1.RunConfig.git_strategy:type_name -> stirrup.harness.v1.GitStrategyConfig
 	48, // 19: stirrup.harness.v1.RunConfig.trace_emitter:type_name -> stirrup.harness.v1.TraceEmitterConfig
-	49, // 20: stirrup.harness.v1.RunConfig.tools:type_name -> stirrup.harness.v1.ToolsConfig
+	50, // 20: stirrup.harness.v1.RunConfig.tools:type_name -> stirrup.harness.v1.ToolsConfig
 	16, // 21: stirrup.harness.v1.RunConfig.rule_of_two:type_name -> stirrup.harness.v1.RuleOfTwoConfig
 	18, // 22: stirrup.harness.v1.RunConfig.code_scanner:type_name -> stirrup.harness.v1.CodeScannerConfig
 	19, // 23: stirrup.harness.v1.RunConfig.guard_rail:type_name -> stirrup.harness.v1.GuardRailConfig
@@ -7456,18 +7574,18 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	14, // 26: stirrup.harness.v1.RunConfig.hooks:type_name -> stirrup.harness.v1.HooksConfig
 	11, // 27: stirrup.harness.v1.RunConfig.result_sink:type_name -> stirrup.harness.v1.ResultSinkConfig
 	8,  // 28: stirrup.harness.v1.RunConfig.tool_choice_escalation:type_name -> stirrup.harness.v1.ToolChoiceEscalationConfig
-	66, // 29: stirrup.harness.v1.RunConfig.output_schema:type_name -> google.protobuf.Struct
+	67, // 29: stirrup.harness.v1.RunConfig.output_schema:type_name -> google.protobuf.Struct
 	10, // 30: stirrup.harness.v1.RunConfig.wind_down:type_name -> stirrup.harness.v1.WindDownConfig
 	13, // 31: stirrup.harness.v1.RunConfig.repository_guidance:type_name -> stirrup.harness.v1.RepositoryGuidanceConfig
 	9,  // 32: stirrup.harness.v1.RunConfig.correlation:type_name -> stirrup.harness.v1.CorrelationConfig
-	57, // 33: stirrup.harness.v1.CorrelationConfig.labels:type_name -> stirrup.harness.v1.CorrelationConfig.LabelsEntry
-	58, // 34: stirrup.harness.v1.ResultSinkConfig.attributes:type_name -> stirrup.harness.v1.ResultSinkConfig.AttributesEntry
-	59, // 35: stirrup.harness.v1.RepositoryGuidanceConfig.pinned_sha256:type_name -> stirrup.harness.v1.RepositoryGuidanceConfig.PinnedSha256Entry
+	58, // 33: stirrup.harness.v1.CorrelationConfig.labels:type_name -> stirrup.harness.v1.CorrelationConfig.LabelsEntry
+	59, // 34: stirrup.harness.v1.ResultSinkConfig.attributes:type_name -> stirrup.harness.v1.ResultSinkConfig.AttributesEntry
+	60, // 35: stirrup.harness.v1.RepositoryGuidanceConfig.pinned_sha256:type_name -> stirrup.harness.v1.RepositoryGuidanceConfig.PinnedSha256Entry
 	15, // 36: stirrup.harness.v1.HooksConfig.pre_run:type_name -> stirrup.harness.v1.HookConfig
 	15, // 37: stirrup.harness.v1.HooksConfig.post_run:type_name -> stirrup.harness.v1.HookConfig
 	17, // 38: stirrup.harness.v1.RuleOfTwoConfig.runtime:type_name -> stirrup.harness.v1.RuleOfTwoRuntimeConfig
 	19, // 39: stirrup.harness.v1.GuardRailConfig.stages:type_name -> stirrup.harness.v1.GuardRailConfig
-	60, // 40: stirrup.harness.v1.GuardRailConfig.custom_criteria:type_name -> stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
+	61, // 40: stirrup.harness.v1.GuardRailConfig.custom_criteria:type_name -> stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
 	12, // 41: stirrup.harness.v1.ObservabilityConfig.logs_export:type_name -> stirrup.harness.v1.LogsExportConfig
 	28, // 42: stirrup.harness.v1.RunTrace.stop_details:type_name -> stirrup.harness.v1.StopDetails
 	22, // 43: stirrup.harness.v1.RunTrace.git:type_name -> stirrup.harness.v1.GitHandoff
@@ -7479,36 +7597,37 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	27, // 49: stirrup.harness.v1.RunTrace.post_edit_checks:type_name -> stirrup.harness.v1.PostEditCheckSummary
 	1,  // 50: stirrup.harness.v1.RunTrace.trace_reference:type_name -> stirrup.harness.v1.TraceReference
 	31, // 51: stirrup.harness.v1.ProviderConfig.credential:type_name -> stirrup.harness.v1.CredentialConfig
-	61, // 52: stirrup.harness.v1.ProviderConfig.query_params:type_name -> stirrup.harness.v1.ProviderConfig.QueryParamsEntry
+	62, // 52: stirrup.harness.v1.ProviderConfig.query_params:type_name -> stirrup.harness.v1.ProviderConfig.QueryParamsEntry
 	33, // 53: stirrup.harness.v1.ProviderConfig.gemini_safety_settings:type_name -> stirrup.harness.v1.GeminiSafetySetting
 	34, // 54: stirrup.harness.v1.ProviderConfig.retry:type_name -> stirrup.harness.v1.ProviderRetryConfig
 	30, // 55: stirrup.harness.v1.ProviderConfig.batch:type_name -> stirrup.harness.v1.BatchProviderConfig
 	32, // 56: stirrup.harness.v1.CredentialConfig.token_source:type_name -> stirrup.harness.v1.TokenSourceConfig
-	62, // 57: stirrup.harness.v1.ModelRouterConfig.mode_models:type_name -> stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
+	63, // 57: stirrup.harness.v1.ModelRouterConfig.mode_models:type_name -> stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
 	41, // 58: stirrup.harness.v1.ExecutorConfig.vcs_backend:type_name -> stirrup.harness.v1.VcsBackendConfig
 	42, // 59: stirrup.harness.v1.ExecutorConfig.network:type_name -> stirrup.harness.v1.NetworkConfig
 	43, // 60: stirrup.harness.v1.ExecutorConfig.resources:type_name -> stirrup.harness.v1.ResourceLimits
-	63, // 61: stirrup.harness.v1.ExecutorConfig.k8s_node_selector:type_name -> stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
+	64, // 61: stirrup.harness.v1.ExecutorConfig.k8s_node_selector:type_name -> stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
 	39, // 62: stirrup.harness.v1.ExecutorConfig.sandbox_identity:type_name -> stirrup.harness.v1.SandboxIdentityConfig
 	40, // 63: stirrup.harness.v1.ExecutorConfig.git_proxy:type_name -> stirrup.harness.v1.GitProxyConfig
 	45, // 64: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
-	64, // 65: stirrup.harness.v1.TraceEmitterConfig.headers:type_name -> stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
-	65, // 66: stirrup.harness.v1.TraceEmitterConfig.platform_options:type_name -> stirrup.harness.v1.TraceEmitterConfig.PlatformOptionsEntry
-	54, // 67: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
-	53, // 68: stirrup.harness.v1.ToolsConfig.control_plane:type_name -> stirrup.harness.v1.ControlPlaneToolConfig
-	51, // 69: stirrup.harness.v1.ToolsConfig.command_output:type_name -> stirrup.harness.v1.CommandOutputConfig
-	52, // 70: stirrup.harness.v1.ToolsConfig.post_edit:type_name -> stirrup.harness.v1.PostEditCheck
-	50, // 71: stirrup.harness.v1.ToolsConfig.lazy_loading:type_name -> stirrup.harness.v1.LazyToolLoadingConfig
-	66, // 72: stirrup.harness.v1.ControlPlaneToolConfig.input_schema:type_name -> google.protobuf.Struct
-	6,  // 73: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
-	29, // 74: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
-	0,  // 75: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
-	2,  // 76: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
-	76, // [76:77] is the sub-list for method output_type
-	75, // [75:76] is the sub-list for method input_type
-	75, // [75:75] is the sub-list for extension type_name
-	75, // [75:75] is the sub-list for extension extendee
-	0,  // [0:75] is the sub-list for field type_name
+	65, // 65: stirrup.harness.v1.TraceEmitterConfig.headers:type_name -> stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
+	66, // 66: stirrup.harness.v1.TraceEmitterConfig.platform_options:type_name -> stirrup.harness.v1.TraceEmitterConfig.PlatformOptionsEntry
+	49, // 67: stirrup.harness.v1.TraceEmitterConfig.archive:type_name -> stirrup.harness.v1.TraceArchiveConfig
+	55, // 68: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
+	54, // 69: stirrup.harness.v1.ToolsConfig.control_plane:type_name -> stirrup.harness.v1.ControlPlaneToolConfig
+	52, // 70: stirrup.harness.v1.ToolsConfig.command_output:type_name -> stirrup.harness.v1.CommandOutputConfig
+	53, // 71: stirrup.harness.v1.ToolsConfig.post_edit:type_name -> stirrup.harness.v1.PostEditCheck
+	51, // 72: stirrup.harness.v1.ToolsConfig.lazy_loading:type_name -> stirrup.harness.v1.LazyToolLoadingConfig
+	67, // 73: stirrup.harness.v1.ControlPlaneToolConfig.input_schema:type_name -> google.protobuf.Struct
+	6,  // 74: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
+	29, // 75: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
+	0,  // 76: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
+	2,  // 77: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
+	77, // [77:78] is the sub-list for method output_type
+	76, // [76:77] is the sub-list for method input_type
+	76, // [76:76] is the sub-list for extension type_name
+	76, // [76:76] is the sub-list for extension extendee
+	0,  // [0:76] is the sub-list for field type_name
 }
 
 func init() { file_harness_v1_harness_proto_init() }
@@ -7526,14 +7645,14 @@ func file_harness_v1_harness_proto_init() {
 	file_harness_v1_harness_proto_msgTypes[37].OneofWrappers = []any{}
 	file_harness_v1_harness_proto_msgTypes[38].OneofWrappers = []any{}
 	file_harness_v1_harness_proto_msgTypes[44].OneofWrappers = []any{}
-	file_harness_v1_harness_proto_msgTypes[51].OneofWrappers = []any{}
+	file_harness_v1_harness_proto_msgTypes[52].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_harness_v1_harness_proto_rawDesc), len(file_harness_v1_harness_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   66,
+			NumMessages:   67,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -2,48 +2,15 @@ package prompt
 
 import (
 	"context"
-	"go/parser"
-	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
-	"strings"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 )
-
-// TestPackage_ProductionFilesAvoidHostImports pins that no production file in this package
-// can read the host filesystem or start a host process: the workspace
-// fragments must read through the executor.
-func TestPackage_ProductionFilesAvoidHostImports(t *testing.T) {
-	check := assert.New(t)
-	must := require.New(t)
-	hostPackages := []string{"os", "os/exec"}
-	entries, err := os.ReadDir(".")
-	must.NoError(err)
-	checked := 0
-	fset := token.NewFileSet()
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(fset, name, nil, parser.ImportsOnly)
-		must.NoError(err, "parse %s", name)
-		checked++
-		for _, imp := range file.Imports {
-			path, err := strconv.Unquote(imp.Path.Value)
-			must.NoError(err, "%s: unquote import %s", name, imp.Path.Value)
-			check.NotContains(hostPackages, path, "%s imports %s; workspace reads must go through the executor", name, path)
-		}
-	}
-	must.NotZero(checked, "no production files checked; the import guard would be vacuous")
-}
 
 // hostRepo creates a host git repository holding one committed file and
 // one untracked file, whose core.fsmonitor command creates the returned
