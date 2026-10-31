@@ -449,14 +449,28 @@ includes the cache figures, and otherwise as `inputTokens` plus
 `cacheReadInputTokens` and `cacheWriteInputTokens`. Neither shape has
 been probed against Bedrock.
 
-The Bedrock adapter does not consult the [provider quirks
-registry](provider-quirks.md): it forwards the harness default
-temperature to every model and ignores `reasoningEffort`. It streams
-no reasoning text, so `reasoningSummary` has no effect on it. Anthropic
-documents that Claude Opus 4.7 onward, Sonnet 5 onward and Fable 5
-onward reject a non-default temperature on every request, so those
-models are expected to fail through Bedrock until the adapter applies
-the same rules; this has not been verified against Bedrock itself.
+The Bedrock adapter resolves the [provider quirks
+registry](provider-quirks.md#bedrock) on every request. A Claude model
+id (`anthropic.claude-opus-5-5`, a cross-region inference profile such
+as `us.anthropic.claude-sonnet-5-5`, or a foundation-model or
+inference-profile ARN ending in either) resolves against the
+`anthropic` rules on the part after `anthropic.`. The models those
+rules mark as rejecting sampling params (Claude Opus 4.7 and 4.8, and
+the Opus 5, Sonnet 5, Haiku 5, Fable 5 and Mythos 5 families) get no
+`inferenceConfig.temperature`, and the adapter logs
+`bedrock quirks suppressed caller temperature` when it drops one,
+including the harness default. Older Claude ids, any other model id,
+and an application inference profile ARN, which does not name its
+model, trigger no sampling-param omission and receive the temperature
+unchanged. The omission follows the rules for the first-party API; it
+has not been probed against Bedrock itself.
+
+The adapter ignores `reasoningEffort` and logs `reasoningEffort ignored:
+model has no known effort control` when one is set: the Converse
+request has no effort field, and
+whether Bedrock forwards an Anthropic `output_config` through
+`additionalModelRequestFields` has not been probed. It streams no
+reasoning text, so `reasoningSummary` has no effect on it.
 
 ## OpenAI Chat Completions
 
