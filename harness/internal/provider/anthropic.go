@@ -1113,10 +1113,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	}
 
 	ch := make(chan types.StreamEvent, 64)
-	go func() {
-		a.consumeSSE(ctx, resp, ch, start, metricAttrs, logger, params.Model)
-		a.recordLatency(ctx, start, metricAttrs)
-	}()
+	go a.consumeSSE(ctx, resp, ch, start, metricAttrs, logger, params.Model)
 	return ch, nil
 }
 
@@ -1147,13 +1144,16 @@ func logPromptCacheUsage(ctx context.Context, logger *slog.Logger, model string,
 }
 
 // consumeSSE reads SSE events from the response body and sends StreamEvents
-// to the channel. It closes the channel and the response body when done.
+// to the channel. When done it closes the response body, records the request
+// latency, and then closes the channel, so a reader that sees the channel
+// close can rely on the latency measurement existing.
 //
 // streamStart and metricAttrs are forwarded for ProviderTTFB measurement: the
 // first non-empty stream event observed marks "time to first byte" for this
 // request. TTFB is recorded at most once per stream.
 func (a *AnthropicAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption, logger *slog.Logger, model string) {
 	defer close(ch)
+	defer a.recordLatency(ctx, streamStart, metricAttrs) // Deferred after close(ch) so it runs first.
 	defer func() { _ = resp.Body.Close() }()
 
 	// emitEvent sends an event on the output channel and records TTFB on the

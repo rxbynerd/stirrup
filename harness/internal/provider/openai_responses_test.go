@@ -1447,14 +1447,6 @@ func TestOpenAIResponsesAdapter_LatencyRecordedAfterContextCancel(t *testing.T) 
 	for range ch {
 	}
 
-	// The goroutine records latency asynchronously, so poll briefly.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency") == 1 {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 	must.Equal(uint64(1), providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"),
 		"latency must be recorded against a background context")
 }

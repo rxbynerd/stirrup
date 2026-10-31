@@ -650,7 +650,7 @@ func TestBedrock_APIError_RecordsLatency(t *testing.T) {
 	check.EqualValues(0, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "error path records no time to first byte")
 }
 
-func TestBedrock_ConsumeStreamMetered_RecordsTTFB(t *testing.T) {
+func TestBedrock_ConsumeStreamMetered_RecordsTTFBAndLatency(t *testing.T) {
 	check := assert.New(t)
 	must := require.New(t)
 	events := []brtypes.ConverseStreamOutput{
@@ -685,6 +685,7 @@ func TestBedrock_ConsumeStreamMetered_RecordsTTFB(t *testing.T) {
 
 	check.EqualValues(1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_ttfb"), "provider_ttfb count")
 	check.EqualValues(1, providerHistogramTotalCount(t, reader, "gen_ai.client.operation.time_to_first_chunk"), "time_to_first_chunk count")
+	check.EqualValues(1, providerHistogramTotalCount(t, reader, "stirrup.harness.provider_latency"), "provider_latency recorded before the channel closes")
 
 	ttfc, _ := providerHistogramFinder(t, reader, "gen_ai.client.operation.time_to_first_chunk")
 	serverAddress, _ := ttfc.DataPoints[0].Attributes.Value("server.address")

@@ -212,10 +212,7 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 	inference := inferenceAttrs("bedrock", params.Model, "")
 	inference.ServerAddress, inference.ServerPort = b.ServerEndpoint()
 	ch := make(chan types.StreamEvent, 64)
-	go func() {
-		consumeBedrockStreamMetered(ctx, output.GetStream(), ch, b.Metrics, start, metricAttrs, inference)
-		b.recordLatency(ctx, start, metricAttrs)
-	}()
+	go consumeBedrockStreamMetered(ctx, output.GetStream(), ch, b.Metrics, start, metricAttrs, inference)
 	return ch, nil
 }
 
@@ -240,9 +237,16 @@ func consumeBedrockStream(ctx context.Context, stream bedrockEventReader, ch cha
 // consumeBedrockStreamMetered reads events from the Bedrock event stream and
 // translates them into stirrup StreamEvents. It closes ch when done. When
 // metrics is non-nil, records the time to first chunk on the first non-empty stream
-// event observed (recorded at most once per stream).
+// event observed (recorded at most once per stream), and records the request
+// latency before closing ch, so a reader that sees the close can rely on the
+// measurement existing.
 func consumeBedrockStreamMetered(ctx context.Context, stream bedrockEventReader, ch chan<- types.StreamEvent, metrics *observability.Metrics, streamStart time.Time, metricAttrs metric.MeasurementOption, inference observability.InferenceAttrs) {
 	defer close(ch)
+	if metrics != nil {
+		defer func() { // Deferred after close(ch) so it runs first.
+			metrics.ProviderLatency.Record(ctx, float64(time.Since(streamStart).Milliseconds()), metricAttrs)
+		}()
+	}
 	defer func() { _ = stream.Close() }()
 
 	ttfbRecorded := false
