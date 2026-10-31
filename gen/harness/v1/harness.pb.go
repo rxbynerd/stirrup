@@ -1970,28 +1970,46 @@ type ResultSinkConfig struct {
 	//	                end-of-run. Consumers must parse the LAST matching
 	//	                line; the sentinel is defence against a model
 	//	                echoing a fake one.
-	//	"gcp-pubsub", "gcs" — reserved. Accepted by the schema but
-	//	                rejected at config load as not yet implemented,
-	//	                so the wire contract is stable ahead of the
-	//	                adapters.
+	//	"gcs"         — writes the RunResult JSON to the object
+	//	                gs://{bucket}/{object_prefix}{runId}.result.json.
+	//	"gcp-pubsub"  — publishes the RunResult JSON as one message on
+	//	                topic, with a "runId" message attribute.
+	//
+	// The gcs and gcp-pubsub sinks deliver after the trace is finished and
+	// before the run's "done", making up to three attempts for transient
+	// failures; a delivery that still fails is logged and reported as a
+	// "warning" event starting "result sink:" before "done", and does not
+	// change the run's outcome. The gcs sink never replaces an existing
+	// object.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
-	// Optional. Pub/Sub topic name for the reserved "gcp-pubsub" adapter.
-	// Rejected by validation on every other type so a stale value cannot
-	// silently survive a type change.
+	// Required for "gcp-pubsub". The full topic resource name,
+	// "projects/{project}/topics/{topic}". Rejected by validation on every
+	// other type so a stale value cannot silently survive a type change.
 	Topic string `protobuf:"bytes,2,opt,name=topic,proto3" json:"topic,omitempty"`
-	// Optional. Extra message attributes for the reserved "gcp-pubsub"
-	// adapter. Values may be plaintext or a "secret://" reference resolved
-	// via the SecretStore; references are rewritten to
-	// "secret://[REDACTED]" by RunConfig.Redact() before any trace or
-	// recording is persisted. Rejected by validation on every other type.
+	// Optional, "gcp-pubsub" only. Static message attributes copied
+	// verbatim onto the message. At most 99 entries; the "runId" key is
+	// reserved for the harness, keys starting with "goog" are rejected,
+	// and "secret://" values are rejected rather than resolved.
 	Attributes map[string]string `protobuf:"bytes,3,rep,name=attributes,proto3" json:"attributes,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	// Optional. Byte cap on RunResult.final_assistant_text. Zero means the
-	// harness default (128 KiB). Unlike topic/attributes this bounds the
-	// RunResult itself rather than a per-adapter wire detail, so it
-	// applies on every type. Must be non-negative.
+	// harness default (128 KiB). Unlike the per-adapter fields this bounds
+	// the RunResult itself, so it applies on every type. Must be
+	// non-negative.
 	MaxFinalAssistantTextBytes int32 `protobuf:"varint,4,opt,name=max_final_assistant_text_bytes,json=maxFinalAssistantTextBytes,proto3" json:"max_final_assistant_text_bytes,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	// Required for "gcs". The bucket the result object is written to.
+	Bucket string `protobuf:"bytes,5,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	// Optional, "gcs" only. Prepended to the object name; a trailing slash
+	// is added by validation when absent.
+	ObjectPrefix string `protobuf:"bytes,6,opt,name=object_prefix,json=objectPrefix,proto3" json:"object_prefix,omitempty"`
+	// Optional, "gcp-pubsub" only. Copied onto the message as its ordering
+	// key.
+	OrderingKey string `protobuf:"bytes,7,opt,name=ordering_key,json=orderingKey,proto3" json:"ordering_key,omitempty"`
+	// Optional, "gcs" and "gcp-pubsub" only. Overrides the default
+	// "gcp-workload-identity" credential. Accepted types:
+	// "gcp-workload-identity" and "gcp-default".
+	Credential    *CredentialConfig `protobuf:"bytes,8,opt,name=credential,proto3" json:"credential,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ResultSinkConfig) Reset() {
@@ -2050,6 +2068,34 @@ func (x *ResultSinkConfig) GetMaxFinalAssistantTextBytes() int32 {
 		return x.MaxFinalAssistantTextBytes
 	}
 	return 0
+}
+
+func (x *ResultSinkConfig) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *ResultSinkConfig) GetObjectPrefix() string {
+	if x != nil {
+		return x.ObjectPrefix
+	}
+	return ""
+}
+
+func (x *ResultSinkConfig) GetOrderingKey() string {
+	if x != nil {
+		return x.OrderingKey
+	}
+	return ""
+}
+
+func (x *ResultSinkConfig) GetCredential() *CredentialConfig {
+	if x != nil {
+		return x.Credential
+	}
+	return nil
 }
 
 // LogsExportConfig opts the run's structured logs into OTLP export
@@ -7077,14 +7123,20 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"*\n" +
 	"\x0eWindDownConfig\x12\x18\n" +
-	"\aenabled\x18\x01 \x01(\bR\aenabled\"\x95\x02\n" +
+	"\aenabled\x18\x01 \x01(\bR\aenabled\"\xbb\x03\n" +
 	"\x10ResultSinkConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x14\n" +
 	"\x05topic\x18\x02 \x01(\tR\x05topic\x12T\n" +
 	"\n" +
 	"attributes\x18\x03 \x03(\v24.stirrup.harness.v1.ResultSinkConfig.AttributesEntryR\n" +
 	"attributes\x12B\n" +
-	"\x1emax_final_assistant_text_bytes\x18\x04 \x01(\x05R\x1amaxFinalAssistantTextBytes\x1a=\n" +
+	"\x1emax_final_assistant_text_bytes\x18\x04 \x01(\x05R\x1amaxFinalAssistantTextBytes\x12\x16\n" +
+	"\x06bucket\x18\x05 \x01(\tR\x06bucket\x12#\n" +
+	"\robject_prefix\x18\x06 \x01(\tR\fobjectPrefix\x12!\n" +
+	"\fordering_key\x18\a \x01(\tR\vorderingKey\x12D\n" +
+	"\n" +
+	"credential\x18\b \x01(\v2$.stirrup.harness.v1.CredentialConfigR\n" +
+	"credential\x1a=\n" +
 	"\x0fAttributesEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"B\n" +
@@ -7580,54 +7632,55 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	9,  // 32: stirrup.harness.v1.RunConfig.correlation:type_name -> stirrup.harness.v1.CorrelationConfig
 	58, // 33: stirrup.harness.v1.CorrelationConfig.labels:type_name -> stirrup.harness.v1.CorrelationConfig.LabelsEntry
 	59, // 34: stirrup.harness.v1.ResultSinkConfig.attributes:type_name -> stirrup.harness.v1.ResultSinkConfig.AttributesEntry
-	60, // 35: stirrup.harness.v1.RepositoryGuidanceConfig.pinned_sha256:type_name -> stirrup.harness.v1.RepositoryGuidanceConfig.PinnedSha256Entry
-	15, // 36: stirrup.harness.v1.HooksConfig.pre_run:type_name -> stirrup.harness.v1.HookConfig
-	15, // 37: stirrup.harness.v1.HooksConfig.post_run:type_name -> stirrup.harness.v1.HookConfig
-	17, // 38: stirrup.harness.v1.RuleOfTwoConfig.runtime:type_name -> stirrup.harness.v1.RuleOfTwoRuntimeConfig
-	19, // 39: stirrup.harness.v1.GuardRailConfig.stages:type_name -> stirrup.harness.v1.GuardRailConfig
-	61, // 40: stirrup.harness.v1.GuardRailConfig.custom_criteria:type_name -> stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
-	12, // 41: stirrup.harness.v1.ObservabilityConfig.logs_export:type_name -> stirrup.harness.v1.LogsExportConfig
-	28, // 42: stirrup.harness.v1.RunTrace.stop_details:type_name -> stirrup.harness.v1.StopDetails
-	22, // 43: stirrup.harness.v1.RunTrace.git:type_name -> stirrup.harness.v1.GitHandoff
-	23, // 44: stirrup.harness.v1.RunTrace.workspace_export:type_name -> stirrup.harness.v1.ExportReceipt
-	24, // 45: stirrup.harness.v1.RunTrace.degraded_capabilities:type_name -> stirrup.harness.v1.DegradedCapability
-	25, // 46: stirrup.harness.v1.RunTrace.verification:type_name -> stirrup.harness.v1.VerificationVerdict
-	26, // 47: stirrup.harness.v1.RunTrace.auxiliary_tokens:type_name -> stirrup.harness.v1.TokenUsage
-	26, // 48: stirrup.harness.v1.RunTrace.external_guard_tokens:type_name -> stirrup.harness.v1.TokenUsage
-	27, // 49: stirrup.harness.v1.RunTrace.post_edit_checks:type_name -> stirrup.harness.v1.PostEditCheckSummary
-	1,  // 50: stirrup.harness.v1.RunTrace.trace_reference:type_name -> stirrup.harness.v1.TraceReference
-	31, // 51: stirrup.harness.v1.ProviderConfig.credential:type_name -> stirrup.harness.v1.CredentialConfig
-	62, // 52: stirrup.harness.v1.ProviderConfig.query_params:type_name -> stirrup.harness.v1.ProviderConfig.QueryParamsEntry
-	33, // 53: stirrup.harness.v1.ProviderConfig.gemini_safety_settings:type_name -> stirrup.harness.v1.GeminiSafetySetting
-	34, // 54: stirrup.harness.v1.ProviderConfig.retry:type_name -> stirrup.harness.v1.ProviderRetryConfig
-	30, // 55: stirrup.harness.v1.ProviderConfig.batch:type_name -> stirrup.harness.v1.BatchProviderConfig
-	32, // 56: stirrup.harness.v1.CredentialConfig.token_source:type_name -> stirrup.harness.v1.TokenSourceConfig
-	63, // 57: stirrup.harness.v1.ModelRouterConfig.mode_models:type_name -> stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
-	41, // 58: stirrup.harness.v1.ExecutorConfig.vcs_backend:type_name -> stirrup.harness.v1.VcsBackendConfig
-	42, // 59: stirrup.harness.v1.ExecutorConfig.network:type_name -> stirrup.harness.v1.NetworkConfig
-	43, // 60: stirrup.harness.v1.ExecutorConfig.resources:type_name -> stirrup.harness.v1.ResourceLimits
-	64, // 61: stirrup.harness.v1.ExecutorConfig.k8s_node_selector:type_name -> stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
-	39, // 62: stirrup.harness.v1.ExecutorConfig.sandbox_identity:type_name -> stirrup.harness.v1.SandboxIdentityConfig
-	40, // 63: stirrup.harness.v1.ExecutorConfig.git_proxy:type_name -> stirrup.harness.v1.GitProxyConfig
-	45, // 64: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
-	65, // 65: stirrup.harness.v1.TraceEmitterConfig.headers:type_name -> stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
-	66, // 66: stirrup.harness.v1.TraceEmitterConfig.platform_options:type_name -> stirrup.harness.v1.TraceEmitterConfig.PlatformOptionsEntry
-	49, // 67: stirrup.harness.v1.TraceEmitterConfig.archive:type_name -> stirrup.harness.v1.TraceArchiveConfig
-	55, // 68: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
-	54, // 69: stirrup.harness.v1.ToolsConfig.control_plane:type_name -> stirrup.harness.v1.ControlPlaneToolConfig
-	52, // 70: stirrup.harness.v1.ToolsConfig.command_output:type_name -> stirrup.harness.v1.CommandOutputConfig
-	53, // 71: stirrup.harness.v1.ToolsConfig.post_edit:type_name -> stirrup.harness.v1.PostEditCheck
-	51, // 72: stirrup.harness.v1.ToolsConfig.lazy_loading:type_name -> stirrup.harness.v1.LazyToolLoadingConfig
-	67, // 73: stirrup.harness.v1.ControlPlaneToolConfig.input_schema:type_name -> google.protobuf.Struct
-	6,  // 74: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
-	29, // 75: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
-	0,  // 76: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
-	2,  // 77: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
-	77, // [77:78] is the sub-list for method output_type
-	76, // [76:77] is the sub-list for method input_type
-	76, // [76:76] is the sub-list for extension type_name
-	76, // [76:76] is the sub-list for extension extendee
-	0,  // [0:76] is the sub-list for field type_name
+	31, // 35: stirrup.harness.v1.ResultSinkConfig.credential:type_name -> stirrup.harness.v1.CredentialConfig
+	60, // 36: stirrup.harness.v1.RepositoryGuidanceConfig.pinned_sha256:type_name -> stirrup.harness.v1.RepositoryGuidanceConfig.PinnedSha256Entry
+	15, // 37: stirrup.harness.v1.HooksConfig.pre_run:type_name -> stirrup.harness.v1.HookConfig
+	15, // 38: stirrup.harness.v1.HooksConfig.post_run:type_name -> stirrup.harness.v1.HookConfig
+	17, // 39: stirrup.harness.v1.RuleOfTwoConfig.runtime:type_name -> stirrup.harness.v1.RuleOfTwoRuntimeConfig
+	19, // 40: stirrup.harness.v1.GuardRailConfig.stages:type_name -> stirrup.harness.v1.GuardRailConfig
+	61, // 41: stirrup.harness.v1.GuardRailConfig.custom_criteria:type_name -> stirrup.harness.v1.GuardRailConfig.CustomCriteriaEntry
+	12, // 42: stirrup.harness.v1.ObservabilityConfig.logs_export:type_name -> stirrup.harness.v1.LogsExportConfig
+	28, // 43: stirrup.harness.v1.RunTrace.stop_details:type_name -> stirrup.harness.v1.StopDetails
+	22, // 44: stirrup.harness.v1.RunTrace.git:type_name -> stirrup.harness.v1.GitHandoff
+	23, // 45: stirrup.harness.v1.RunTrace.workspace_export:type_name -> stirrup.harness.v1.ExportReceipt
+	24, // 46: stirrup.harness.v1.RunTrace.degraded_capabilities:type_name -> stirrup.harness.v1.DegradedCapability
+	25, // 47: stirrup.harness.v1.RunTrace.verification:type_name -> stirrup.harness.v1.VerificationVerdict
+	26, // 48: stirrup.harness.v1.RunTrace.auxiliary_tokens:type_name -> stirrup.harness.v1.TokenUsage
+	26, // 49: stirrup.harness.v1.RunTrace.external_guard_tokens:type_name -> stirrup.harness.v1.TokenUsage
+	27, // 50: stirrup.harness.v1.RunTrace.post_edit_checks:type_name -> stirrup.harness.v1.PostEditCheckSummary
+	1,  // 51: stirrup.harness.v1.RunTrace.trace_reference:type_name -> stirrup.harness.v1.TraceReference
+	31, // 52: stirrup.harness.v1.ProviderConfig.credential:type_name -> stirrup.harness.v1.CredentialConfig
+	62, // 53: stirrup.harness.v1.ProviderConfig.query_params:type_name -> stirrup.harness.v1.ProviderConfig.QueryParamsEntry
+	33, // 54: stirrup.harness.v1.ProviderConfig.gemini_safety_settings:type_name -> stirrup.harness.v1.GeminiSafetySetting
+	34, // 55: stirrup.harness.v1.ProviderConfig.retry:type_name -> stirrup.harness.v1.ProviderRetryConfig
+	30, // 56: stirrup.harness.v1.ProviderConfig.batch:type_name -> stirrup.harness.v1.BatchProviderConfig
+	32, // 57: stirrup.harness.v1.CredentialConfig.token_source:type_name -> stirrup.harness.v1.TokenSourceConfig
+	63, // 58: stirrup.harness.v1.ModelRouterConfig.mode_models:type_name -> stirrup.harness.v1.ModelRouterConfig.ModeModelsEntry
+	41, // 59: stirrup.harness.v1.ExecutorConfig.vcs_backend:type_name -> stirrup.harness.v1.VcsBackendConfig
+	42, // 60: stirrup.harness.v1.ExecutorConfig.network:type_name -> stirrup.harness.v1.NetworkConfig
+	43, // 61: stirrup.harness.v1.ExecutorConfig.resources:type_name -> stirrup.harness.v1.ResourceLimits
+	64, // 62: stirrup.harness.v1.ExecutorConfig.k8s_node_selector:type_name -> stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntry
+	39, // 63: stirrup.harness.v1.ExecutorConfig.sandbox_identity:type_name -> stirrup.harness.v1.SandboxIdentityConfig
+	40, // 64: stirrup.harness.v1.ExecutorConfig.git_proxy:type_name -> stirrup.harness.v1.GitProxyConfig
+	45, // 65: stirrup.harness.v1.VerifierConfig.verifiers:type_name -> stirrup.harness.v1.VerifierConfig
+	65, // 66: stirrup.harness.v1.TraceEmitterConfig.headers:type_name -> stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
+	66, // 67: stirrup.harness.v1.TraceEmitterConfig.platform_options:type_name -> stirrup.harness.v1.TraceEmitterConfig.PlatformOptionsEntry
+	49, // 68: stirrup.harness.v1.TraceEmitterConfig.archive:type_name -> stirrup.harness.v1.TraceArchiveConfig
+	55, // 69: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
+	54, // 70: stirrup.harness.v1.ToolsConfig.control_plane:type_name -> stirrup.harness.v1.ControlPlaneToolConfig
+	52, // 71: stirrup.harness.v1.ToolsConfig.command_output:type_name -> stirrup.harness.v1.CommandOutputConfig
+	53, // 72: stirrup.harness.v1.ToolsConfig.post_edit:type_name -> stirrup.harness.v1.PostEditCheck
+	51, // 73: stirrup.harness.v1.ToolsConfig.lazy_loading:type_name -> stirrup.harness.v1.LazyToolLoadingConfig
+	67, // 74: stirrup.harness.v1.ControlPlaneToolConfig.input_schema:type_name -> google.protobuf.Struct
+	6,  // 75: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
+	29, // 76: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
+	0,  // 77: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
+	2,  // 78: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
+	78, // [78:79] is the sub-list for method output_type
+	77, // [77:78] is the sub-list for method input_type
+	77, // [77:77] is the sub-list for extension type_name
+	77, // [77:77] is the sub-list for extension extendee
+	0,  // [0:77] is the sub-list for field type_name
 }
 
 func init() { file_harness_v1_harness_proto_init() }

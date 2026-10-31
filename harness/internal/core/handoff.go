@@ -17,6 +17,11 @@ const maxFailureTextBytes = 1024
 // handoffBudget bounds the workspace handoff.
 const handoffBudget = 5 * time.Minute
 
+// resultDeliveryBudget bounds a remote result sink's delivery, which is
+// up to three attempts of at most 30 s each. It fits every attempt when
+// they fail quickly and cuts short a sequence in which they stall.
+const resultDeliveryBudget = 60 * time.Second
+
 func capFailureText(s string) string {
 	capped, _ := types.CapFinalAssistantText(s, maxFailureTextBytes)
 	return capped
@@ -127,12 +132,14 @@ func (l *AgenticLoop) handoffWorkspace(ctx context.Context, config *types.RunCon
 	return outcome
 }
 
-// finishRun records the run's error text, finishes the trace, and emits
-// "done" carrying it. Every Run exit after Trace.Start ends here, after
-// the git, hook, command-output and workspace handoff steps, so a
-// control plane acting on "done" observes their results. stopHeartbeat
-// runs just before "done". The returned error is the trace persistence
-// failure; the trace carries its text when the run has no earlier error.
+// finishRun records the run's error text, finishes the trace, delivers
+// the result to a remote sink, and emits "done" carrying the trace.
+// Every Run exit after Trace.Start ends here, after the git, hook,
+// command-output and workspace handoff steps, so a control plane acting
+// on "done" observes their results and any result delivery warning.
+// stopHeartbeat runs just before "done". The returned error is the trace
+// persistence failure; the trace carries its text when the run has no
+// earlier error.
 func (l *AgenticLoop) finishRun(ctx context.Context, config *types.RunConfig, outcome string, stopHeartbeat func()) (*types.RunTrace, error) {
 	errText := l.runErrorText(config, outcome)
 	if recorder, ok := l.Trace.(trace.RunErrorRecorder); ok && errText != "" {
@@ -149,6 +156,8 @@ func (l *AgenticLoop) finishRun(ctx context.Context, config *types.RunConfig, ou
 		}
 	}
 
+	l.deliverResult(ctx, config, runTrace)
+
 	stopHeartbeat()
 	// "done" is the control plane's cue to send its next control event;
 	// from here the run is no longer cancellable, so a cancel must route
@@ -162,6 +171,31 @@ func (l *AgenticLoop) finishRun(ctx context.Context, config *types.RunConfig, ou
 		l.logEmitFailure("done", err)
 	}
 	return runTrace, traceErr
+}
+
+// deliverResult hands the finished run's RunResult to l.ResultDelivery
+// on a detached context, so the delivery outcome reaches the control
+// stream before "done". A failure is logged and sent as a "warning"
+// whose message starts "result sink:"; it does not change the outcome.
+func (l *AgenticLoop) deliverResult(ctx context.Context, config *types.RunConfig, runTrace *types.RunTrace) {
+	if l.ResultDelivery == nil || runTrace == nil {
+		return
+	}
+	deliverCtx, cancel := l.detachedContext(ctx, resultDeliveryBudget)
+	defer cancel()
+	_, span := l.Tracer.Start(l.traceCtx(ctx), "result.delivery")
+	defer span.End()
+
+	err := l.ResultDelivery.Deliver(deliverCtx, config, runTrace)
+	if err == nil {
+		return
+	}
+	scrubbed := capFailureText(recordSpanError(span, err))
+	l.Logger.WarnContext(l.traceCtx(ctx), "result sink delivery failed", "error", scrubbed)
+	_ = l.Transport.Emit(types.HarnessEvent{
+		Type:    "warning",
+		Message: fmt.Sprintf("result sink: %s", scrubbed),
+	})
 }
 
 // doneSummary is the part of a RunTrace that "done" carries: the fields

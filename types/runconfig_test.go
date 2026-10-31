@@ -5599,11 +5599,90 @@ func TestValidateRunConfig_ResultSink_NoneAndStdoutJSON(t *testing.T) {
 	})
 }
 
-func TestValidateRunConfig_ResultSink_GCPPubsubReserved(t *testing.T) {
+func TestValidateRunConfig_ResultSink_GCPPubSubAccepted(t *testing.T) {
+	t.Run("topic only", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.ResultSink = &ResultSinkConfig{Type: "gcp-pubsub", Topic: "projects/acme-prod/topics/stirrup-results"}
+		must.NoError(ValidateRunConfig(c))
+	})
+	t.Run("every field", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.ResultSink = &ResultSinkConfig{
+			Type:        "gcp-pubsub",
+			Topic:       "projects/example.com:acme-prod/topics/stirrup.results~v1",
+			Attributes:  map[string]string{"tenant": "team-a", "env": ""},
+			OrderingKey: "team-a",
+			Credential:  &CredentialConfig{Type: "gcp-default"},
+		}
+		must.NoError(ValidateRunConfig(c))
+	})
+}
+
+// TestValidateRunConfig_ResultSink_GCPPubSubAcceptsValuesAtLimits pins
+// that each Pub/Sub limit is inclusive.
+func TestValidateRunConfig_ResultSink_GCPPubSubAcceptsValuesAtLimits(t *testing.T) {
 	must := require.New(t)
+	attributes := make(map[string]string, 99)
+	for i := range 98 {
+		attributes[fmt.Sprintf("k%d", i)] = "v"
+	}
+	attributes[strings.Repeat("k", 256)] = strings.Repeat("v", 1024)
 	c := validConfig()
-	c.ResultSink = &ResultSinkConfig{Type: "gcp-pubsub", Topic: "stirrup-results"}
-	must.ErrorContains(ValidateRunConfig(c), "reserved but not yet implemented")
+	c.ResultSink = &ResultSinkConfig{
+		Type:        "gcp-pubsub",
+		Topic:       "projects/acme-prod/topics/" + strings.Repeat("t", 255),
+		Attributes:  attributes,
+		OrderingKey: strings.Repeat("o", 1024),
+	}
+	must.NoError(ValidateRunConfig(c))
+}
+
+// TestValidateRunConfig_ResultSink_GCPPubSubRejectsInvalidFields pins the
+// load-time checks that stop a gcp-pubsub sink failing at end-of-run,
+// after the run's work is done.
+func TestValidateRunConfig_ResultSink_GCPPubSubRejectsInvalidFields(t *testing.T) {
+	const topic = "projects/acme-prod/topics/stirrup-results"
+	manyAttributes := make(map[string]string, 100)
+	for i := range 100 {
+		manyAttributes[fmt.Sprintf("k%d", i)] = "v"
+	}
+	cases := []struct {
+		name string
+		sink ResultSinkConfig
+		want string
+	}{
+		{"missing topic", ResultSinkConfig{}, "requires topic"},
+		{"bare topic name", ResultSinkConfig{Topic: "stirrup-results"}, "must be a full topic resource name"},
+		{"topic path traversal", ResultSinkConfig{Topic: "projects/acme-prod/topics/../x"}, "must be a full topic resource name"},
+		{"topic with extra segment", ResultSinkConfig{Topic: "projects/acme-prod/topics/a/b"}, "must be a full topic resource name"},
+		{"goog topic", ResultSinkConfig{Topic: "projects/acme-prod/topics/google-x"}, `must not start with "goog"`},
+		{"reserved runId attribute", ResultSinkConfig{Topic: topic, Attributes: map[string]string{"runId": "x"}}, `key "runId" is reserved`},
+		{"reserved stirrup attribute prefix", ResultSinkConfig{Topic: topic, Attributes: map[string]string{"StirrupOutcome": "x"}}, `must not start with "stirrup"`},
+		{"goog attribute key", ResultSinkConfig{Topic: topic, Attributes: map[string]string{"googFoo": "x"}}, `must not start with "goog"`},
+		{"empty attribute key", ResultSinkConfig{Topic: topic, Attributes: map[string]string{"": "x"}}, "keys must be non-empty"},
+		{"oversized attribute key", ResultSinkConfig{Topic: topic, Attributes: map[string]string{strings.Repeat("k", 257): "x"}}, "at most 256 bytes"},
+		{"oversized attribute value", ResultSinkConfig{Topic: topic, Attributes: map[string]string{"k": strings.Repeat("v", 1025)}}, "at most 1024 bytes"},
+		{"secret reference attribute", ResultSinkConfig{Topic: topic, Attributes: map[string]string{"token": "secret://PUBSUB_TOKEN"}}, "are not resolved"},
+		{"too many attributes", ResultSinkConfig{Topic: topic, Attributes: manyAttributes}, "at most 99 are allowed"},
+		{"oversized ordering key", ResultSinkConfig{Topic: topic, OrderingKey: strings.Repeat("o", 1025)}, "resultSink.orderingKey must be valid UTF-8 of at most 1024 bytes"},
+		{"invalid UTF-8 ordering key", ResultSinkConfig{Topic: topic, OrderingKey: "\xff"}, "resultSink.orderingKey must be valid UTF-8"},
+		{"invalid UTF-8 attribute value", ResultSinkConfig{Topic: topic, Attributes: map[string]string{"k": "\xff"}}, "must be valid UTF-8 of at most 1024 bytes"},
+		{"oversized topic", ResultSinkConfig{Topic: "projects/acme-prod/topics/" + strings.Repeat("t", 256)}, "must be a full topic resource name"},
+		{"unsupported credential", ResultSinkConfig{Topic: topic, Credential: &CredentialConfig{Type: "aws-default"}}, `"aws-default" is not supported by the gcp-pubsub result sink`},
+		{"bucket", ResultSinkConfig{Topic: topic, Bucket: "stirrup-results"}, `resultSink.bucket is only valid when type is "gcs"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			sink := tc.sink
+			sink.Type = "gcp-pubsub"
+			c.ResultSink = &sink
+			must.ErrorContains(ValidateRunConfig(c), tc.want)
+		})
+	}
 }
 
 // TestValidateRunConfig_ResultSink_BarePubsubRejected pins that the bare
@@ -5637,11 +5716,90 @@ func TestValidateRunConfig_ResultSink_TopicRejectedForNonPubSub(t *testing.T) {
 	})
 }
 
-func TestValidateRunConfig_ResultSink_GCSReserved(t *testing.T) {
-	must := require.New(t)
-	c := validConfig()
-	c.ResultSink = &ResultSinkConfig{Type: "gcs"}
-	must.ErrorContains(ValidateRunConfig(c), "reserved but not yet implemented")
+func TestValidateRunConfig_ResultSink_GCSAccepted(t *testing.T) {
+	t.Run("bucket only", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.ResultSink = &ResultSinkConfig{Type: "gcs", Bucket: "stirrup-results"}
+		must.NoError(ValidateRunConfig(c))
+	})
+	t.Run("prefix gains a trailing slash", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.ResultSink = &ResultSinkConfig{
+			Type:         "gcs",
+			Bucket:       "stirrup-results",
+			ObjectPrefix: "results/prod",
+			Credential:   &CredentialConfig{Type: "gcp-workload-identity"},
+		}
+		must.NoError(ValidateRunConfig(c))
+		must.Equal("results/prod/", c.ResultSink.ObjectPrefix)
+	})
+	t.Run("prefix with a trailing slash is kept", func(t *testing.T) {
+		must := require.New(t)
+		c := validConfig()
+		c.ResultSink = &ResultSinkConfig{Type: "gcs", Bucket: "stirrup-results", ObjectPrefix: "results/"}
+		must.NoError(ValidateRunConfig(c))
+		must.Equal("results/", c.ResultSink.ObjectPrefix)
+	})
+}
+
+// TestValidateRunConfig_ResultSink_GCSRejectsInvalidFields pins the
+// load-time checks that stop a gcs sink failing at end-of-run, after the
+// run's work is done.
+func TestValidateRunConfig_ResultSink_GCSRejectsInvalidFields(t *testing.T) {
+	const bucket = "stirrup-results"
+	cases := []struct {
+		name string
+		sink ResultSinkConfig
+		want string
+	}{
+		{"missing bucket", ResultSinkConfig{}, `resultSink type "gcs" requires bucket`},
+		{"malformed bucket", ResultSinkConfig{Bucket: "Bad/Bucket"}, `resultSink.bucket "Bad/Bucket" must match`},
+		{"prefix path traversal", ResultSinkConfig{Bucket: bucket, ObjectPrefix: "results/../other"}, `must not contain ".." path segments`},
+		{"prefix control character", ResultSinkConfig{Bucket: bucket, ObjectPrefix: "results\n"}, "must not contain control characters"},
+		{"prefix invalid UTF-8", ResultSinkConfig{Bucket: bucket, ObjectPrefix: "results\xff/"}, "must be valid UTF-8 of at most 883 bytes"},
+		{"prefix too long", ResultSinkConfig{Bucket: bucket, ObjectPrefix: strings.Repeat("p", 884)}, "must be valid UTF-8 of at most 883 bytes"},
+		{"unsupported credential", ResultSinkConfig{Bucket: bucket, Credential: &CredentialConfig{Type: "gcp-service-account"}}, `"gcp-service-account" is not supported by the gcs result sink`},
+		{"topic", ResultSinkConfig{Bucket: bucket, Topic: "projects/acme-prod/topics/stirrup-results"}, `resultSink.topic is only valid when type is "gcp-pubsub"`},
+		{"ordering key", ResultSinkConfig{Bucket: bucket, OrderingKey: "k"}, `resultSink.orderingKey is only valid when type is "gcp-pubsub"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			sink := tc.sink
+			sink.Type = "gcs"
+			c.ResultSink = &sink
+			must.ErrorContains(ValidateRunConfig(c), tc.want)
+		})
+	}
+}
+
+// TestValidateRunConfig_ResultSink_RemoteFieldsRejectedOnStdoutJSON pins
+// that the gcs and gcp-pubsub fields fail loudly on a sink that would
+// ignore them.
+func TestValidateRunConfig_ResultSink_RemoteFieldsRejectedOnStdoutJSON(t *testing.T) {
+	cases := []struct {
+		name string
+		sink ResultSinkConfig
+		want string
+	}{
+		{"bucket", ResultSinkConfig{Bucket: "stirrup-results"}, `resultSink.bucket is only valid when type is "gcs"`},
+		{"objectPrefix", ResultSinkConfig{ObjectPrefix: "results/"}, `resultSink.objectPrefix is only valid when type is "gcs"`},
+		{"orderingKey", ResultSinkConfig{OrderingKey: "k"}, `resultSink.orderingKey is only valid when type is "gcp-pubsub"`},
+		{"credential", ResultSinkConfig{Credential: &CredentialConfig{Type: "gcp-default"}}, `resultSink.credential is only valid when type is "gcs" or "gcp-pubsub"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			sink := tc.sink
+			sink.Type = "stdout-json"
+			c.ResultSink = &sink
+			must.ErrorContains(ValidateRunConfig(c), tc.want)
+		})
+	}
 }
 
 func TestValidateRunConfig_ResultSink_InvalidType(t *testing.T) {

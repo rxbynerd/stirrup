@@ -1976,6 +1976,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 
 	loop.Shutdown = shutdownCtx
 	loop.Handoff = workspaceHandoff{primaryRunID: config.RunID}
+	loop.ResultDelivery = resultDelivery{}
 	stopShutdownWatchdog := armShutdownWatchdog(shutdownCtx, loop, shutdownCloseGrace)
 	defer stopShutdownWatchdog()
 	stopStreamWatch := watchControlStream(loop.Transport, loop.ControlStreamLost)

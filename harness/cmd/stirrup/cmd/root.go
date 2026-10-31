@@ -119,8 +119,8 @@ func withRunTimeout(parent context.Context, timeout time.Duration) (context.Cont
 // postRunEmitTimeout bounds the fresh context for emitRunOutput after
 // the loop returns, since the loop's own context may already be
 // cancelled by a stop signal. 10s mirrors bestEffortCancel in
-// batchpoll.go: enough for one remote RPC, short enough to avoid an
-// apparent hang.
+// batchpoll.go. Only local sinks run under it; remote sinks are
+// delivered inside the loop under their own budget.
 const postRunEmitTimeout = 10 * time.Second
 
 // printRunSummary writes a brief run summary to stderr. A nil RunTrace
@@ -260,14 +260,18 @@ func runOutcomeError(rt *types.RunTrace) error {
 }
 
 // newResultSink is the seam tests use to inject a stub ResultSink.
-// Production code keeps the resultsink.NewResultSink factory.
-var newResultSink = resultsink.NewResultSink
+// Production code keeps the core.NewResultSink factory.
+var newResultSink = core.NewResultSink
 
 // emitRunResult builds and emits a RunResult through the configured
-// resultSink. Failures are logged but never fatal — a transient sink
-// error must not mask a successful run already reflected in the trace
-// and stderr summary.
+// local resultSink. Failures are logged but never fatal — a transient
+// sink error must not mask a successful run already reflected in the
+// trace and stderr summary. Remote sinks are skipped: resultDelivery has
+// already sent to them before "done".
 func emitRunResult(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) {
+	if cfg.ResultSink.IsRemote() {
+		return
+	}
 	sink, err := newResultSink(cfg.ResultSink)
 	if err != nil {
 		slog.Warn("build resultSink", "err", err)
@@ -276,6 +280,25 @@ func emitRunResult(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace
 	if err := sink.Emit(ctx, buildRunResult(rt, cfg.ResultSink.ResolvedMaxFinalAssistantTextBytes())); err != nil {
 		slog.Warn("emit resultSink", "err", err)
 	}
+}
+
+// resultDelivery is the core.ResultDelivery `stirrup harness` and
+// `stirrup job` inject: it sends each run's RunResult to a gcs or
+// gcp-pubsub sink before the run's "done", so a failure reaches the
+// control stream while the control plane is still listening.
+type resultDelivery struct{}
+
+var _ core.ResultDelivery = resultDelivery{}
+
+func (resultDelivery) Deliver(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace) error {
+	if !cfg.ResultSink.IsRemote() {
+		return nil
+	}
+	sink, err := newResultSink(cfg.ResultSink)
+	if err != nil {
+		return fmt.Errorf("build result sink: %w", err)
+	}
+	return sink.Emit(ctx, buildRunResult(rt, cfg.ResultSink.ResolvedMaxFinalAssistantTextBytes()))
 }
 
 // emitRunOutput dispatches the post-run summary surfaces selected by
@@ -406,8 +429,9 @@ func followUpExportURI(base, runID string) string {
 
 // postRunPolicy is the per-run finalisation `stirrup harness` and
 // `stirrup job` apply to the primary run and to every follow-up run
-// alike: emit the run's result. The workspace export has already run
-// inside the loop, before "done".
+// alike: emit the run's result locally. The workspace export and any
+// gcs or gcp-pubsub result delivery have already run inside the loop,
+// before "done".
 type postRunPolicy struct {
 	// emit publishes the run's RunResult (and any stderr summary).
 	emit func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace)
@@ -445,8 +469,8 @@ func (p *postRunPolicy) followUpErr() error {
 
 // finalise applies the policy to one completed run. The emit gets a
 // fresh, bounded context: the run's own context may already be
-// cancelled by a SIGTERM or deadline, and a remote sink would otherwise
-// silently drop the result on every cancelled run.
+// cancelled by a SIGTERM or deadline, and the result would otherwise be
+// lost on every cancelled run.
 //
 // Returns runErr wrapped when non-nil (the result is still emitted so
 // the failure is observable); nil otherwise. A nil trace means the loop

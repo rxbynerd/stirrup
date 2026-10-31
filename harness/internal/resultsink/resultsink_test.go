@@ -338,29 +338,35 @@ func TestNewResultSink_SelectsSinkByType(t *testing.T) {
 		{"empty type", &types.ResultSinkConfig{Type: ""}, NoneSink{}},
 		{"none", &types.ResultSinkConfig{Type: "none"}, NoneSink{}},
 		{"stdout-json", &types.ResultSinkConfig{Type: "stdout-json"}, (*StdoutJSONSink)(nil)},
+		{"gcs", &types.ResultSinkConfig{Type: "gcs", Bucket: "stirrup-results"}, (*GCSSink)(nil)},
+		{"gcp-pubsub", &types.ResultSinkConfig{Type: "gcp-pubsub", Topic: testTopic}, (*PubSubSink)(nil)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			sink, err := NewResultSink(tc.cfg)
+			sink, err := NewResultSink(tc.cfg, &tokenSource{token: "t"})
 			must.NoError(err)
 			must.IsType(tc.wantType, sink)
 		})
 	}
 }
 
-func TestNewResultSink_ReservedTypesRejected(t *testing.T) {
-	for _, typ := range []string{"gcp-pubsub", "gcs"} {
-		t.Run(typ, func(t *testing.T) {
+func TestNewResultSink_RemoteTypesRequireCredentialSource(t *testing.T) {
+	cases := map[string]*types.ResultSinkConfig{
+		"gcs":        {Type: "gcs", Bucket: "stirrup-results"},
+		"gcp-pubsub": {Type: "gcp-pubsub", Topic: testTopic},
+	}
+	for name, cfg := range cases {
+		t.Run(name, func(t *testing.T) {
 			must := require.New(t)
-			_, err := NewResultSink(&types.ResultSinkConfig{Type: typ})
-			must.ErrorContains(err, "not yet implemented")
+			_, err := NewResultSink(cfg, nil)
+			must.ErrorContains(err, "credential source is required")
 		})
 	}
 }
 
 func TestNewResultSink_UnknownTypeRejected(t *testing.T) {
 	must := require.New(t)
-	_, err := NewResultSink(&types.ResultSinkConfig{Type: "kinesis"})
+	_, err := NewResultSink(&types.ResultSinkConfig{Type: "kinesis"}, nil)
 	must.ErrorContains(err, "unsupported resultSink.type")
 }

@@ -208,10 +208,14 @@ IMDS, GitHub Actions OIDC). See
    `stop.category` attribute on the OTel `provider.stream` span) and
    the `provider refused to respond` Warn log line;
    `trace.stop_details` mirrors them on the proto.
-9. **Finalise.** The run's `RunResult` is emitted on the configured
-   `resultSink`; the workspace export, when `executor.workspaceExportTo`
-   is set, has already run before `done`. Every run — primary and
-   follow-up — is finalised this way.
+9. **Finalise.** The run's `RunResult` is emitted on a `stdout-json`
+   `resultSink` after `done`. The workspace export, when
+   `executor.workspaceExportTo` is set, has already run before `done`,
+   and so has delivery to a `gcs` or `gcp-pubsub` sink; if that
+   delivery still fails after its retries, the harness sends a
+   `warning` starting `result sink:` ahead of `done` (see
+   [`configuration.md`](configuration.md#delivery)). Every run —
+   primary and follow-up — is finalised this way.
 10. **Follow-up grace** *(optional)*. If `followUpGrace` (or
     `STIRRUP_FOLLOWUP_GRACE`) is positive, the stream stays open for
     that many idle seconds after each run is finalised, so the control

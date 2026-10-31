@@ -781,6 +781,145 @@ than dropping the result entirely. That case logs a warning naming
 the encoded size and the cap so the condition is visible rather than
 silently exceeding the intended bound.
 
+### Result sinks
+
+`resultSink` selects where the run's `RunResult` is delivered at
+end-of-run. There is no CLI flag; the block is set in the `RunConfig`
+(or the `task_assignment`'s `result_sink`).
+
+| `type` | Delivers | Fields |
+|---|---|---|
+| `none` (default) | Nothing. | — |
+| `stdout-json` | One `STIRRUP_RESULT <json>` line on stdout (see [Run output](#run-output)). | — |
+| `gcs` | One object, `gs://{bucket}/{objectPrefix}{runId}.result.json`, holding the `RunResult` JSON. | `bucket` (required), `objectPrefix`, `credential` |
+| `gcp-pubsub` | One Pub/Sub message whose data is the `RunResult` JSON. | `topic` (required), `attributes`, `orderingKey`, `credential` |
+
+`maxFinalAssistantTextBytes` applies to every type. Every other field
+is rejected on a type that does not use it.
+
+```json
+{ "resultSink": { "type": "gcs", "bucket": "acme-stirrup-results", "objectPrefix": "results/" } }
+```
+
+```json
+{
+  "resultSink": {
+    "type": "gcp-pubsub",
+    "topic": "projects/acme-prod/topics/stirrup-results",
+    "attributes": { "tenant": "team-a" },
+    "orderingKey": "team-a"
+  }
+}
+```
+
+The `gcs` and `gcp-pubsub` sinks deliver the same JSON document as
+`stdout-json`, without the `STIRRUP_RESULT ` sentinel and without the
+250 KiB line cap, which exists only for log transports.
+
+#### Field rules
+
+Validation checks each field's shape, so a malformed value fails at
+boot rather than after the run's work is done. Whether the bucket or
+topic exists and whether the credential may write to it are only
+discovered at delivery; `--dry-run` does not probe the result sink.
+
+- `bucket` must pass the same shape check as `traceEmitter.bucket`.
+  `objectPrefix` must be valid UTF-8 of at most 883 bytes, so the
+  object name fits GCS's 1024-byte limit, with no `..` segments or
+  control characters. A trailing `/` is added when it has none.
+- `topic` is the full resource name,
+  `projects/{projectId}/topics/{topicId}`, with a project ID (not a
+  project number) of at least 6 characters. A bare topic ID is
+  rejected.
+- `attributes` are static strings copied verbatim onto the message:
+  at most 99 entries, keys of 1–256 bytes, values of at most 1024
+  bytes. Keys may not start with `goog` (reserved by Pub/Sub) or
+  `stirrup` in any case (reserved for attributes the harness adds).
+  The `runId` key is also reserved: the harness always sets it to the
+  run ID, so subscribers can filter on it without decoding the
+  payload. `secret://` values are rejected rather than resolved, since
+  message attributes reach every subscriber and are retained with the
+  message. Plain values are recorded verbatim in the run's trace and
+  recordings, so attributes must not carry credentials.
+- `orderingKey` is at most 1024 bytes. Pub/Sub orders messages by key
+  only for subscriptions with message ordering enabled, and only among
+  messages published to the same region. The sink publishes through
+  the global endpoint, so ordering holds only when every publisher
+  for that key runs in one region.
+- `credential` overrides the default `gcp-workload-identity` source
+  and accepts `gcp-workload-identity` or `gcp-default`, as for the
+  `gcs` trace emitter. The service account needs
+  `roles/storage.objectCreator` on the bucket for `gcs`, or
+  `roles/pubsub.publisher` on the topic for `gcp-pubsub`.
+
+`maxFinalAssistantTextBytes` has no upper bound. Pub/Sub rejects a
+publish request over 10 MB, and the message data is base64-encoded,
+so a cap above about 7 MB can make a `gcp-pubsub` delivery fail.
+
+#### Delivery
+
+`stirrup harness` and `stirrup job` deliver to a `gcs` or
+`gcp-pubsub` sink after the run's trace is finished and before its
+`done` event, for the primary run and every follow-up run. The Go
+embedding API (`harnessapi`) does not deliver to these sinks.
+
+Each sink makes up to three attempts, 0.5 s and 1 s apart. Each
+attempt is bounded at 30 s and the whole delivery at 60 s, so `done`
+can be held back by up to a minute. Transport errors, credential
+errors, and HTTP 408, 429 and 5xx responses are retried. Pub/Sub 409
+(`ABORTED`) and 499 (`CANCELLED`) are retried too, matching Google's
+Pub/Sub client libraries. Other statuses fail at once. Each retried
+attempt is logged at warn level, and a success is logged at info level
+with the object URI or the Pub/Sub message ID.
+
+If every attempt fails, the harness logs the error and sends a
+`warning` event whose message starts `result sink:`, ahead of the
+run's `done`. A failed delivery never changes the run's outcome or
+exit code. A second interrupt cuts the delivery short. Under
+`stirrup job` the loop also closes 5 s after the first SIGTERM, after
+which a failure warning can no longer be sent. A platform that sends
+SIGKILL soon after SIGTERM (Cloud Run waits 10 s) can end a delivery
+with no warning sent. With `--output=json`, the `STIRRUP_RESULT` line is
+written after the run ends, so it also waits behind the delivery.
+
+The `gcs` sink creates its object but never replaces it
+(`ifGenerationMatch=0`), so `roles/storage.objectCreator` is enough.
+An object already present under the run's name fails the delivery.
+The usual cause is a reused `runId`; a `gcs` result sink needs a run
+ID that is unique per run, which a configuration that leaves `runId`
+unset gets automatically. The other cause is a write from inside the
+run (see [Trust boundary](#trust-boundary)). If an earlier attempt
+sent its request but got no answer, it may have written the object
+itself. The failure message then says the object is probably this
+run's result but cannot be confirmed.
+
+A `gcp-pubsub` retry after a lost acknowledgement publishes the same
+message again, so delivery is at-least-once. A repeat carries the
+same data as the original.
+
+#### Trust boundary
+
+These sinks are only as trustworthy as the isolation between the agent
+and the credential they use. With the `local` executor, or any
+sandbox that can reach the metadata server or a `gcp-default` key
+file, the agent's commands can obtain the same credential. They can
+then create an object under the run's name before the harness does,
+or publish a message at any time. A planted `gcs` object makes the
+genuine delivery fail. The create-only protection holds only while
+the service account cannot delete objects in the bucket. Two
+`gcp-pubsub` messages with differing data for one `runId` mean
+neither can be trusted, whichever arrived first. Runs whose result
+drives automation should execute tools in a sandbox whose egress
+excludes the metadata server. One option is the `k8s` executor with
+egress mode `none` or `allowlist` on a CNI that enforces
+NetworkPolicy (see [`executors/k8s.md`](executors/k8s.md#egress)).
+
+The `gcs` sink is deliberately small. The `gcs` trace emitter and the
+workspace export already write run evidence to GCS; this sink adds
+only a single, predictably named object holding the run's answer, for
+a consumer that wants to read the outcome without parsing a trace or
+collecting logs. It writes nothing else.
+
 ### Workspace export
 
 At end-of-run the executor's workspace can be tarred, gzipped, and

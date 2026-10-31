@@ -1428,9 +1428,13 @@ func TestRunConfigFromProto_ResultSinkPreserved(t *testing.T) {
 	original := &pb.RunConfig{
 		ResultSink: &pb.ResultSinkConfig{
 			Type:                       "gcp-pubsub",
-			Topic:                      "stirrup-results",
+			Topic:                      "projects/acme-prod/topics/stirrup-results",
 			Attributes:                 map[string]string{"tenant": "team-a", "auth": "secret://PUBSUB_TOKEN"},
 			MaxFinalAssistantTextBytes: 4096,
+			Bucket:                     "stirrup-results",
+			ObjectPrefix:               "results/",
+			OrderingKey:                "tenant-a",
+			Credential:                 &pb.CredentialConfig{Type: "gcp-default"},
 		},
 	}
 
@@ -1440,8 +1444,13 @@ func TestRunConfigFromProto_ResultSinkPreserved(t *testing.T) {
 	sink := runConfigFromProto(&decoded).ResultSink
 	must.NotNil(sink, "ResultSink nil after translation")
 	check.Equal("gcp-pubsub", sink.Type)
-	check.Equal("stirrup-results", sink.Topic)
+	check.Equal("projects/acme-prod/topics/stirrup-results", sink.Topic)
 	check.Equal(4096, sink.MaxFinalAssistantTextBytes)
+	check.Equal("stirrup-results", sink.Bucket)
+	check.Equal("results/", sink.ObjectPrefix)
+	check.Equal("tenant-a", sink.OrderingKey)
+	must.NotNil(sink.Credential, "ResultSink.Credential nil after translation")
+	check.Equal("gcp-default", sink.Credential.Type)
 	check.Equal(map[string]string{"tenant": "team-a", "auth": "secret://PUBSUB_TOKEN"}, sink.Attributes)
 
 	decoded.ResultSink.Attributes["tenant"] = "mutated"

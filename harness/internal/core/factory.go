@@ -34,6 +34,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/provider"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/compat/zai"
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
+	"github.com/rxbynerd/stirrup/harness/internal/resultsink"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/ruleoftwo"
 	"github.com/rxbynerd/stirrup/harness/internal/sandboxidentity"
@@ -1461,9 +1462,9 @@ func buildCommandOutputStore(ctx context.Context, config *types.RunConfig) (*com
 			prefix = archiveCfg.ObjectPrefix
 			credentialCfg = archiveCfg.Credential
 		}
-		source, err := buildGCSTraceCredentialSource(credentialCfg)
+		source, err := buildGCPCredentialSource(credentialCfg)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("archive credential: %w", err)
 		}
 		resolved, err := source.Resolve(ctx)
 		if err != nil {
@@ -2288,7 +2289,7 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, export
 		return trace.NewOTelTraceEmitter(ctx, otelEmitterOptions(cfg, exporters, resourceOpts, effectiveRedactionDisabled))
 	case "gcs":
 		// Default credential is gcp-workload-identity; see docs/cloud-run-jobs.md.
-		credSrc, err := buildGCSTraceCredentialSource(cfg.Credential)
+		credSrc, err := buildGCPCredentialSource(cfg.Credential)
 		if err != nil {
 			return nil, fmt.Errorf("gcs trace emitter credential: %w", err)
 		}
@@ -2316,12 +2317,14 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, export
 	}
 }
 
-// buildGCSTraceCredentialSource resolves the credential.Source for the
-// gcs trace emitter; see docs/cloud-run-jobs.md. Defaults to
-// gcp-workload-identity when TraceEmitterConfig.Credential is nil. Only
-// GCP-shaped credential types are accepted — AWS/Azure/Anthropic-WIF
-// are rejected with a clear error rather than a 401 from the GCS API.
-func buildGCSTraceCredentialSource(cfg *types.CredentialConfig) (credential.Source, error) {
+// buildGCPCredentialSource resolves the credential.Source for the
+// Google Cloud destinations the harness writes run output to: the gcs
+// trace emitter, the GCS command-output archive and the gcs and
+// gcp-pubsub result sinks; see docs/cloud-run-jobs.md. Defaults to
+// gcp-workload-identity when cfg is nil. Only GCP-shaped credential
+// types are accepted — AWS/Azure/Anthropic-WIF are rejected with a
+// clear error rather than a 401 from the Google API.
+func buildGCPCredentialSource(cfg *types.CredentialConfig) (credential.Source, error) {
 	if cfg == nil {
 		return credential.NewGoogleWorkloadIdentitySource(), nil
 	}
@@ -2334,20 +2337,35 @@ func buildGCSTraceCredentialSource(cfg *types.CredentialConfig) (credential.Sour
 		// account JSON key.
 		return &credential.GoogleADCSource{}, nil
 	case "gcp-service-account":
-		// The trace emitter has no field equivalent to
+		// These destinations have no field equivalent to
 		// Provider.GCPCredentialsFile; surface the gap explicitly
 		// rather than silently no-opping.
 		return nil, fmt.Errorf(
-			"credential.type=%q is not supported for the gcs trace emitter today; "+
+			"credential.type=%q is not supported for Google Cloud run-output destinations today; "+
 				"use \"gcp-workload-identity\" on GCP runtimes or \"gcp-default\" with "+
 				"GOOGLE_APPLICATION_CREDENTIALS set to a service-account JSON key",
 			cfg.Type)
 	default:
 		return nil, fmt.Errorf(
-			"credential.type=%q is not supported for the gcs trace emitter; "+
+			"credential.type=%q is not supported for Google Cloud run-output destinations; "+
 				"expected \"gcp-workload-identity\" or \"gcp-default\"",
 			cfg.Type)
 	}
+}
+
+// NewResultSink builds the result sink cfg selects. The gcs and
+// gcp-pubsub sinks authenticate with the same credential resolution as
+// the gcs trace emitter.
+func NewResultSink(cfg *types.ResultSinkConfig) (resultsink.ResultSink, error) {
+	var creds credential.Source
+	if cfg.IsRemote() {
+		source, err := buildGCPCredentialSource(cfg.Credential)
+		if err != nil {
+			return nil, fmt.Errorf("resultSink credential: %w", err)
+		}
+		creds = source
+	}
+	return resultsink.NewResultSink(cfg, creds)
 }
 
 // resolveCompatProfile maps the closed enum of supported

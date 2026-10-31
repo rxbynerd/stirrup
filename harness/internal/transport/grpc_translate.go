@@ -432,6 +432,12 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			Type:                       pc.ResultSink.GetType(),
 			Topic:                      pc.ResultSink.GetTopic(),
 			MaxFinalAssistantTextBytes: int(pc.ResultSink.GetMaxFinalAssistantTextBytes()),
+			Bucket:                     pc.ResultSink.GetBucket(),
+			ObjectPrefix:               pc.ResultSink.GetObjectPrefix(),
+			OrderingKey:                pc.ResultSink.GetOrderingKey(),
+		}
+		if pc.ResultSink.Credential != nil {
+			rc.ResultSink.Credential = credentialConfigFromProto(pc.ResultSink.Credential)
 		}
 		if len(pc.ResultSink.Attributes) > 0 {
 			// Copy the proto-owned map so later mutations to the wire

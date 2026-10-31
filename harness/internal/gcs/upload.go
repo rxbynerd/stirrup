@@ -64,6 +64,10 @@ type UploadOptions struct {
 	// DefaultEndpointBaseURL. Tests set this to point at an
 	// httptest.NewServer; production callers leave it empty.
 	EndpointBaseURL string
+
+	// CreateOnly makes the upload fail with HTTP 412 instead of
+	// replacing an existing object (ifGenerationMatch=0).
+	CreateOnly bool
 }
 
 // UploadObject PUTs Body to gs://{Bucket}/{Object} via the JSON-API
@@ -113,6 +117,9 @@ func UploadObject(ctx context.Context, client *http.Client, opts UploadOptions) 
 		opts.Bucket,
 		urlPathEscape(opts.Object),
 	)
+	if opts.CreateOnly {
+		url += "&ifGenerationMatch=0"
+	}
 
 	var body io.Reader = bytes.NewReader(opts.Body)
 	contentLength := int64(len(opts.Body))
@@ -145,7 +152,21 @@ func UploadObject(ctx context.Context, client *http.Client, opts UploadOptions) 
 
 	const maxErrBody = 4 * 1024
 	msg, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
-	return fmt.Errorf("gcs upload returned HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
+	// The cap can split a rune; invalid UTF-8 would stop the error
+	// travelling in a protobuf event.
+	return &UploadStatusError{StatusCode: resp.StatusCode, Body: strings.ToValidUTF8(strings.TrimSpace(string(msg)), "�")}
+}
+
+// UploadStatusError is UploadObject's error for a non-2xx GCS response,
+// so a caller that retries can tell a transient status from a permanent
+// one.
+type UploadStatusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *UploadStatusError) Error() string {
+	return fmt.Sprintf("gcs upload returned HTTP %d: %s", e.StatusCode, e.Body)
 }
 
 // BucketProbeOptions configures a single bucket-access probe.
