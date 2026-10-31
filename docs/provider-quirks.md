@@ -416,15 +416,18 @@ func RuleMatches(rule Rule, t Target) bool
 (`provider.EndpointProfileFor`): the declared
 `provider.endpointProfile`, or `openai` / `generic` derived from
 `baseUrl`, and empty for provider types that do not speak the OpenAI
-wire. A rule with an empty `Endpoint` matches every endpoint; a rule
+wire, except that the Bedrock adapter resolves Claude models under
+`bedrock` (see [Bedrock](#bedrock)). A rule with an empty `Endpoint`
+matches every endpoint; a rule
 with an `Endpoint` matches only that profile. An empty
 `Target.Endpoint` means the endpoint is not stated, and endpoint-scoped
 rules do not fire for it, so a capability only some endpoints implement
 resolves as unsupported. Every lookup passes the endpoint: the OpenAI
 adapters, the batch body marshaller (which receives the profile at
 construction), and the loop-side context window, tool choice,
-structured result, tool search and judge structured-output lookups, so for the built-in rules
-adapters and the loop resolve identically. The loop-side lookups use
+structured result, tool search and judge structured-output lookups, so
+for the built-in rules adapters and the loop resolve identically,
+Bedrock excepted. The loop-side lookups use
 the built-in registry only: an `openai-compatible` adapter with a
 `compatProfile` also applies that profile's rules, which the loop does
 not see. The `openai quirks resolved` and
@@ -442,10 +445,39 @@ can be declared once and overridden by a specific glob. The `gpt-5*` +
 length dominates endpoint scope: an endpoint-scoped rule cannot outrank
 a longer endpoint-agnostic glob unless it repeats that longer glob.
 
+<a id="bedrock"></a>
+**Bedrock.** The Bedrock adapter reuses the `anthropic` rules rather
+than carrying its own. `provider.BedrockQuirksTarget` takes the last
+`/`-separated segment of the model id (so a foundation-model or
+inference-profile ARN reduces to its model id), drops one leading
+label other than `anthropic` (in practice a cross-region prefix such
+as `us.`, `eu.` or `global.`), and resolves an id of the form
+`anthropic.<id>` as
+`Target{ProviderType: "anthropic", Endpoint: "bedrock", Model: <id>}`.
+The rules match the remainder by glob, so a version suffix such as
+`-v1:0` does not stop a `claude-sonnet-5*` rule from firing. Every
+other id, including an application inference profile ARN, resolves as
+provider type `bedrock`, which no built-in rule names. An `anthropic`
+rule scoped to the `bedrock` endpoint (`quirks.EndpointBedrock`)
+applies to Claude on Bedrock only; no built-in rule uses it yet.
+
+The Converse request carries none of the Messages API features most
+`anthropic` flags gate (tool choice, prompt caching, tool search,
+structured tool results, tool examples, effort), so
+`provider.ResolveBedrockQuirks` keeps only
+`Anthropic.OmitSamplingParams` and the rules whose writes changed it in
+apply order. The `bedrock quirks resolved` line, the
+`provider.quirk.applied` span attribute and
+`stirrup providers quirks --provider bedrock` report that reduced
+result. A kept rule's description may also name an effort level the
+reduction discarded. The loop-side capability lookups resolve a Bedrock
+selection as provider type `bedrock`, so they see no tool choice,
+structured results or tool search, which matches what the adapter
+sends.
+
 `DefaultRegistry()` is constructed once via `sync.Once` and is
 read-only after construction. Tests inject custom registries via
-the adapter's `Registry *quirks.Registry` field (the field is
-exported on `OpenAICompatibleAdapter` and `GeminiAdapter`).
+each adapter's exported `Registry *quirks.Registry` field.
 
 ### 2.3 ReplayFields path syntax
 
@@ -826,6 +858,7 @@ native control, gated by a per-model allow-list the rules populate:
 | `openai-compatible` | top-level `reasoning_effort` | `OpenAI.ReasoningEffortLevels` | send nothing, log a warning |
 | `openai-responses` | `reasoning.effort` | `OpenAIResponses.ReasoningEffortLevels` | send nothing, log a warning |
 | `gemini` | `generationConfig.thinkingConfig.thinkingLevel` | `Gemini.ThinkingLevels` | pass through (`minimal`..`high` only) |
+| `bedrock` | none | none | send nothing, log a warning |
 
 A configured level outside a non-empty list fails before any wire bytes
 are sent, with an error naming the accepted levels. The empty-list
@@ -941,8 +974,10 @@ the OpenAPI-subset `Schema` type that tool declarations use, so
 `additionalProperties` is accepted. Until a Vertex probe confirms the
 shape, no rule grants a Gemini model, so every Gemini judge stays
 prompt-only. Bedrock's Converse API exposes `outputConfig.textFormat`
-(the SDK carries it), but the adapter resolves no quirks, so wiring it
-is deferred and every Bedrock judge is prompt-only.
+(the SDK carries it), but the adapter projects no structured-output
+field and its [reduced resolution](#bedrock) drops the `OutputSchema`
+capability the Claude rules grant, so wiring it is deferred and every
+Bedrock judge is prompt-only.
 
 The rules are positive allow-lists: Claude 5.x and Opus 4.7 and 4.8;
 and gpt-5 and gpt-6 on both OpenAI wires, gateway-prefixed on Chat
@@ -1023,12 +1058,12 @@ without a separate singleflight dependency.
 |---|---|---|
 | `provider.compatProfile` on `ProviderConfig` | `RunConfig` string field | Closed enum. Only legal value in v1: `"zai-glm"`. Unknown values fail at startup via `ValidateRunConfig`. |
 | `provider.endpointProfile` on `ProviderConfig` | `RunConfig` string field | Closed enum: `openai`, `azure-openai`, `bedrock-mantle`, `generic`; empty derives `openai` for OpenAI's own API and `generic` otherwise. Legal only on `openai-compatible` and `openai-responses`; `azure-openai` and `bedrock-mantle` require `baseUrl`. Selects which endpoint-scoped rules fire. See [Endpoint profiles](providers.md#endpoint-profiles). |
-| `stirrup providers quirks --provider X --model Y [--base-url U] [--endpoint-profile Z]` | CLI subcommand | Prints the effective endpoint profile and resolved `ProviderQuirks` as JSON, plus `Description`, `LastVerified`, staleness flag of every contributing rule. For an OpenAI-wire provider the profile is derived as a run derives it: a declared `--endpoint-profile` wins, otherwise `--base-url` derives `openai` (unset or OpenAI's own API) or `generic`. `--base-url` and `--endpoint-profile` are rejected for other provider types. Side-effect-free. |
-| `openai quirks resolved` / `openai-responses quirks resolved` / `gemini quirks resolved` / `anthropic quirks resolved` slog DEBUG line (per-adapter prefix, identical body shape) | structured log | One line per Stream call, listing every contributing rule's Description in apply order. The two OpenAI lines also carry the endpoint profile as `provider.endpoint_profile`. Last entry is the rule whose writes won on overlapping fields. Emitted even when no rule fired (rules:[]) so a missing line unambiguously means "the resolution did not run". Operators writing log filters should match the exact per-adapter prefix; a generic `"quirks resolved"` substring will not find every record. |
+| `stirrup providers quirks --provider X --model Y [--base-url U] [--endpoint-profile Z]` | CLI subcommand | Prints the effective endpoint profile and resolved `ProviderQuirks` as JSON, plus `Description`, `LastVerified`, staleness flag of every contributing rule. For `--provider bedrock` the output is the reduced [Bedrock](#bedrock) resolution, lists only the rules that changed the sampling-param omission, and adds `resolvedTarget` (the provider type, endpoint and model the rules matched); `endpointProfile` stays empty because Bedrock has no RunConfig endpoint profile. For an OpenAI-wire provider the profile is derived as a run derives it: a declared `--endpoint-profile` wins, otherwise `--base-url` derives `openai` (unset or OpenAI's own API) or `generic`. `--base-url` and `--endpoint-profile` are rejected for other provider types. Side-effect-free. |
+| `openai quirks resolved` / `openai-responses quirks resolved` / `gemini quirks resolved` / `anthropic quirks resolved` / `bedrock quirks resolved` slog DEBUG line (per-adapter prefix, identical body shape) | structured log | One line per Stream call, listing every contributing rule's Description in apply order. The two OpenAI lines also carry the endpoint profile as `provider.endpoint_profile`. Last entry is the rule whose writes won on overlapping fields. Emitted even when no rule fired (rules:[]) so a missing line unambiguously means "the resolution did not run". Operators writing log filters should match the exact per-adapter prefix; a generic `"quirks resolved"` substring will not find every record. |
 | `provider.quirk.applied` OTel span attribute | trace attribute | Set on the active `provider.stream` span at the same point the slog DEBUG line is emitted. Carries the same `[]string` of rule Descriptions. Lets a trace-only consumer (Datadog, Honeycomb, Jaeger) see which rules fired without needing to correlate with a separate log sink. |
 | `quirks replay fields captured` slog DEBUG line | structured log | Per-stream summary of `{count, total_len}` per captured ReplayFields path, emitted on stream exit. Length-only — captured values themselves are not logged. |
 | `replay_fields_captured.count` / `replay_fields_captured.total_len` OTel span attributes | trace attributes | Set on the active `provider.stream` span on stream exit, in parallel with the slog DEBUG record above. Totals across every captured path; length-only invariant matches the slog surface. |
-| `openai quirks suppressed caller temperature` / `anthropic quirks suppressed caller temperature` / `gemini quirks suppressed caller temperature` slog WARN line | structured log | Fires when `OmitSamplingParams` suppresses a caller-supplied non-nil `Temperature`. Names the rule that caused the suppression. The suppressed value itself is not logged. |
+| `openai quirks suppressed caller temperature` / `anthropic quirks suppressed caller temperature` / `gemini quirks suppressed caller temperature` / `bedrock quirks suppressed caller temperature` slog WARN line | structured log | Fires when `OmitSamplingParams` suppresses a caller-supplied non-nil `Temperature`. Names the rule that caused the suppression. The suppressed value itself is not logged. |
 | `strict-mode schema lint rejected tool; sending it with strict:false` slog WARN line | structured log | Fires on the `openai-compatible` and `openai-responses` adapters when a tool schema cannot be normalised for strict mode, once per `(model, tool, schema)` per adapter instance. Carries `provider.type`, `provider.model`, `tool.name`, `schema.path` and `reason` (the rejected keyword or structural issue); schema descriptions and enum values are never logged. The tool is sent non-strict; every other tool stays strict. |
 | `outputSchema ignored: model has no known structured output control` slog DEBUG line / `outputSchema ignored: invalid schema` slog WARN line | structured log | Fires on every adapter, Bedrock included, when a `StreamParams.OutputSchema` stays off the wire: at debug when the resolved `OutputSchema` capability is unsupported (the judges then run prompt-only), at warn when the schema fails `OutputSchema.Validate`. Carries `provider.type` and `provider.model`; the schema body is never logged. See [§3.4](#34-structured-outputs). |
 | `anthropic prompt cache` slog DEBUG line | structured log | One line per Anthropic stream whose usage reports any input, carrying `cache.read`, `cache.write` and `input.uncached` (input total minus both cache counts) as they appear on the emitted `message_complete` event, so the line matches the trace, plus `provider.model`. Counts only. A turn after the first with `cache.read` at zero means the cached prefix was invalidated or the prompt is below the model's cacheable minimum. |
