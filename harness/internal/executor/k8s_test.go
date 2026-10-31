@@ -151,7 +151,7 @@ func kubeClientFromConfig(t *testing.T, kubeconfig string) (kubernetes.Interface
 
 // newTestK8sExecutor constructs a K8sExecutor against the kind cluster named
 // by STIRRUP_TEST_KUBECONFIG, skipping when it is unset. The image must ship
-// /bin/sh, tar, and ls — busybox satisfies all three. The executor's Pod is
+// /bin/sh, tar, ls, and seq — busybox satisfies all four. The executor's Pod is
 // torn down on test cleanup.
 func newTestK8sExecutor(t *testing.T) *K8sExecutor {
 	t.Helper()
@@ -301,6 +301,16 @@ func assertTimeoutKillsProcessTree(t *testing.T, ctx context.Context, exec podCo
 func TestK8sExec_TimeoutKillsProcessTree(t *testing.T) {
 	exec := newTestK8sExecutor(t)
 	assertTimeoutKillsProcessTree(t, context.Background(), exec)
+}
+
+// TestK8sExec_CommandOutputSpill streams a command whose output exceeds the
+// inline limit into the command-output store and checks that it spills, pages
+// back intact, and lands complete in the archive.
+func TestK8sExec_CommandOutputSpill(t *testing.T) {
+	exec := newTestK8sExecutor(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	assertCommandOutputSpill(t, ctx, exec)
 }
 
 // TestK8sExec_OutputCap verifies the 10 MB output cap fires when a command

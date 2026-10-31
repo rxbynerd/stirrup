@@ -43,7 +43,7 @@ func (f *fakePodStream) StreamWithContext(ctx context.Context, opts remotecomman
 
 // fakePodExecCore returns a podExecCore whose pods/exec requests reach
 // stream, recording each request URL in urls.
-func fakePodExecCore(t *testing.T, stream *fakePodStream, urls *[]*url.URL) *podExecCore {
+func fakePodExecCore(t *testing.T, stream remotecommand.Executor, urls *[]*url.URL) *podExecCore {
 	t.Helper()
 	must := require.New(t)
 	cfg := &rest.Config{Host: "http://127.0.0.1:1"}
