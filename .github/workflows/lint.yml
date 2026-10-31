@@ -7,11 +7,14 @@ name: Lint
 # defence-in-depth check — a direct push or a merge-queue path that
 # somehow lands without PR review still trips the gate before
 # downstream consumers (eval-gate, publish-container) start.
+# workflow_dispatch lets the Dependabot checksums workflow lint the
+# commit it pushes, which no pull_request run covers without approval.
 
 on:
   pull_request:
   push:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read

@@ -8,6 +8,9 @@ updates:
       github-actions:
         patterns: ["*"]
 
+  # These updates leave the workspace go.work.sum stale; the
+  # dependabot-checksums workflow commits the regenerated file to each
+  # update branch.
   - package-ecosystem: gomod
     directory: /harness
     schedule:

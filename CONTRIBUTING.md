@@ -69,7 +69,12 @@ On every push, CI runs the equivalent of `just test`, a race-detector
 pass, `just fuzz-scrub` and a full build through the reusable
 `_verify.yml` workflow. It then fails if the build or tests changed
 `go.work.sum` or any committed `go.sum`, so checksum changes are
-committed with the change that caused them. An `eval-gate` job runs
+committed with the change that caused them. Dependabot updates each
+module's `go.sum` but not `go.work.sum`, so the
+[`dependabot-checksums.yml`](.github/workflows/dependabot-checksums.yml)
+workflow regenerates the checksum files on each Dependabot Go update
+branch, commits them there, and dispatches the verify and lint
+workflows against that commit. An `eval-gate` job runs
 the baselined eval suites against committed baselines, pinned to a
 cheap model, and every merge to `main` publishes a container. A failing
 `compare` exit fails the eval gate.
