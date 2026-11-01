@@ -275,10 +275,7 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 	streamN := g.streamCounter.Add(1)
 
 	ch := make(chan types.StreamEvent, 64)
-	go func() {
-		g.consumeSSE(ctx, resp, ch, start, metricAttrs, streamN, q, params.Model)
-		g.recordLatency(ctx, start, metricAttrs)
-	}()
+	go g.consumeSSE(ctx, resp, ch, start, metricAttrs, streamN, q, params.Model)
 	return ch, nil
 }
 
@@ -325,7 +322,9 @@ type toolCallBuf struct {
 }
 
 // consumeSSE reads SSE events from the response body and emits
-// StreamEvents to the channel, closing both when done. See
+// StreamEvents to the channel, closing both when done. The request
+// latency is recorded before the channel closes, so a reader that sees
+// the close can rely on the measurement existing. See
 // docs/providers.md for the Vertex generateContentChunk wire format.
 // streamN namespaces synthesised tool-call IDs
 // ("gemini-{streamN}-{partIdx}"), since Vertex never echoes them
@@ -342,6 +341,7 @@ func (g *GeminiAdapter) consumeSSE(
 	model string,
 ) {
 	defer close(ch)
+	defer g.recordLatency(ctx, streamStart, metricAttrs) // Deferred after close(ch) so it runs first.
 	defer func() { _ = resp.Body.Close() }()
 
 	// The ReplayFields accumulator collects every path matched across

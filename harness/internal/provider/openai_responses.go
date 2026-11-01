@@ -1916,15 +1916,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 	}
 
 	ch := make(chan types.StreamEvent, 64)
-	go func() {
-		o.consumeSSE(ctx, resp, ch, start, metricAttrs, logger, params.Model, replayOrigin, reqBody.strictNulls)
-		// Record latency on a background context: the caller's `ctx` may
-		// already have been cancelled by the time the stream completes
-		// (the agentic loop has moved on), and some OTel exporters drop
-		// measurements on cancelled contexts. Synchronous error paths
-		// above use the live `ctx` because the caller is still waiting.
-		o.recordLatency(context.Background(), start, metricAttrs)
-	}()
+	go o.consumeSSE(ctx, resp, ch, start, metricAttrs, logger, params.Model, replayOrigin, reqBody.strictNulls)
 	return ch, nil
 }
 
@@ -1942,8 +1934,14 @@ func (o *OpenAIResponsesAdapter) recordLatency(ctx context.Context, start time.T
 // `event: <name>` and `data: <payload>` fields. Unlike the Chat Completions
 // adapter (which only reads `data:` lines), Responses streaming relies on
 // the event name to disambiguate payloads — there is no `[DONE]` sentinel.
+//
+// The request latency is recorded before the channel closes, so a reader
+// that sees the close can rely on the measurement existing. It is recorded
+// on a background context because the caller may cancel ctx before the
+// stream ends, and the measurement is still wanted.
 func (o *OpenAIResponsesAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption, logger *slog.Logger, model, replayOrigin string, strictNulls strictNullables) {
 	defer close(ch)
+	defer o.recordLatency(context.Background(), streamStart, metricAttrs) // Deferred after close(ch) so it runs first.
 	defer func() { _ = resp.Body.Close() }()
 
 	ttfbRecorded := false
