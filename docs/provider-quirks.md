@@ -13,7 +13,8 @@ via `stirrup providers quirks --provider X --model Y`.
 
 This document is the canonical specification of the layer. The
 design history (the problem framing, the prior-art survey, the open
-risks) lives in §1 and §9 below.
+risks) lives in §1 and §9 below. The procedure for adding rules when
+vendors ship new models is the [model refresh runbook](model-refresh.md).
 
 ## 1. Problem
 
@@ -393,7 +394,7 @@ type Rule struct {
     ModelMatch   string        // path.Match glob; "" matches all models
     Endpoint     string        // exact endpoint profile; "" matches every endpoint
     Description  string        // required; surfaces in traces and CLI introspection
-    LastVerified time.Time     // set via Date("YYYY-MM-DD"); staleness signal at 180 days
+    LastVerified time.Time     // set via Date("YYYY-MM-DD"); see LastVerified below
     Apply        func(*ProviderQuirks)
 }
 
@@ -410,6 +411,30 @@ func (r *Registry) Resolve(t Target) ProviderQuirks
 func (r *Registry) ResolveWithRules(t Target) (ProviderQuirks, []Rule)
 func RuleMatches(rule Rule, t Target) bool
 ```
+
+<a id="lastverified"></a>
+**`LastVerified`.** The date the rule's evidence was last checked, and
+the Description says which kind of evidence that was:
+
+- **probed**: a live request on the stated surface returned the
+  behaviour the rule encodes. The date is the probe's date, and the
+  Description names what was probed (model, surface, and the scope, such
+  as "first turn only") where it is narrower than the rule's glob.
+- **documented**: the behaviour comes from vendor documentation only.
+  The date is when the documentation was read, and the Description
+  says `(documented, not probed)` or `(documented)`.
+- **inferred**: no direct source; the behaviour is reasoned from a
+  sibling model or a documented default. The Description says
+  `(inferred)`.
+
+Changing a rule's behaviour, or re-checking its evidence, moves the
+date; editing only its wording does not. `TestRuleStaleness` logs every
+rule more than 180 days old as a prompt to re-verify, fails a date in
+the future, and fails a rule dated 2026-10-29 or later whose
+Description contains none of the words `probed`, `documented` or
+`inferred`. Rules dated earlier predate the convention and gain a label
+when they are next re-verified. `stirrup providers quirks` reports the
+same 180-day flag as `stale`.
 
 `Target.Endpoint` is the provider's
 [endpoint profile](providers.md#endpoint-profiles)
@@ -512,7 +537,7 @@ test catch malformed paths at registry-build time.
 | `openai-compatible` | `*/gpt-5*`         | OpenAI gpt-5 family via gateway prefix (OpenRouter-style ids): same as `gpt-5*` |
 | `openai-compatible` | `*/gpt-5-chat*`    | OpenAI gpt-5-chat carve-out via gateway prefix: same as `gpt-5-chat*` |
 | `openai-compatible` | `gpt-6*`           | OpenAI gpt-6 family: omit sampling params, strict tools, `reasoning_effort` `low`..`max`; a request with tools fails before send (tool calling needs `openai-responses`) |
-| `openai-compatible` | `*/gpt-6*`         | OpenAI gpt-6 family via gateway prefix: omit sampling params only |
+| `openai-compatible` | `*/gpt-6*`         | OpenAI gpt-6 family via gateway prefix: omit sampling params, `reasoning_effort` `low`..`max`; tools are allowed (OpenRouter accepted tools with an effort, probed 2026-10-29) |
 | `openai-compatible` | `deepseek-v4*`     | DeepSeek v4: replay `reasoning_content`, omit sampling params, legacy `max_tokens`, `reasoning_effort` (threaded) |
 | `openai-compatible` | `deepseek-flash*`  | DeepSeek V4.1 Flash: same quirk set as `deepseek-v4*` (threaded) |
 | `openai-compatible` | `deepseek/deepseek-flash*` | DeepSeek V4.1 Flash via OpenRouter: omit sampling params, legacy `max_tokens`, `reasoning_effort`; no replay (probed 2026-10-18) |
@@ -525,12 +550,12 @@ test catch malformed paths at registry-build time.
 | `gemini`            | `gemini-3.8*`      | Gemini 3.8: identical to `gemini-3.7*` (probed on both surfaces 2026-09-29) |
 | `openai-responses`  | `*`                | OpenAI Responses: typed input items, `max_output_tokens`, `store:false`; top-level `parallel_tool_calls`; accepts schema examples (#222, #332) |
 | `openai-responses`  | `*`                | OpenAI Responses: `prompt_cache_key` from the per-run cache key (documented, not probed) |
-| `openai-responses`  | `o[1-9]*`          | OpenAI Responses o-series: strict tools; request `reasoning.encrypted_content`; replay output items (documented, not probed) |
-| `openai-responses`  | `gpt-5*`           | OpenAI Responses gpt-5 family: strict tools; request `reasoning.encrypted_content`; replay output items (documented, not probed) |
+| `openai-responses`  | `o[1-9]*`          | OpenAI Responses o-series: strict tools; request `reasoning.encrypted_content`; replay output items; omit sampling params (documented, not probed) |
+| `openai-responses`  | `gpt-5*`           | OpenAI Responses gpt-5 family: strict tools; request `reasoning.encrypted_content`; replay output items; omit sampling params (documented, not probed) |
 | `openai-responses`  | `gpt-5.4*`         | OpenAI Responses gpt-5.4: `reasoning.effort` `low`..`xhigh` (documented, not probed) |
 | `openai-responses`  | `gpt-5.5*`         | OpenAI Responses gpt-5.5: `reasoning.effort` `low`..`xhigh` (documented, not probed); omit sampling params (inferred) |
 | `openai-responses`  | `gpt-5.6*`         | OpenAI Responses gpt-5.6 family: `reasoning.effort` `low`..`max` (documented, not probed); omit sampling params (inferred) |
-| `openai-responses`  | `gpt-5-chat*`      | OpenAI Responses gpt-5-chat carve-out: no `reasoning.encrypted_content` include or output replay (inferred, not probed) |
+| `openai-responses`  | `gpt-5-chat*`      | OpenAI Responses gpt-5-chat carve-out: accepts sampling params; no `reasoning.encrypted_content` include or output replay (inferred, not probed) |
 | `openai-responses`  | `gpt-6*`           | OpenAI Responses gpt-6 family: the `gpt-5*` reasoning rules plus omit sampling params and `reasoning.effort` `low`..`max` (documented, not probed) |
 | `anthropic`         | `*`                | Anthropic: `tool_choice.disable_parallel_tool_use` (#222) |
 | `anthropic`         | `*`                | Anthropic: tool examples on the native `input_examples` field (probed 2026-09-30) |
@@ -659,17 +684,18 @@ check ignores those stripped `null` values when it compares a stored
 `function_call` with the persisted `tool_use` input, so stripping alone
 never forces a turn to be reconstructed.
 
-Temperature on `openai-responses` follows the projected effort. The
-`gpt-6*`, `gpt-5.5*`, and `gpt-5.6*` rules set `OmitSamplingParams`, so
-`temperature` is never sent. On any other Responses model the adapter
-drops `temperature` whenever it sends a `reasoning.effort`, applying
-the GPT-6 guidance ("when reasoning effort is not none, remove
+Temperature on `openai-responses` follows the model and the projected
+effort. The `o[1-9]*`, `gpt-5*` and `gpt-6*` rules set
+`OmitSamplingParams`, so no o-series, GPT-5.x or GPT-6 model receives
+`temperature`; only the `gpt-5-chat*` carve-out clears it. OpenAI
+documents that its reasoning models reject sampling parameters unless
+the effort is `none`, and omitting them is accepted at every effort,
+so the rules omit them even for models whose default effort is `none`,
+such as GPT-5.4. On any other Responses model the adapter drops
+`temperature` whenever it sends a `reasoning.effort`, applying the
+GPT-6 guidance ("when reasoning effort is not none, remove
 temperature") to every model, and logs the same suppression warning.
-GPT-5.4 defaults to effort `none` and keeps a caller temperature when
-no effort is set; 5.5 and 5.6 default to `medium`, so their sampling
-suppression is inferred from that default rather than probed. The
-older o-series and gpt-5 models still forward `temperature` when no
-effort is sent; their behaviour on this surface has not been probed.
+None of this has been probed on the Responses surface.
 
 The `gemini-3.6*` and `gemini-3.7*` rules sit alongside the broader
 `gemini-3*` rule rather than replacing it: glob resolution sorts by
@@ -871,7 +897,7 @@ turn so the omission is visible. Every Gemini 3
 model has a `thinkingLevel` control, so an unprobed Gemini model gets the
 level; `xhigh` and `max` have no Gemini spelling and are always rejected.
 
-Probed or documented acceptance as of 2026-09-30:
+Probed or documented acceptance (rows dated where probed):
 
 | Models | Levels |
 |---|---|
@@ -884,6 +910,8 @@ Probed or documented acceptance as of 2026-09-30:
 | DeepSeek v4 / V4.1 Flash (first-party) | all six; DeepSeek folds them onto `low`/`high`/`max` (documented) |
 | DeepSeek v4 / V4.1 Flash via OpenRouter | all six (probed 2026-10-18; some hosts return no reasoning at the lower levels) |
 | GLM-5.3 (`zai-glm` profile) | `low` `high` `max`; any other value silently becomes `max` (documented) |
+| GLM-5.3 via OpenRouter (`zai-glm` profile, `z-ai/glm-5.3*`) | `low` `high` `max` (`high` and `max` accepted, probed 2026-10-29) |
+| GPT-6 family via OpenRouter (`*/gpt-6*`) | `low` `medium` `high` `xhigh` `max` (`low`, `high` and `max` accepted, probed 2026-10-29) |
 | Gemini 3.6 | `minimal` `low` `medium` `high` (probed) |
 | Gemini 3.7 / 3.8 | `low` `medium` `high` (probed) |
 
@@ -993,6 +1021,74 @@ and `text.format` has not been probed on the `generic`, `azure-openai`
 or `bedrock-mantle` profiles; a rejection there takes the retry path.
 `stirrup providers quirks --provider X --model Y` prints the resolved
 `outputSchema.supported` and the rules that set it.
+
+### 3.5 Probe record
+
+Live probes behind the gateway rules above, and what remains unprobed.
+A probe through a gateway shows what the gateway accepts, not what the
+vendor's own API does. OpenRouter returned 200 for `temperature` on a
+GPT-6 model its models list marks as not supporting it, and for effort
+values (`minimal` on GPT-6, `medium` on GLM-5.3) outside the vendors'
+documented lists, so a 200 there is not evidence that the vendor accepts
+the parameter, or that an effort value took effect: no GPT-6 probe
+reported any reasoning tokens. The gateway rules therefore take their
+allow-lists from the vendors' documentation, and a configured effort
+outside them fails before send, where before these rules it was dropped
+with a warning.
+
+`scripts/dev/model-refresh/probe-chat.sh` reproduces the Chat
+Completions rows (see the [model refresh runbook](model-refresh.md)).
+
+| Date | Model | Surface | Request | Result |
+|---|---|---|---|---|
+| 2026-10-29 | `openai/gpt-6-luna` | OpenRouter Chat Completions | `tools` + `reasoning_effort: high` | 200, tool call returned; 0 reasoning tokens reported |
+| 2026-10-29 | `openai/gpt-6.1-sol` | OpenRouter Chat Completions | `tools` + `reasoning_effort: low` | 200, tool call returned |
+| 2026-10-29 | `openai/gpt-6-luna` | OpenRouter Chat Completions | `reasoning_effort: max`, then `minimal` | 200 for both |
+| 2026-10-29 | `openai/gpt-6-luna` | OpenRouter Chat Completions | `temperature: 0.1` | 200; OpenRouter lists no `temperature` support for GPT-6, so the parameter is probably dropped before OpenAI |
+| 2026-10-29 | `openai/gpt-6*` | OpenRouter models list | `supported_parameters` | `max_tokens`, `max_completion_tokens` (absent on the `gpt-6.1-terra` and `:batch` ids), `reasoning_effort`, `tools`, `tool_choice`, `structured_outputs`; no `temperature` |
+| 2026-10-29 | `z-ai/glm-5.3` | OpenRouter Chat Completions, Z.AI host | streaming, `reasoning_effort: high` | 200; reasoning streamed as `delta.reasoning` plus `reasoning_details`, never `reasoning_content` |
+| 2026-10-29 | `z-ai/glm-5.3` | OpenRouter Chat Completions, Relace host | `reasoning_effort: high` (streaming) and `medium` | 200 for both; no reasoning returned |
+| 2026-10-29 | `z-ai/glm-5.3-flash` | OpenRouter Chat Completions, Relace host | `tools` + `reasoning_effort: max` | 200, tool call returned; `reasoning` and `reasoning_details` on the message |
+| 2026-10-29 | `z-ai/glm-5.3-flash` | OpenRouter Chat Completions, Relace host | streaming, `tools` + `reasoning_effort: high` | 200, tool call streamed; no reasoning returned |
+
+Unprobed, with the reason:
+
+- **GPT-6 and GPT-5.x on OpenAI's own APIs.** No OpenAI credential is
+  available. These remain documented only: whether first-party Chat
+  Completions rejects `tools` or silently drops them, whether a sampling
+  parameter is a 400 or ignored, the token field names, and which effort
+  values each model rejects (`none` and `minimal` on Astra and 6.1 Sol).
+  The `gpt-6*` Chat Completions rule still rejects a request with tools
+  before send, and the Responses rules' sampling-param omission for the
+  gpt-5 and o-series families is documented, not probed.
+- **GLM-5.3 on Z.ai's own API.** No Z.ai credential is available, so
+  `tool_stream`, `thinking: {"type": "enabled"}` and the `low`/`high`/`max`
+  allow-list on `glm-5.3*` remain documented only, as do the FlashX
+  (`glm-5.3-flashx`) and Prime (`glm-5.3-prime`) tiers. OpenRouter lists
+  both tiers.
+- **OpenRouter's handling of GPT-6 request fields.** Whether OpenRouter
+  forwards `reasoning_effort` to OpenAI unchanged or normalises it, and
+  whether it honours `max_completion_tokens` for the `openai/gpt-6.1-terra`
+  and `:batch` ids, whose `supported_parameters` list only `max_tokens`
+  while the `*/gpt-6*` rule sends `max_completion_tokens`. Answering
+  either needs a request that produces measurable reasoning or a long
+  output, which the short probes above did not.
+- **Gemini 3.8 Flash in a harness run.** The wire facts behind the
+  `gemini-3.8*` rule are probed on both surfaces, but no run of the
+  harness itself has used the model: the harness refuses user-mode ADC,
+  and no service account or workload identity credential is available.
+  The same session would also capture parallel function calls with
+  `thoughtSignature` on parts after the first, which Vertex reportedly
+  rejects on replay, and the Vertex Gemini 3.x stream that enabling
+  `StreamArgsV3Deltas` needs. Google's docs give two different default
+  `thinkingLevel` values (`medium` on the thinking page, `high` on the
+  Gemini 3 page); the harness sends a level only when one is configured.
+- **Families not researched.** Qwen 3.8 (`preserve_thinking` on by
+  default, `reasoning_effort` supported; the Qwen 3.6 finding that no
+  wire quirk is needed has not been re-checked), Kimi K3 (Moonshot),
+  MiniMax M3 and Gemma 4 have no family rules. They resolve only the
+  provider-wide `*` rules, or the `*/*` gateway rules when served with a
+  vendor prefix, until someone probes them.
 
 ## 4. Composition with the NormalizingAdapter
 
@@ -1105,6 +1201,10 @@ its fields:
 | `glm-5*`         | same as `glm-4.[5-9]*`                                        | GLM-5/5.1/5.3 thinking family |
 | `glm-5.3*`       | + `reasoning_effort` allow-list `low`/`high`/`max`           | GLM-5.3 defaults to `max` and maps any unlisted value to `max`, so `medium` is rejected before send |
 | `z-ai/glm-*`     | legacy `max_tokens`                                          | OpenRouter gateway-prefixed ids (`*` does not cross `/`); OpenRouter streams the reasoning as `delta.reasoning` and needs no replay (probed 2026-10-29); no `tool_stream`/`thinking` — vendor extras unverified through gateways |
+| `z-ai/glm-5.3*`  | + `reasoning_effort` allow-list `low`/`high`/`max`           | Same allow-list as `glm-5.3*` through a gateway (OpenRouter accepted `high` and `max`, probed 2026-10-29) |
+
+The gateway effort probes are recorded in [§3.5](#35-probe-record), and
+the reasoning replay probes in [§9](#9-open-risks) risk 12.
 
 `reasoning_content` threading (the `(threaded)` ReplayFields suffix in
 [§3.1](#31-replayfields-rules)) now applies to the GLM-4.5+ thinking

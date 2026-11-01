@@ -967,6 +967,99 @@ func TestDispatchToolCall_LegacySearchFilesEmitsHint(t *testing.T) {
 	must.Contains(output, "glob filename search", "find_files must be described as glob filename search")
 }
 
+// TestDispatchToolCall_CaseMismatchNamesToolWithoutRunningIt pins that a
+// call differing from a registered tool only in letter case is rejected
+// with the correct name, and the tool never runs under the wrong name.
+func TestDispatchToolCall_CaseMismatchNamesToolWithoutRunningIt(t *testing.T) {
+	must := require.New(t)
+	loop := buildTestLoop(&mockProvider{})
+	ran := false
+	registry := tool.NewRegistry()
+	registry.Register(&tool.Tool{
+		Name:        "read_file",
+		Description: "Read a file",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		Handler: func(_ context.Context, _ json.RawMessage) (string, error) {
+			ran = true
+			return "contents", nil
+		},
+	})
+	loop.Tools = registry
+
+	output, success := loop.dispatchToolCall(context.Background(), types.ToolCall{
+		ID:    "tc_case",
+		Name:  "Read_File",
+		Input: json.RawMessage(`{}`),
+	})
+
+	must.False(success)
+	must.False(ran, "the tool must not run under a case-mismatched name")
+	must.Equal("Unknown tool: Read_File. Tool names are case-sensitive; call read_file instead.", output)
+
+	call := types.ToolCall{ID: "tc_case", Name: "Read_File", Input: json.RawMessage(`{}`)}
+	input, _, category := loop.preflightToolCall(call, loop.Tools.Resolve(call.Name))
+	must.Nil(input, "a rejected call yields no input for the guard or permission checks")
+	must.Equal(observability.ToolFailureUnknownTool, category)
+}
+
+// TestDispatchToolCall_CaseMismatchDoesNotSuggestUnloadedTool pins that the
+// hint never names a tool lazy loading has deferred and not yet loaded.
+func TestDispatchToolCall_CaseMismatchDoesNotSuggestUnloadedTool(t *testing.T) {
+	must := require.New(t)
+	loop := buildTestLoop(&mockProvider{})
+	registry := tool.NewRegistry()
+	for _, name := range []string{"read_file", "web_fetch"} {
+		registry.Register(&tool.Tool{
+			Name:        name,
+			Description: "test tool",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+			Handler:     func(context.Context, json.RawMessage) (string, error) { return "", nil },
+		})
+	}
+	loop.Tools = registry
+	loop.LazyTools = tool.NewLazyLoader(registry, types.LazyToolLoadingConfig{Enabled: true, Eager: []string{"read_file"}}, tool.LazyLoaderOptions{})
+	must.True(loop.LazyTools.Unloaded("web_fetch"), "web_fetch must start deferred for this test to mean anything")
+
+	output, success := loop.dispatchToolCall(context.Background(), types.ToolCall{ID: "tc_deferred", Name: "WEB_FETCH", Input: json.RawMessage(`{}`)})
+	must.False(success)
+	must.Equal("Unknown tool: WEB_FETCH", output)
+
+	output, success = loop.dispatchToolCall(context.Background(), types.ToolCall{ID: "tc_eager", Name: "READ_FILE", Input: json.RawMessage(`{}`)})
+	must.False(success)
+	must.Contains(output, "call read_file instead")
+}
+
+func TestCaseFoldedToolName_MatchesOnlyAUniqueCaseVariant(t *testing.T) {
+	defs := func(names ...string) []types.ToolDefinition {
+		out := make([]types.ToolDefinition, 0, len(names))
+		for _, n := range names {
+			out = append(out, types.ToolDefinition{Name: n})
+		}
+		return out
+	}
+	cases := []struct {
+		name   string
+		call   string
+		tools  []types.ToolDefinition
+		want   string
+		wantOK bool
+	}{
+		{"unique case variant", "READ_FILE", defs("read_file", "write_file"), "read_file", true},
+		{"no variant", "list_files", defs("read_file"), "", false},
+		{"ambiguous variants", "FOO", defs("foo", "Foo"), "", false},
+		{"exact name is not a hint", "read_file", defs("read_file"), "", false},
+		{"no tools", "read_file", nil, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			check := assert.New(t)
+			got, ok := caseFoldedToolName(tc.call, tc.tools)
+			check.Equal(tc.wantOK, ok)
+			check.Equal(tc.want, got)
+		})
+	}
+}
+
 // TestRenamedToolHint exercises the rename table directly so the wording
 // of each entry is contracted independently of the dispatcher. The
 // dispatcher test above covers the wiring; this one pins the hint

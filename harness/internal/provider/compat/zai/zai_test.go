@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -273,18 +274,69 @@ func TestZAICompatRules_ThinkingFamilyResolution(t *testing.T) {
 	}
 }
 
+// TestZAICompatRules_FollowLastVerifiedConvention applies the builtin
+// rules' LastVerified checks to the compat profile.
+func TestZAICompatRules_FollowLastVerifiedConvention(t *testing.T) {
+	for _, rule := range zai.CompatRules() {
+		t.Run(rule.Description, func(t *testing.T) {
+			check := assert.New(t)
+			check.Empty(quirks.LastVerifiedProblems(rule, time.Now()))
+		})
+	}
+}
+
+// TestZAIGatewayGLM53_ReasoningEffortOnTheWire pins that a listed effort
+// reaches the gateway request and an unlisted one fails before send, since
+// GLM-5.3 would otherwise map it to max.
+func TestZAIGatewayGLM53_ReasoningEffortOnTheWire(t *testing.T) {
+	t.Run("listed level is sent", func(t *testing.T) {
+		must := require.New(t)
+		bodies := make(chan []byte, 1)
+		srv := newSSEServer(t, doneSSE, bodies)
+		defer srv.Close()
+		ch, err := zaiTestAdapter(srv.URL).Stream(context.Background(), types.StreamParams{
+			Model:           "z-ai/glm-5.3",
+			MaxTokens:       256,
+			ReasoningEffort: "high",
+			Messages:        []types.Message{userText("hi")},
+		})
+		must.NoError(err)
+		for range ch {
+		}
+		must.Equal("high", decodeBody(t, <-bodies)["reasoning_effort"])
+	})
+	t.Run("unlisted level fails before send", func(t *testing.T) {
+		must := require.New(t)
+		bodies := make(chan []byte, 1)
+		srv := newSSEServer(t, doneSSE, bodies)
+		defer srv.Close()
+		_, err := zaiTestAdapter(srv.URL).Stream(context.Background(), types.StreamParams{
+			Model:           "z-ai/glm-5.3",
+			MaxTokens:       256,
+			ReasoningEffort: "medium",
+			Messages:        []types.Message{userText("hi")},
+		})
+		must.ErrorContains(err, `reasoningEffort "medium" is not supported`)
+		must.Empty(bodies, "no request may reach the server")
+	})
+}
+
 // TestZAICompatRules_GLM53ReasoningEffort pins the GLM-5.3 effort
-// allow-list. GLM-5.3 maps any unlisted value to max, so "medium" must be
-// rejected up front rather than forwarded; earlier GLM-5 releases have no
-// probed effort control and send nothing.
+// allow-list, first-party and through a gateway prefix. GLM-5.3 maps any
+// unlisted value to max, so "medium" must be rejected up front rather
+// than forwarded; earlier GLM-5 releases have no probed effort control
+// and send nothing.
 func TestZAICompatRules_GLM53ReasoningEffort(t *testing.T) {
 	reg := zaiRegistry()
 	cases := map[string][]string{
-		"glm-5.3":        {"low", "high", "max"},
-		"glm-5.3-flash":  {"low", "high", "max"},
-		"glm-5.3-flashx": {"low", "high", "max"},
-		"glm-5.1":        {},
-		"glm-4.7":        {},
+		"glm-5.3":            {"low", "high", "max"},
+		"glm-5.3-flash":      {"low", "high", "max"},
+		"glm-5.3-flashx":     {"low", "high", "max"},
+		"z-ai/glm-5.3":       {"low", "high", "max"},
+		"z-ai/glm-5.3-flash": {"low", "high", "max"},
+		"z-ai/glm-4.7":       {},
+		"glm-5.1":            {},
+		"glm-4.7":            {},
 	}
 	for model, want := range cases {
 		t.Run(model, func(t *testing.T) {
@@ -433,7 +485,7 @@ func TestCompatRules_ExtraBodyFieldsHaveNoSecretRefs(t *testing.T) {
 	must := require.New(t)
 	// Representative model id per rule, in declaration order, so
 	// Resolve materialises each rule's Apply.
-	models := []string{"glm-4-plus", "glm-4.7", "glm-5", "glm-5.3", "z-ai/glm-4.7"}
+	models := []string{"glm-4-plus", "glm-4.7", "glm-5", "glm-5.3", "z-ai/glm-4.7", "z-ai/glm-5.3"}
 	rules := zai.CompatRules()
 	must.Len(models, len(rules), "add a representative model for each new CompatRules() entry")
 	for i, rule := range rules {

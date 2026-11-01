@@ -1010,14 +1010,49 @@ func TestReplayFieldsRules_Gemini3(t *testing.T) {
 }
 
 // TestRuleStaleness logs, rather than fails, any rule whose LastVerified is
-// more than 180 days before now. Staleness is a signal to re-verify the rule
-// against the upstream wire shape, not a CI failure.
+// more than 180 days before now: staleness is a signal to re-verify the
+// rule, not a CI failure. It fails a LastVerified in the future, and a rule
+// dated under the evidence-label convention whose Description does not say
+// whether the behaviour was probed, documented or inferred, since the date
+// means a different thing for each.
 func TestRuleStaleness(t *testing.T) {
-	cutoff := time.Now().Add(-staleness)
+	now := time.Now()
+	cutoff := now.Add(-staleness)
 	for _, rule := range BuiltinRules() {
 		if rule.LastVerified.Before(cutoff) {
 			t.Logf("STALE: rule %q last verified %s (>180d ago); re-verify against the upstream wire shape", rule.Description, rule.LastVerified.Format("2006-01-02"))
 		}
+		for _, problem := range LastVerifiedProblems(rule, now) {
+			t.Errorf("rule %q: %s", rule.Description, problem)
+		}
+	}
+}
+
+func TestLastVerifiedProblems_EnforcesTheConvention(t *testing.T) {
+	now := Date("2026-11-01")
+	cases := []struct {
+		name         string
+		description  string
+		lastVerified string
+		wantProblems int
+	}{
+		{"labelled probe", "X: omit sampling params (probed 2026-10-30)", "2026-10-30", 0},
+		{"labelled documentation", "X: effort low..max (documented, not probed)", "2026-10-30", 0},
+		{"labelled inference", "X: carve-out (inferred)", "2026-10-30", 0},
+		{"unlabelled under the convention", "X: omit sampling params", "2026-10-30", 1},
+		{"unlabelled before the convention", "X: omit sampling params", "2026-10-28", 0},
+		{"label word inside another word", "X: unprobedness", "2026-10-30", 1},
+		{"not probed alone is no label", "X: omit sampling params (not probed)", "2026-10-30", 1},
+		{"not probed beside documented", "X: omit sampling params (documented, not probed)", "2026-10-30", 0},
+		{"date ahead of UTC by a day", "X: omit sampling params (documented)", "2026-11-02", 0},
+		{"future date", "X: omit sampling params (documented)", "2026-11-03", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			check := assert.New(t)
+			rule := Rule{Description: tc.description, LastVerified: Date(tc.lastVerified)}
+			check.Len(LastVerifiedProblems(rule, now), tc.wantProblems)
+		})
 	}
 }
 
