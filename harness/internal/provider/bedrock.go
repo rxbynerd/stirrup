@@ -40,15 +40,21 @@ type bedrockEventReader interface {
 
 // BedrockAdapter implements ProviderAdapter for AWS Bedrock's ConverseStream API.
 type BedrockAdapter struct {
-	client  bedrockConverseStreamer
-	Tracer  oteltrace.Tracer       // optional, set by factory for span instrumentation
-	Metrics *observability.Metrics // optional, set by factory for metric recording (nil means no recording)
-	Logger  *slog.Logger           // optional, set by factory; nil falls back to slog.Default()
+	client bedrockConverseStreamer
+
+	// AdapterDeps carries the factory-injected Tracer/Metrics/Logger.
+	// NewBedrockAdapter maps RetryPolicy onto the SDK retryer, so setting
+	// it after construction has no effect.
+	AdapterDeps
+
+	// Registry is resolved through ResolveBedrockQuirks on every Stream
+	// call; nil falls back to quirks.DefaultRegistry().
+	Registry *quirks.Registry
 
 	// credentials and region are captured from the resolved AWS config so
 	// Probe can validate the credential chain without issuing a billable
-	// request. Both are nil/empty for the test-injected mock-client path
-	// (newBedrockAdapterWithClient), which leaves Probe a no-op skip.
+	// request. Both are nil/empty when a test builds the adapter around a
+	// mock client, which leaves Probe a no-op skip.
 	credentials aws.CredentialsProvider
 	region      string
 }
@@ -100,6 +106,8 @@ func NewBedrockAdapter(region, profile string, credProvider aws.CredentialsProvi
 	client := bedrockruntime.NewFromConfig(cfg)
 	return &BedrockAdapter{
 		client:      client,
+		AdapterDeps: AdapterDeps{RetryPolicy: retryPolicy},
+		Registry:    quirks.DefaultRegistry(),
 		credentials: cfg.Credentials,
 		region:      cfg.Region,
 	}, nil
@@ -153,12 +161,34 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 		)
 	}
 
-	// Converse exposes outputConfig.textFormat, but the adapter resolves
-	// no quirks and projects no structured-output field, so the caller's
-	// prompt-only JSON contract applies.
+	registry := b.Registry
+	if registry == nil {
+		registry = quirks.DefaultRegistry()
+	}
+	q, appliedRules := ResolveBedrockQuirks(registry, params.Model)
+	logger.DebugContext(ctx, "bedrock quirks resolved",
+		slog.String("provider.type", "bedrock"),
+		slog.String("provider.model", params.Model),
+		slog.Any("rules", ruleDescriptions(appliedRules)),
+	)
+	if span := oteltrace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+		span.SetAttributes(attribute.StringSlice("provider.quirk.applied", ruleDescriptions(appliedRules)))
+	}
+	if q.BehaviourFlags.Anthropic.OmitSamplingParams && params.Temperature != nil {
+		logger.WarnContext(ctx, "bedrock quirks suppressed caller temperature",
+			slog.String("provider.type", "bedrock"),
+			slog.String("provider.model", params.Model),
+			slog.Any("quirk.rules", ruleDescriptions(appliedRules)),
+		)
+	}
+	warnDroppedReasoningEffort(ctx, logger, "bedrock", params.ReasoningEffort, params.Model, q.BehaviourFlags.Anthropic.EffortLevels)
+
+	// Converse exposes outputConfig.textFormat, but the adapter projects
+	// no structured-output field, so the caller's prompt-only JSON
+	// contract applies even where the anthropic rules advertise one.
 	logDroppedOutputSchema(ctx, logger, "bedrock", params.Model, params.OutputSchema, quirks.OutputSchemaCapability{})
 
-	input, err := buildConverseStreamInput(params)
+	input, err := buildConverseStreamInput(params, q)
 	if err != nil {
 		b.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("build converse input: %w", err)
@@ -182,10 +212,7 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 	inference := inferenceAttrs("bedrock", params.Model, "")
 	inference.ServerAddress, inference.ServerPort = b.ServerEndpoint()
 	ch := make(chan types.StreamEvent, 64)
-	go func() {
-		consumeBedrockStreamMetered(ctx, output.GetStream(), ch, b.Metrics, start, metricAttrs, inference)
-		b.recordLatency(ctx, start, metricAttrs)
-	}()
+	go consumeBedrockStreamMetered(ctx, output.GetStream(), ch, b.Metrics, start, metricAttrs, inference)
 	return ch, nil
 }
 
@@ -210,9 +237,16 @@ func consumeBedrockStream(ctx context.Context, stream bedrockEventReader, ch cha
 // consumeBedrockStreamMetered reads events from the Bedrock event stream and
 // translates them into stirrup StreamEvents. It closes ch when done. When
 // metrics is non-nil, records the time to first chunk on the first non-empty stream
-// event observed (recorded at most once per stream).
+// event observed (recorded at most once per stream), and records the request
+// latency before closing ch, so a reader that sees the close can rely on the
+// measurement existing.
 func consumeBedrockStreamMetered(ctx context.Context, stream bedrockEventReader, ch chan<- types.StreamEvent, metrics *observability.Metrics, streamStart time.Time, metricAttrs metric.MeasurementOption, inference observability.InferenceAttrs) {
 	defer close(ch)
+	if metrics != nil {
+		defer func() { // Deferred after close(ch) so it runs first.
+			metrics.ProviderLatency.Record(ctx, float64(time.Since(streamStart).Milliseconds()), metricAttrs)
+		}()
+	}
 	defer func() { _ = stream.Close() }()
 
 	ttfbRecorded := false
@@ -316,9 +350,47 @@ func applyBedrockUsage(u *brtypes.TokenUsage, ev *types.StreamEvent) {
 	})
 }
 
+// BedrockQuirksTarget maps a Bedrock model id onto the anthropic rules:
+// anthropic.<id>, optionally behind one leading label such as a
+// cross-region prefix and after the last "/" of an ARN, resolves as
+// <id> on the anthropic provider type. Any other id resolves as provider
+// type bedrock, which no built-in rule names.
+func BedrockQuirksTarget(model string) quirks.Target {
+	id := model[strings.LastIndex(model, "/")+1:]
+	if prefix, rest, ok := strings.Cut(id, "."); ok && prefix != "anthropic" {
+		id = rest
+	}
+	if claude, ok := strings.CutPrefix(id, "anthropic."); ok && claude != "" {
+		return quirks.Target{ProviderType: "anthropic", Endpoint: quirks.EndpointBedrock, Model: claude}
+	}
+	return quirks.Target{ProviderType: "bedrock", Model: model}
+}
+
+// ResolveBedrockQuirks resolves model at BedrockQuirksTarget and keeps
+// only Anthropic.OmitSamplingParams, with the rules that changed it: the
+// Converse request carries none of the Messages API features the other
+// anthropic flags gate, so reporting them would misdescribe the request.
+func ResolveBedrockQuirks(registry *quirks.Registry, model string) (quirks.ProviderQuirks, []quirks.Rule) {
+	target := BedrockQuirksTarget(model)
+	_, matched := registry.ResolveWithRules(target)
+	q := quirks.NewRegistry(nil).Resolve(target)
+	replay := quirks.NewRegistry(nil).Resolve(target)
+	honoured := make([]quirks.Rule, 0, len(matched))
+	for _, rule := range matched {
+		before := replay.BehaviourFlags.Anthropic.OmitSamplingParams
+		rule.Apply(&replay)
+		if replay.BehaviourFlags.Anthropic.OmitSamplingParams != before {
+			honoured = append(honoured, rule)
+		}
+	}
+	q.BehaviourFlags.Anthropic.OmitSamplingParams = replay.BehaviourFlags.Anthropic.OmitSamplingParams
+	return q, honoured
+}
+
 // buildConverseStreamInput translates stirrup StreamParams into a Bedrock
-// ConverseStreamInput.
-func buildConverseStreamInput(params types.StreamParams) (*bedrockruntime.ConverseStreamInput, error) {
+// ConverseStreamInput, dropping temperature where q marks the model as
+// rejecting sampling params.
+func buildConverseStreamInput(params types.StreamParams, q quirks.ProviderQuirks) (*bedrockruntime.ConverseStreamInput, error) {
 	input := &bedrockruntime.ConverseStreamInput{
 		ModelId: aws.String(params.Model),
 	}
@@ -340,9 +412,9 @@ func buildConverseStreamInput(params types.StreamParams) (*bedrockruntime.Conver
 		mt := int32(params.MaxTokens)
 		input.InferenceConfig.MaxTokens = &mt
 	}
-	// A non-nil Temperature is forwarded including an explicit 0.0 for
-	// greedy decoding; Bedrock accepts temperature=0.
-	if params.Temperature != nil {
+	// A non-nil Temperature, including an explicit 0.0 for greedy
+	// decoding, is forwarded unless the model rejects sampling params.
+	if params.Temperature != nil && !q.BehaviourFlags.Anthropic.OmitSamplingParams {
 		temp := float32(*params.Temperature)
 		input.InferenceConfig.Temperature = &temp
 	}

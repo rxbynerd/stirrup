@@ -1286,10 +1286,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 	}
 
 	ch := make(chan types.StreamEvent, 64)
-	go func() {
-		o.consumeSSE(ctx, resp, ch, start, metricAttrs, q, logger, params.Model, reqBody.strictNulls)
-		o.recordLatency(ctx, start, metricAttrs)
-	}()
+	go o.consumeSSE(ctx, resp, ch, start, metricAttrs, q, logger, params.Model, reqBody.strictNulls)
 	return ch, nil
 }
 
@@ -1303,7 +1300,9 @@ func (o *OpenAICompatibleAdapter) recordLatency(ctx context.Context, start time.
 }
 
 // consumeSSE reads SSE lines from the response body and sends StreamEvents
-// to the channel. It closes the channel and the response body when done.
+// to the channel. When done it closes the response body, records the request
+// latency, and then closes the channel, so a reader that sees the channel
+// close can rely on the latency measurement existing.
 //
 // streamStart and metricAttrs are forwarded for ProviderTTFB measurement:
 // the first non-empty stream event observed marks "time to first byte".
@@ -1314,6 +1313,7 @@ func (o *OpenAICompatibleAdapter) recordLatency(ctx context.Context, start time.
 // per-stream debug log and, flattened, on the message_complete event.
 func (o *OpenAICompatibleAdapter) consumeSSE(ctx context.Context, resp *http.Response, ch chan<- types.StreamEvent, streamStart time.Time, metricAttrs metric.MeasurementOption, q quirks.ProviderQuirks, logger *slog.Logger, model string, strictNulls strictNullables) {
 	defer close(ch)
+	defer o.recordLatency(ctx, streamStart, metricAttrs) // Deferred after close(ch) so it runs first.
 	defer func() { _ = resp.Body.Close() }()
 
 	ttfbRecorded := false

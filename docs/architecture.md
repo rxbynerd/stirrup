@@ -748,7 +748,7 @@ attribute on the active span. When a rule's `OmitSamplingParams`
 suppresses a caller-supplied non-nil `Temperature`, a `<adapter>
 quirks suppressed caller temperature` WARN record fires naming
 the responsible rule. `<adapter>` is `openai`, `openai-responses`,
-`anthropic`, or `gemini`. When a rule
+`anthropic`, `gemini`, or `bedrock`. When a rule
 registers `ReplayFields` paths and any value is captured during
 the stream, a `quirks replay fields captured` DEBUG record fires
 on stream exit summarising `{count, total_len}` per path — and

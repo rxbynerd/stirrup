@@ -1,0 +1,45 @@
+# synthetic: serialised by the AWS SDK's own ConverseStream marshaller (BedrockAdapter.Stream against a local server in bedrock_contract_test.go), not captured from Bedrock. Identical to the anthropic.claude-sonnet-4-6 fixture except inferenceConfig.temperature is absent: the model id resolves against the anthropic claude-sonnet-5* rule, whose OmitSamplingParams suppresses the supplied Temperature=0.5. See testdata/quirks/README.md to refresh.
+{
+  "inferenceConfig": {
+    "maxTokens": 4096
+  },
+  "messages": [
+    {
+      "content": [
+        {
+          "text": "weather in Paris?"
+        }
+      ],
+      "role": "user"
+    }
+  ],
+  "system": [
+    {
+      "text": "You are helpful."
+    }
+  ],
+  "toolConfig": {
+    "tools": [
+      {
+        "toolSpec": {
+          "description": "Get the current weather for a city.",
+          "inputSchema": {
+            "json": {
+              "additionalProperties": false,
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "type": "object"
+            }
+          },
+          "name": "get_weather"
+        }
+      }
+    ]
+  }
+}

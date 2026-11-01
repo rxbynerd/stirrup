@@ -98,9 +98,9 @@ func TestBedrockConverseRequest_DropsThinkingBlocks(t *testing.T) {
 	params := func(messages []types.Message) types.StreamParams {
 		return types.StreamParams{Model: "anthropic.claude-sonnet-4-5", MaxTokens: 64, Messages: messages}
 	}
-	with, err := buildConverseStreamInput(params(historyWithThinking()))
+	with, err := buildConverseStreamInput(params(historyWithThinking()), quirks.ProviderQuirks{})
 	must.NoError(err, "build with thinking blocks")
-	without, err := buildConverseStreamInput(params(types.StripThinkingBlocks(historyWithThinking())))
+	without, err := buildConverseStreamInput(params(types.StripThinkingBlocks(historyWithThinking())), quirks.ProviderQuirks{})
 	must.NoError(err, "build without thinking blocks")
 	must.Equal(without, with, "bedrock: history with thinking blocks translates differently")
 }
