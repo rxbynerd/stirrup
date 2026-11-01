@@ -1,12 +1,14 @@
 package permission
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/cedar-policy/cedar-go"
@@ -630,3 +632,30 @@ var errAFailure = &builderError{msg: "synthetic failure"}
 type builderError struct{ msg string }
 
 func (e *builderError) Error() string { return e.msg }
+
+// TestLoadPolicySetFromFile_RejectsUnboundedOrBlockingFiles pins that a
+// policy path naming a FIFO is refused at once rather than waiting for a
+// writer, and that a file over the size cap is refused before parsing.
+func TestLoadPolicySetFromFile_RejectsUnboundedOrBlockingFiles(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "policy.cedar")
+	require.New(t).NoError(syscall.Mkfifo(fifo, 0o600))
+	big := filepath.Join(dir, "big.cedar")
+	require.New(t).NoError(os.WriteFile(big, bytes.Repeat([]byte(" "), maxPolicyFileBytes+1), 0o600))
+	cases := []struct {
+		name, path, want string
+	}{
+		{name: "fifo", path: fifo, want: "not a regular file"},
+		{name: "directory", path: dir, want: "not a regular file"},
+		{name: "oversized", path: big, want: "exceeds"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			_, err := LoadPolicySetFromFile(tc.path)
+			var fileErr *PolicyFileError
+			must.ErrorAs(err, &fileErr)
+			must.ErrorContains(err, tc.want)
+		})
+	}
+}

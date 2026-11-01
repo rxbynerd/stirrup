@@ -7,10 +7,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 	"sync/atomic"
 
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// replayServeOrder numbers Stream calls across every replay provider, so
+// the one that served a run's latest turn can be told apart.
+var replayServeOrder atomic.Int64
 
 // ReplayProvider replays recorded TurnRecords as streaming model responses.
 // Each call to Stream returns the next turn's ModelOutput as stream events.
@@ -18,6 +24,18 @@ import (
 type ReplayProvider struct {
 	turns   []types.TurnRecord
 	counter atomic.Int64
+	// lastServed is the index of the turn Stream most recently served,
+	// or -1 before the first; ForSubRun reads the recorded run that turn
+	// belongs to.
+	lastServed atomic.Int64
+	// servedAt orders this provider's latest Stream call among every
+	// replay provider's; zero before the first.
+	servedAt atomic.Int64
+	// subRuns holds each recorded sub-agent by its recorded run ID.
+	subRuns map[string]types.SubRunRecording
+	// exhausted, when set, is the error Stream returns once every turn
+	// has been served, in place of the generic exhaustion error.
+	exhausted error
 }
 
 // NewReplayProvider creates a ReplayProvider from a sequence of recorded
@@ -27,7 +45,61 @@ type ReplayProvider struct {
 // parent's requests. A sequence holding only sub-agent turns replays the
 // first turn's run.
 func NewReplayProvider(turns []types.TurnRecord) *ReplayProvider {
-	return &ReplayProvider{turns: replayableTurns(turns)}
+	rp := &ReplayProvider{turns: replayableTurns(turns)}
+	rp.lastServed.Store(-1)
+	return rp
+}
+
+// NewReplayProviderFromRecording creates a ReplayProvider that serves the
+// recording's top-level turns and keeps each sub-run's turns for
+// ForSubRun.
+func NewReplayProviderFromRecording(rec *types.RunRecording) *ReplayProvider {
+	rp := NewReplayProvider(rec.Turns)
+	if len(rec.SubRuns) > 0 {
+		rp.subRuns = make(map[string]types.SubRunRecording, len(rec.SubRuns))
+		for _, sub := range rec.SubRuns {
+			rp.subRuns[sub.RunID] = sub
+		}
+	}
+	return rp
+}
+
+// ForSubRun returns a provider serving the recorded sub-run that matches
+// childRunID relative to parentRunID ("sub-2" in "run-1/sub-2") under the
+// recorded run of the turn served last. A missing sub-run, or one spawned
+// with another prompt, yields an error and a provider that fails with it.
+func (rp *ReplayProvider) ForSubRun(parentRunID, childRunID, prompt string) (*ReplayProvider, error) {
+	relative := strings.TrimPrefix(childRunID, parentRunID+"/")
+	recordedParent := ""
+	if idx := rp.lastServed.Load(); idx >= 0 && int(idx) < len(rp.turns) {
+		recordedParent = rp.turns[idx].RunID
+	}
+	recordedChild := relative
+	if recordedParent != "" {
+		recordedChild = recordedParent + "/" + relative
+	}
+	sub, ok := rp.subRuns[recordedChild]
+	child := &ReplayProvider{turns: sub.Turns}
+	child.lastServed.Store(-1)
+	var err error
+	switch {
+	case !ok:
+		err = fmt.Errorf("replay provider: no recorded turns for sub-agent %q (recorded run %q)", childRunID, recordedChild)
+	case !samePrompt(sub.Config.Prompt, prompt):
+		err = fmt.Errorf("replay provider: sub-agent %q was spawned with a different prompt from recorded run %q", childRunID, recordedChild)
+	default:
+		child.exhausted = fmt.Errorf("replay provider: all %d recorded turns of sub-agent %q exhausted", len(sub.Turns), childRunID)
+		return child, nil
+	}
+	child.exhausted = err
+	return child, err
+}
+
+// samePrompt reports whether a live sub-agent prompt matches the recorded
+// one. The recording holds the prompt scrubbed, and an empty recorded
+// prompt (a sub-run with no subrun_started config) matches any.
+func samePrompt(recorded, live string) bool {
+	return recorded == "" || recorded == live || recorded == security.Scrub(live)
 }
 
 func replayableTurns(turns []types.TurnRecord) []types.TurnRecord {
@@ -48,6 +120,10 @@ func replayableTurns(turns []types.TurnRecord) []types.TurnRecord {
 	return kept
 }
 
+// ServedAt orders the provider's latest Stream call among every replay
+// provider's: a larger value served more recently, and zero never served.
+func (rp *ReplayProvider) ServedAt() int64 { return rp.servedAt.Load() }
+
 // Len reports how many turns the provider can serve.
 func (rp *ReplayProvider) Len() int { return len(rp.turns) }
 
@@ -56,8 +132,13 @@ func (rp *ReplayProvider) Len() int { return len(rp.turns) }
 func (rp *ReplayProvider) Stream(ctx context.Context, _ types.StreamParams) (<-chan types.StreamEvent, error) {
 	idx := int(rp.counter.Add(1) - 1)
 	if idx >= len(rp.turns) {
+		if rp.exhausted != nil {
+			return nil, rp.exhausted
+		}
 		return nil, fmt.Errorf("replay provider: all %d turns exhausted (requested turn %d)", len(rp.turns), idx)
 	}
+	rp.lastServed.Store(int64(idx))
+	rp.servedAt.Store(replayServeOrder.Add(1))
 
 	turn := rp.turns[idx]
 	ch := make(chan types.StreamEvent, len(turn.ModelOutput)+1)
@@ -147,9 +228,12 @@ func (rp *ReplayProvider) Stream(ctx context.Context, _ types.StreamParams) (<-c
 			}
 		}
 
-		stopReason := "end_turn"
-		if hasToolUse {
-			stopReason = "tool_use"
+		stopReason := turn.StopReason
+		if stopReason == "" {
+			stopReason = "end_turn"
+			if hasToolUse {
+				stopReason = "tool_use"
+			}
 		}
 		if estimatedTokens == 0 {
 			estimatedTokens = 1

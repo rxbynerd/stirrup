@@ -1104,6 +1104,7 @@ func (l *AgenticLoop) runInnerLoop(
 			ModelInput:          modelInputOf(selection.Model, params),
 			ModelOutput:         sr.Blocks,
 			ResponseModel:       sr.ResponseModel,
+			StopReason:          sr.StopReason,
 			OutputLimitRecovery: outputLimitRecovery,
 			WindDown:            windDown,
 			ToolsLoaded:         summary.ToolsLoaded,

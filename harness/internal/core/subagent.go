@@ -152,6 +152,18 @@ func prepareSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *typ
 		return nil, fmt.Errorf("cannot spawn a %q sub-agent: no read-only built-in tools remain once workspace-mutating tools are removed", mode)
 	}
 
+	// spawn_agent is a synchronous tool, so spawns are serialised and the
+	// run ID numbered below is the next one.
+	childRunID := subAgentRunID(parentConfig.RunID, parent.subAgentSpawns.Load()+1)
+	childProvider, childProviders := parent.Provider, parent.Providers
+	if parent.SubAgentProviders != nil {
+		var err error
+		childProvider, childProviders, err = parent.SubAgentProviders(parentConfig.RunID, childRunID, subConfig.Prompt)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// Admission is the last refusal, so only spawns that go on to run
 	// count toward the per-run cap.
 	tokenBudget := parentConfig.MaxTokenBudget
@@ -199,7 +211,8 @@ func prepareSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *typ
 	// permission policy and context strategy describe what the child
 	// enforces, not what the parent configured.
 	childConfig := *parentConfig
-	childConfig.RunID = subAgentRunID(parentConfig.RunID, parent.subAgentSpawns.Add(1))
+	parent.subAgentSpawns.Add(1)
+	childConfig.RunID = childRunID
 	childConfig.Prompt = subConfig.Prompt
 	childConfig.Mode = mode
 	childConfig.MaxTurns = maxTurns
@@ -247,8 +260,8 @@ func prepareSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *typ
 	}
 
 	childLoop := &AgenticLoop{
-		Provider:    parent.Provider,
-		Providers:   parent.Providers,
+		Provider:    childProvider,
+		Providers:   childProviders,
 		Router:      parent.Router,
 		Prompt:      parent.Prompt,
 		Context:     contextpkg.NewSlidingWindowStrategy(),

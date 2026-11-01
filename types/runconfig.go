@@ -2806,6 +2806,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateExecutorWorkspaceExportTo(config.Executor, &errs)
 	validateVerifierConfig(config.Verifier, "verifier", &errs)
 	validateProviderConfigs(config, retryDefaulted, &errs)
+	validateReplayAuxiliaryCalls(config, &errs)
 	validateAPIKeyRefs(config, &errs)
 	validateBuiltInTools(config.Tools.BuiltIn, &errs)
 	validateNoneExecutorTools(config.Executor.Type, config.Tools.BuiltIn, &errs)
@@ -4088,6 +4089,12 @@ func validateProviderConfigs(config *RunConfig, retryDefaulted map[string]provid
 		validateOpenAIAuthFields(path, provider, errs)
 		validateGeminiProviderFields(path, provider, errs)
 		validateReplayProviderFields(path, provider, errs)
+		if provider.Type == "replay" && config.Provider.Type != "replay" {
+			*errs = append(*errs, fmt.Sprintf(
+				"%s.type %q requires provider.type %q; a recording beside a live provider would serve some turns from the recording while the run reports a live model",
+				path, "replay", "replay",
+			))
+		}
 		validateAnthropicProviderFields(path, provider, errs)
 		validateAzureWIFCrossField(path, provider, errs)
 		validateOpenAIWIFCrossField(path, provider, errs)
@@ -5151,9 +5158,9 @@ func validateGeminiProviderFields(path string, cfg ProviderConfig, errs *[]strin
 }
 
 // validateReplayProviderFields pins replayFile to the replay provider in
-// both directions and keeps credential fields off it: a replay provider
-// resolves no credential, so a key reference on it is a stale value from
-// another provider type that would otherwise sit unused.
+// both directions and keeps every connection, credential and wire field
+// off it, since a replay provider would leave them unused.
+// validateEndpointProfile refuses endpointProfile on it.
 func validateReplayProviderFields(path string, cfg ProviderConfig, errs *[]string) {
 	if cfg.Type != "replay" {
 		if cfg.ReplayFile != "" {
@@ -5179,6 +5186,61 @@ func validateReplayProviderFields(path string, cfg ProviderConfig, errs *[]strin
 	}
 	if cfg.BaseURL != "" {
 		*errs = append(*errs, fmt.Sprintf("%s.baseUrl must not be set for provider type %q; a replay provider contacts no endpoint", path, "replay"))
+	}
+	if cfg.APIKeyHeader != "" {
+		*errs = append(*errs, fmt.Sprintf("%s.apiKeyHeader must not be set for provider type %q; a replay provider sends no request", path, "replay"))
+	}
+	if len(cfg.QueryParams) > 0 {
+		*errs = append(*errs, fmt.Sprintf("%s.queryParams must not be set for provider type %q; a replay provider sends no request", path, "replay"))
+	}
+	if cfg.Region != "" {
+		*errs = append(*errs, fmt.Sprintf("%s.region must not be set for provider type %q; a replay provider contacts no endpoint", path, "replay"))
+	}
+	if cfg.Profile != "" {
+		*errs = append(*errs, fmt.Sprintf("%s.profile must not be set for provider type %q; a replay provider resolves no credential", path, "replay"))
+	}
+	if cfg.CompatProfile != "" {
+		*errs = append(*errs, fmt.Sprintf("%s.compatProfile must not be set for provider type %q; a replay provider has no wire format to adapt", path, "replay"))
+	}
+}
+
+// replayAuxiliaryCallReason is why a component that calls the default
+// provider for its own requests cannot run beside a replay provider.
+const replayAuxiliaryCallReason = "it sends its own requests to the default provider, and under a replay provider each would consume the next recorded turn and fail to parse it"
+
+// validateReplayAuxiliaryCalls refuses the components that make auxiliary
+// model calls through the default provider when that provider is a
+// replay: a cloud-judge guard, an llm-judge verifier and the summarise
+// context strategy. None of them can name a provider of its own. A
+// fail-open guard would otherwise be silently neutralised.
+func validateReplayAuxiliaryCalls(config *RunConfig, errs *[]string) {
+	if config.Provider.Type != "replay" {
+		return
+	}
+	if config.ContextStrategy.Type == "summarise" {
+		*errs = append(*errs, fmt.Sprintf("contextStrategy.type %q is not supported with provider.type %q; %s", "summarise", "replay", replayAuxiliaryCallReason))
+	}
+	rejectReplayLLMJudge(config.Verifier, "verifier", errs)
+	if config.GuardRail != nil {
+		rejectReplayCloudJudge(*config.GuardRail, "guardRail", errs)
+	}
+}
+
+func rejectReplayLLMJudge(cfg VerifierConfig, path string, errs *[]string) {
+	if cfg.Type == "llm-judge" {
+		*errs = append(*errs, fmt.Sprintf("%s.type %q is not supported with provider.type %q; %s", path, "llm-judge", "replay", replayAuxiliaryCallReason))
+	}
+	for i, sub := range cfg.Verifiers {
+		rejectReplayLLMJudge(sub, fmt.Sprintf("%s.verifiers[%d]", path, i), errs)
+	}
+}
+
+func rejectReplayCloudJudge(cfg GuardRailConfig, path string, errs *[]string) {
+	if cfg.Type == "cloud-judge" {
+		*errs = append(*errs, fmt.Sprintf("%s.type %q is not supported with provider.type %q; %s", path, "cloud-judge", "replay", replayAuxiliaryCallReason))
+	}
+	for i, stage := range cfg.Stages {
+		rejectReplayCloudJudge(stage, fmt.Sprintf("%s.stages[%d]", path, i), errs)
 	}
 }
 
@@ -5206,6 +5268,15 @@ func validateReplayProviderFields(path string, cfg ProviderConfig, errs *[]strin
 // validateGeminiProviderFields, and the OpenAI adapters legitimately
 // use apiKeyRef alongside any of their supported credential types).
 func validateAnthropicProviderFields(path string, cfg ProviderConfig, errs *[]string) {
+	// A Google credential mints an access token for whatever endpoint
+	// the provider calls, so it is confined to Vertex AI.
+	if cfg.Credential != nil && strings.HasPrefix(cfg.Credential.Type, "gcp-") && cfg.Type != "gemini" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s.credential.type=%q is only valid when provider.type=%q; got provider.type=%q "+
+				"(a Google access token must not be sent to a non-Vertex endpoint)",
+			path, cfg.Credential.Type, "gemini", cfg.Type))
+	}
+
 	// Cross-provider check applies regardless of cfg.Type; an
 	// anthropic-wif credential paired with a non-anthropic provider
 	// is structurally a misconfiguration.

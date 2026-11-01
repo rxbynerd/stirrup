@@ -488,6 +488,11 @@ type TurnRecord struct {
 	// answering with; empty when it reported none. The same value rides on
 	// TurnTrace.ResponseModel for emitters that keep only summaries.
 	ResponseModel string `json:"responseModel,omitempty"`
+	// StopReason is the normalised stop reason the provider ended the
+	// turn with, as on TurnTrace.StopReason; empty on a request that
+	// produced no usable output and on traces written before it was
+	// recorded.
+	StopReason string `json:"stopReason,omitempty"`
 	// OutputLimitRecovery mirrors TurnTrace.OutputLimitRecovery.
 	OutputLimitRecovery bool `json:"outputLimitRecovery,omitempty"`
 	// StallNudge is true when the turn's tool calls completed a repeated

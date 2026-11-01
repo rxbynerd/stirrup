@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -211,7 +212,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 		// crashed pod or a dropped connection.
 		buildErr := fmt.Errorf("building harness: %w", err)
 		buildFailed := time.Since(started)
-		emitTerminalFailure(tp, buildErr, "error")
+		emitTerminalFailure(tp, controlPlaneBuildError(buildErr), "error")
 		// Phase timings for the terminal-failure path, so a control plane
 		// reporting a missing "done" can name the phase that stalled.
 		// emit_returned marks the handoff to the transport, not delivery;
@@ -292,6 +293,18 @@ func jobSessionBudget(runTimeout time.Duration, graceSecs int) time.Duration {
 		}
 	}
 	return runTimeout + cliSessionBudget(runTimeout, graceSecs)
+}
+
+// controlPlaneBuildError is the build failure as the control plane sees
+// it. A file the harness could not use from its own filesystem is reduced
+// to the field that named it; the returned error, which the harness logs,
+// keeps the detail.
+func controlPlaneBuildError(err error) error {
+	var hostFile *core.HostFileError
+	if errors.As(err, &hostFile) {
+		return fmt.Errorf("building harness: %s; the harness log has the detail", hostFile.Redacted())
+	}
+	return err
 }
 
 // emitTerminalFailure sends the "error" then "done" pair that the
