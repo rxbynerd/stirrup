@@ -312,8 +312,8 @@ The v0.1 demo narrative (#277) is:
 5. Commit `eval/suites/mined.hcl` and the produced `result.json`
    as `eval/baselines/mined.json` once the coverage is sufficient
    and the baseline reflects an intentional reference state.
-   Generate the baseline with the provider, model, and
-   `--trials 3` the per-push gate runs (see
+   Generate the baseline with the provider, model, `--trials 3`, and
+   default `--trials-policy fixed` that the per-push gate runs (see
    [Provider credentials](#provider-credentials) for the exact
    invocation) so the committed expectations match what CI actually
    executes. Three trials record a fractional pass rate for a flaky

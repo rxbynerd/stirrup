@@ -55,10 +55,19 @@ func (o Options) Validate() error {
 // statistics use only tasks present in both results; side summaries use
 // every task on that side, and one-sided tasks are listed in the report.
 // A task without Trials counts as a single trial.
+//
+// When the two sides used different trials policies and one side's trial
+// counts depend on outcomes (confirm-on-fail), the sides' trial counts are
+// not comparable, so the paired statistics, the noise floor, and pass^k /
+// pass@k use each task's first trial alone. Pass rates, deterministic flips,
+// and the regression list always use every trial. Compare does not refuse
+// mismatched policies; see TrialsPolicyMismatch.
 func Compare(baseline, current eval.SuiteResult, opts Options) eval.ComparisonReport {
 	baselineByID := indexByTaskID(baseline.Tasks)
 	baselineOnly := unpairedIDs(baseline.Tasks, indexByTaskID(current.Tasks))
 	currentOnly := unpairedIDs(current.Tasks, baselineByID)
+	firstTrialOnly := baseline.ResolvedTrialsPolicy() != current.ResolvedTrialsPolicy() &&
+		(baseline.TrialCountsDependOnOutcomes() || current.TrialCountsDependOnOutcomes())
 
 	var (
 		regressions  []eval.TaskRegression
@@ -88,14 +97,19 @@ func Compare(baseline, current eval.SuiteResult, opts Options) eval.ComparisonRe
 			CurrentTrials:        cc.Total(),
 			Delta:                cf - bf,
 		})
-		diffs = append(diffs, cf-bf)
+
+		sbc, scc := bc, cc
+		if firstTrialOnly {
+			sbc, scc = bt.FirstTrialGateCounts(baseline.RequireHealthy), ct.FirstTrialGateCounts(current.RequireHealthy)
+		}
+		diffs = append(diffs, scc.PassFraction()-sbc.PassFraction())
+		pooledPass += sbc.Pass + scc.Pass
+		pooledTotal += sbc.Total() + scc.Total()
 
 		baselineAllPass := bc.Total() > 0 && bc.Pass == bc.Total()
 		if !baselineAllPass {
 			allPassBase = false
 		}
-		pooledPass += bc.Pass + cc.Pass
-		pooledTotal += bc.Total() + cc.Total()
 
 		if baselineAllPass && cc.Total() > 0 && cc.Pass == 0 {
 			flips = append(flips, ct.TaskID)
@@ -129,8 +143,9 @@ func Compare(baseline, current eval.SuiteResult, opts Options) eval.ComparisonRe
 		WarnMargin:         opts.WarnMargin,
 		FlipThreshold:      opts.FlipThreshold,
 		DeterministicFlips: flips,
-		Baseline:           rateSummary(baseline),
-		Current:            rateSummary(current),
+		Baseline:           rateSummary(baseline, firstTrialOnly),
+		Current:            rateSummary(current, firstTrialOnly),
+		FirstTrialOnly:     firstTrialOnly,
 	}
 	summary.BaselinePassRate = summary.Baseline.PassRate
 	summary.CurrentPassRate = summary.Current.PassRate
@@ -260,9 +275,10 @@ func singleTrialExceedsMargin(n, k int, margin float64) bool {
 // rateSummary describes one result: mean gate pass fraction, task-level SE,
 // a Wilson interval over tasks (trials of one task are not independent,
 // so they are not pooled), and pass^k / pass@k up to the smallest
-// per-task trial count.
-func rateSummary(r eval.SuiteResult) eval.RateSummary {
-	s := eval.RateSummary{Tasks: len(r.Tasks), Trials: suiteTrials(r)}
+// per-task trial count, or over each task's first trial alone when
+// firstTrialOnly.
+func rateSummary(r eval.SuiteResult, firstTrialOnly bool) eval.RateSummary {
+	s := eval.RateSummary{Tasks: len(r.Tasks), Trials: suiteTrials(r), TrialsPolicy: r.ResolvedTrialsPolicy()}
 	if len(r.Tasks) == 0 {
 		s.WilsonLow, s.WilsonHigh = Wilson95(0, 0)
 		return s
@@ -272,8 +288,12 @@ func rateSummary(r eval.SuiteResult) eval.RateSummary {
 	counts := make([]eval.TrialCounts, len(r.Tasks))
 	minTrials := 0
 	for i, t := range r.Tasks {
-		counts[i] = t.GateCounts(r.RequireHealthy)
-		fractions[i] = counts[i].PassFraction()
+		full := t.GateCounts(r.RequireHealthy)
+		fractions[i] = full.PassFraction()
+		counts[i] = full
+		if firstTrialOnly {
+			counts[i] = t.FirstTrialGateCounts(r.RequireHealthy)
+		}
 		if minTrials == 0 || counts[i].Total() < minTrials {
 			minTrials = counts[i].Total()
 		}
@@ -305,6 +325,19 @@ func rateSummary(r eval.SuiteResult) eval.RateSummary {
 		s.PassAtK = append(s.PassAtK, at/float64(len(counts)))
 	}
 	return s
+}
+
+// TrialsPolicyMismatch returns an error naming both policies when baseline
+// and current ran under different trials policies, and nil otherwise. A
+// confirm-on-fail pass rate is biased upward relative to a fixed one,
+// because a task that passes its first trial is never rerun and records a
+// pass fraction of 1.
+func TrialsPolicyMismatch(baseline, current eval.SuiteResult) error {
+	bp, cp := baseline.ResolvedTrialsPolicy(), current.ResolvedTrialsPolicy()
+	if bp == cp {
+		return nil
+	}
+	return fmt.Errorf("trials policies differ: baseline ran %s, current ran %s; a confirm-on-fail pass rate is biased upward relative to a fixed one", bp, cp)
 }
 
 // suiteTrials is the result's declared trials per task, falling back to

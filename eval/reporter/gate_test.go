@@ -380,31 +380,39 @@ func TestCompare_SinglePairedTask(t *testing.T) {
 	check.Nil(s.Baseline.StdErr, "task-level SE with one task")
 }
 
-// TestCompare_CommittedBaselineWithoutTrials pins that the committed
-// single-run baselines load and compare against a multi-trial run.
-func TestCompare_CommittedBaselineWithoutTrials(t *testing.T) {
-	for _, name := range []string{"dogfood-seed.json", "provider-quirks-openai.json"} {
-		t.Run(name, func(t *testing.T) {
+// TestCompare_CommittedBaselinesCompareAgainstTheGateRun pins that each
+// committed baseline loads with the trial count CI runs its suite at,
+// records the fixed policy the gate runs (so compare does not refuse
+// it), and passes against an all-pass three-trial run.
+func TestCompare_CommittedBaselinesCompareAgainstTheGateRun(t *testing.T) {
+	cases := []struct {
+		name       string
+		wantTrials int
+	}{
+		{"dogfood-seed.json", 3},
+		{"provider-quirks-openai.json", 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			data, err := os.ReadFile(filepath.Join("..", "baselines", name))
+			data, err := os.ReadFile(filepath.Join("..", "baselines", tc.name))
 			must.NoError(err)
 			var baseline eval.SuiteResult
 			must.NoError(json.Unmarshal(data, &baseline), "unmarshal")
-			must.Zero(baseline.Trials, "committed baseline should be a single-run file")
 			must.NotEmpty(baseline.Tasks)
+			must.Equal(eval.TrialsPolicyFixed, baseline.ResolvedTrialsPolicy())
+			must.NoError(TrialsPolicyMismatch(baseline, eval.SuiteResult{TrialsPolicy: eval.TrialsPolicyFixed}))
 
-			current := eval.SuiteResult{RunID: "curr", Trials: 3}
+			current := eval.SuiteResult{RunID: "curr", Trials: 3, TrialsPolicy: eval.TrialsPolicyFixed}
 			for _, bt := range baseline.Tasks {
-				must.Empty(bt.Trials, "task %s has explicit trials", bt.TaskID)
-				must.Equal(1, bt.Counts().Total(), "task %s: want one implicit trial, got %+v", bt.TaskID, bt.Counts())
-				ct := trialTask(bt.TaskID, 3, 3)
-				current.Tasks = append(current.Tasks, ct)
+				must.Equal(tc.wantTrials, bt.Counts().Total(), "task %s trials, got %+v", bt.TaskID, bt.Counts())
+				current.Tasks = append(current.Tasks, trialTask(bt.TaskID, 3, 3))
 			}
 
 			s := Compare(baseline, current, DefaultOptions()).Summary
 			must.Equal(eval.GatePass, s.Gate, "reasons %v", s.GateReasons)
 			within(t, "baseline pass rate", s.BaselinePassRate, baseline.PassRate, 1e-12)
-			must.Equal(1, s.Baseline.Trials, "baseline trials")
+			must.Equal(tc.wantTrials, s.Baseline.Trials, "baseline trials")
 			must.Equal(3, s.Current.Trials, "current trials")
 		})
 	}
@@ -696,12 +704,12 @@ func TestNoiseFloor_PoolWithAFailurePrintsBothRates(t *testing.T) {
 
 func TestRateSummary_WilsonIntervalOverTasks(t *testing.T) {
 	// Pass fractions 1, 1, 2/3, 1/3, 1/3 give 10/3 successes over 5 tasks.
-	s := rateSummary(trialSuite("r", 3, []int{3, 3, 2, 1, 1}))
+	s := rateSummary(trialSuite("r", 3, []int{3, 3, 2, 1, 1}), false)
 	within(t, "pass rate", s.PassRate, 2.0/3, 1e-12)
 	within(t, "Wilson low", s.WilsonLow, 0.27520, 0.0001)
 	within(t, "Wilson high", s.WilsonHigh, 0.91331, 0.0001)
 
-	threeOfFive := rateSummary(trialSuite("r", 3, []int{3, 3, 3, 0, 0}))
+	threeOfFive := rateSummary(trialSuite("r", 3, []int{3, 3, 3, 0, 0}), false)
 	within(t, "3/5 Wilson low", threeOfFive.WilsonLow, 0.23072, 0.0001)
 	within(t, "3/5 Wilson high", threeOfFive.WilsonHigh, 0.88238, 0.0001)
 }
@@ -713,7 +721,7 @@ func TestRateSummary_PassHatKStopsAtTheSmallestTrialCount(t *testing.T) {
 		trialTask("b", 2, 3),
 		trialTask("c", 3, 3),
 	}}
-	s := rateSummary(r)
+	s := rateSummary(r, false)
 
 	must.Len(s.PassHatK, 2, "pass^k rows should stop at the smallest trial count")
 	must.Len(s.PassAtK, 2, "pass@k rows should stop at the smallest trial count")
