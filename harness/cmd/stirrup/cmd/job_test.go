@@ -19,6 +19,7 @@ import (
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/harness/internal/health"
+	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -402,7 +403,7 @@ func (s *recordingControlPlane) findEvent(eventType string) *pb.HarnessEvent {
 	return nil
 }
 
-func TestRunJob_ReadyAdvertisesCapabilities(t *testing.T) {
+func TestRunJob_ReadyAdvertisesCapabilitiesAndConfigFields(t *testing.T) {
 	must := require.New(t)
 	useTempMarkerPaths(t)
 	srv := newRecordingControlPlane(&pb.RunConfig{Mode: "execution"})
@@ -429,6 +430,21 @@ func TestRunJob_ReadyAdvertisesCapabilities(t *testing.T) {
 	must.Equal("ready", ready.GetType(), "first event sent to the control plane")
 	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned", "lazy_tool_loading", "heartbeat_interval"}
 	must.Equal(want, ready.GetCapabilities())
+	must.Equal(transport.TaskAssignmentFieldPaths(), ready.GetConfigFields())
+	must.NotContains(ready.GetConfigFields(), "transport", "a field a task_assignment cannot carry is not advertised")
+	must.Subset(ready.GetConfigFields(), []string{"provider.endpointProfile", "tools.lazyLoading.eager", "providers.*.type"})
+	must.Empty(ready.GetHarnessSemver(), "a dev build advertises no semantic version")
+}
+
+func TestReadyEvent_ReleaseLabelCarriesSemver(t *testing.T) {
+	must := require.New(t)
+	ev := readyEvent("session-1", "v1.4.0-rc.2")
+	must.Equal("ready", ev.Type)
+	must.Equal("session-1", ev.ID)
+	must.Equal("v1.4.0-rc.2", ev.HarnessVersion)
+	must.Equal("1.4.0-rc.2", ev.HarnessSemver)
+
+	must.Empty(readyEvent("", "main").HarnessSemver, "a main build advertises no semantic version")
 }
 
 // TestRunJob_InvalidAssignedConfigSignalsControlPlane drives `stirrup

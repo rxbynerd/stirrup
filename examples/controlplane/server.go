@@ -167,8 +167,8 @@ func (s *server) handle(ctx context.Context, stream runStream) (result, error) {
 
 		switch ev.GetType() {
 		case "ready":
-			writef(s.errOut, "[ready] harness %s connected (capabilities: %s); assigning run %s\n",
-				escapeLine(ev.GetHarnessVersion()), escapeLine(strings.Join(ev.GetCapabilities(), ", ")), escapeLine(s.task.GetRunId()))
+			writef(s.errOut, "[ready] harness %s connected (capabilities: %s; config fields: %d); assigning run %s\n",
+				escapeLine(ev.GetHarnessVersion()), escapeLine(strings.Join(ev.GetCapabilities(), ", ")), len(ev.GetConfigFields()), escapeLine(s.task.GetRunId()))
 			if err := stream.Send(&harnessv1.ControlEvent{Type: "task_assignment", Task: s.task}); err != nil {
 				return res, fmt.Errorf("send task_assignment: %w", err)
 			}

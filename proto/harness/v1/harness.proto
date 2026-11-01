@@ -51,7 +51,11 @@ service HarnessService {
 //
 //   "ready"
 //     - harness_version: build version string of the harness binary.
+//     - harness_semver:  the build version as a semantic version; empty
+//                        for a build that is not a release.
 //     - capabilities:    the contract features this harness implements.
+//     - config_fields:   every RunConfig field path a task_assignment can
+//                        set on this harness.
 //
 //   "run_started"
 //     - id:              the run ID (RunConfig.run_id) of the run that started.
@@ -415,6 +419,28 @@ message HarnessEvent {
   // Internal IDs of the deferred tools a search loaded. Set on
   // "tools_loaded" events; at most 256 entries, each capped like a name.
   repeated string tools = 27;
+
+  // Every RunConfig field a task_assignment can set on this harness, as
+  // dotted paths of the fields' JSON names, sorted byte-wise. A message
+  // field is listed along with each of its fields ("provider",
+  // "provider.endpointProfile"); a repeated field lists its element's
+  // fields under its own path ("tools.mcpServers.name"); a map lists "*"
+  // for its keys, then its value's fields under that ("providers.*",
+  // "providers.*.type"). A message that contains itself is listed one
+  // level inside itself ("guardRail.stages.type",
+  // "guardRail.stages.stages") and not below. Set on the "ready" event
+  // `stirrup job` sends. Below a listed path that has no listed paths
+  // under it, such as a Struct field, the value is data and is not
+  // checked against the list. Any other RunConfig field the list omits
+  // is unknown to this harness and is dropped from a task_assignment
+  // without notice.
+  repeated string config_fields = 28;
+
+  // The build version as a Semantic Versioning 2.0.0 string without the
+  // tag's leading "v", such as "0.1.0" or "0.1.0-rc.1". Set on "ready"
+  // events when harness_version is a semantic version, as release tags
+  // are; empty otherwise, as for "dev" and "main" builds.
+  string harness_semver = 29;
 }
 
 // TraceReference mirrors types.TraceReference: the identity of a run's

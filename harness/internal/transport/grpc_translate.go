@@ -37,6 +37,8 @@ func harnessEventToProto(e types.HarnessEvent) *pb.HarnessEvent {
 		DurationMs:      e.DurationMs,
 		AbandonReason:   e.AbandonReason,
 		Tools:           e.Tools,
+		ConfigFields:    e.ConfigFields,
+		HarnessSemver:   e.HarnessSemver,
 	}
 	if e.Turn != nil {
 		turn := saturateInt32(*e.Turn)

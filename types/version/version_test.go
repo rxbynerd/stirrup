@@ -41,3 +41,32 @@ func TestFull_FormatsVersionAndCommit(t *testing.T) {
 		})
 	}
 }
+
+func TestSemverOf_ParsesReleaseLabelsOnly(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		want    string
+	}{
+		{"release tag", "v1.2.3", "1.2.3"},
+		{"pre-release tag", "v0.1.0-rc.1", "0.1.0-rc.1"},
+		{"build metadata", "v1.2.3+build.5", "1.2.3+build.5"},
+		{"no leading v", "2.0.0", "2.0.0"},
+		{"dev build", "dev", ""},
+		{"main build", "main", ""},
+		{"partial version", "v1.2", ""},
+		{"leading zero", "v01.2.3", ""},
+		{"empty", "", ""},
+		{"trailing text", "v1.2.3 (abc1234)", ""},
+		{"trailing newline", "v1.2.3\n", ""},
+		{"uppercase V", "V1.2.3", ""},
+		{"leading zero pre-release", "v1.2.3-01", ""},
+		{"empty pre-release", "v1.2.3-", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, SemverOf(tc.version))
+		})
+	}
+}
