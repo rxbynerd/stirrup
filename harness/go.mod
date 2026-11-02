@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.63.8
 	github.com/aws/aws-sdk-go-v2/service/ssm v1.81.1
 	github.com/aws/aws-sdk-go-v2/service/sts v1.51.6
-	github.com/cedar-policy/cedar-go v1.8.0
+	github.com/cedar-policy/cedar-go v1.9.0
 	github.com/rxbynerd/stirrup/gen v0.0.0
 	github.com/rxbynerd/stirrup/types v0.0.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
@@ -60,6 +60,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.1 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/jsonpointer v1.0.1 // indirect
