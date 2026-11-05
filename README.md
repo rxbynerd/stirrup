@@ -148,6 +148,7 @@ See [`.github/workflows/smoke-anthropic.yml`](.github/workflows/smoke-anthropic.
 | Component model, agentic loop, deep dives | [`docs/architecture.md`](docs/architecture.md) |
 | CLI flags, `RunConfig` precedence, examples | [`docs/configuration.md`](docs/configuration.md) |
 | Production deployment via `stirrup job` (K8s, gRPC) | [`docs/deployment.md`](docs/deployment.md) |
+| Securing the control-plane stream (TLS, mutual TLS, Istio recipes) | [`docs/transport-security.md`](docs/transport-security.md) |
 | Kubernetes executor (Pod-per-run sandbox) | [`docs/executors/k8s.md`](docs/executors/k8s.md) |
 | Kubernetes Agent Sandbox executor (`k8s-sandbox`) | [`docs/executors/k8s-agent-sandbox.md`](docs/executors/k8s-agent-sandbox.md) |
 | Running stirrup as a Google Cloud Run job | [`docs/cloud-run-jobs.md`](docs/cloud-run-jobs.md) |

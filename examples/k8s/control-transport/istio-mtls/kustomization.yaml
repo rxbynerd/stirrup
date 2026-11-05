@@ -1,0 +1,12 @@
+# Standing objects for the Istio strict mutual TLS recipe. job.yaml is the
+# per-run template the control plane creates, and plaintext-probe.yaml is a
+# verification Pod; neither is applied here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespaces.yaml
+  - serviceaccount.yaml
+  - control-plane-service.yaml
+  - peer-authentication.yaml
+  - authorization-policy.yaml
+  - destination-rule.yaml
