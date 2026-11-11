@@ -1,9 +1,9 @@
 # AWS Nitro Sandboxes: assessment and adoption plan
 
-Status: proposal, 2026-11-10. Nothing in this document is implemented.
+Status: reviewed proposal, 2026-11-11. Nothing in this document is implemented.
 Every Stirrup file and line reference was checked against `main` at
-`eeaad430`. Every statement about AWS behaviour comes from AWS
-documentation published on 2026-11-09 and is cited in
+`eeaad430`. AWS behaviour is drawn from current AWS documentation and sample
+material, with review corrections checked on 2026-11-11 and cited in
 [Sources](#sources); none of it has been exercised against a live
 cluster. Statements that the plan depends on and that only a live run
 can settle are collected in
@@ -19,6 +19,7 @@ the line references before acting on them; the code will have moved.
 
 ## Contents
 
+- [Implementation handoff gates](#implementation-handoff-gates)
 - [Verdict](#verdict)
 - [What Nitro Sandboxes are](#what-nitro-sandboxes-are)
 - [How this meets Stirrup's sandbox seams](#how-this-meets-stirrups-sandbox-seams)
@@ -29,6 +30,45 @@ the line references before acting on them; the code will have moved.
 - [What is deliberately not built](#what-is-deliberately-not-built)
 - [Open decisions](#open-decisions)
 - [Sources](#sources)
+
+## Implementation handoff gates
+
+The executor direction is approved as a design recommendation. General
+hardening (PR 1 and PR 4) can proceed. Nitro enablement is **not ready
+for release** until the paid spike establishes the gates below. This
+review authorizes no AWS provisioning or spend.
+
+Decisions adopted by this review so agents need not invent them:
+
+- Use `executor.runtime: nitro-isolated`, mapped to AWS's
+  `isolated-sandbox` RuntimeClass. No arbitrary RuntimeClass override.
+- The first release accepts only `network.mode: none` for this profile.
+  Reject `allowlist` in both RunConfig validation and direct executor
+  construction before any cluster mutation. PR 5 is a later design and
+  validation gate for networked support, not a probe to ship as written
+  in the original draft. Existing runtimes keep their current API.
+- Require explicit positive CPU and memory for Nitro. Do not infer
+  defaults through a server-side dry-run create. Include 1 CPU and
+  1024 MiB in the example as a starting point, not a measured minimum.
+- PR 2 and PR 3 are one enablement change (or a stack that merges
+  together). No accepted Nitro runtime may ship without its checks.
+- The initial supported recipe pins IPv4, amd64, a tested instance-family
+  allowlist and a sandbox image digest. Architecture alone does not pin
+  a tested family. Broader support needs its own recorded evidence.
+
+| Work | Entry condition | Required exit evidence |
+|---|---|---|
+| PR 1 readiness/admission and PR 4 preflight | Repository tests and contracts | Tests below, no AWS requirement |
+| Paid spike | Owner supplies account, region, spending ceiling, teardown owner | Dated results with exact versions, manifests, image digest, family, commands and failures |
+| PR 2 + PR 3 enablement | PR 1 and PR 4 landed; spike results reviewed | V1–V5, V7, V10–V11 pass; V12 passes if identity is enabled; admission mutation and rollback tests; token expiry handled if identity is enabled |
+| Disk quota claim | V8 | Measured enforcement; otherwise reject explicit Nitro `diskMb` rather than imply a hard bound |
+| PR 5 networked support | Separate reviewed network contract | Startup, execution and teardown confinement; DNS and credential paths accounted for; no inconclusive probe treated as success |
+
+V6 is required for PR 5. V9 is an optimization input, not a release
+blocker for offline execution. V13 verifies the chosen region; it need
+not survey every region. Unsupported configurations fail explicitly.
+An agent must not mark a skipped live test as a pass or replace a gate
+with an AWS documentation quote.
 
 ## Verdict
 
@@ -84,7 +124,8 @@ There are three ways to consume it:
    every cluster and a capable node is provisioned on demand; the
    RuntimeClass carries the node selector and toleration, so the Pod
    spec needs neither. Standard node groups need a custom AMI.
-   Kubernetes 1.36 or later is required. [EKS-OVERVIEW] [EKS-ISOLATED]
+   Kubernetes 1.36 is the documented minimum; confirm the current
+   supported version window before provisioning. [EKS-OVERVIEW] [EKS-ISOLATED]
 2. **ECS.** A task definition sets
    `trustedExecutionConfiguration.isolationMode` to `ISOLATED_SANDBOX`
    or `CONFIDENTIAL_SANDBOX`. ECS Managed Instances only. [ECS]
@@ -191,8 +232,8 @@ Numbered for reference from the pull request sequence.
 **G1. The runtime name is rejected.** `validK8sRuntimes`
 (`types/runconfig.go:2173`) is a closed set of `runc`, `gvisor`,
 `kata-qemu`, `kata-fc`, `kata-clh`; `ValidateRunConfig` rejects
-anything else (`types/runconfig.go:6259`). This is the only hard
-blocker.
+anything else (`types/runconfig.go:6259`). This is the immediate configuration blocker; the handoff gates also
+block a supported release.
 
 **G2. Readiness waits 60 seconds and handles failure badly.**
 `k8sReadyTimeout` (`k8s.go:36`) is a constant. On EKS Auto Mode a first
@@ -227,7 +268,7 @@ annotations (`k8s.go:216-224`).
 
 **G5. `network.mode: allowlist` is unconfined on EKS Auto Mode
 defaults, and no annotation fixes it.** In this mode the NetworkPolicy
-is the only thing that forces traffic through the proxy
+restricts non-DNS traffic to the proxy
 (`k8s_netpol.go:92-137`). With enforcement off, the sandbox can ignore
 the proxy and can also reach the in-guest instance metadata and Pod
 Identity endpoints. Two further points weaken the "policy is installed
@@ -257,8 +298,9 @@ mode protects the workload from the node operator. Stirrup's threat is
 the reverse: protect everything else from the workload, which isolated
 mode covers. Mechanically, the default confidential policy denies
 `Exec` and stdin [EKS-CONFIDENTIAL], and `podExecCore` has no other
-channel. A custom policy can allow `exec`, but only by pinning command
-hashes, which cannot describe an agent that runs arbitrary commands.
+channel. AWS also supports `--allow-exec-all-for-container`, so arbitrary exec
+is possible with an explicit policy. The exclusion here is a product
+scope decision, not a protocol impossibility. [EKS-CONFIDENTIAL]
 The policy also pins every environment variable, and the sandbox
 identity token is a per-run environment value (`factory.go:155-162`,
 `k8s.go:237-244`), so a pre-generated policy cannot match a run that
@@ -338,8 +380,8 @@ type k8sRuntimeProfile struct {
     // noNetworkAnnotations are added to the Pod when network.mode is
     // "none", for runtimes that can remove the network device.
     noNetworkAnnotations map[string]string
-    // verify confirms from inside the sandbox that this runtime is in
-    // force. Nil means the runtime has no verifier.
+    // verify checks guest-reported runtime diagnostics, not attestation.
+    // Nil means the runtime has no diagnostic check.
     verify func(ctx context.Context, core *podExecCore) error
 }
 ```
@@ -350,7 +392,7 @@ Entries on day one:
 |---|---|---|---|---|
 | `""` | unset | no | none | none |
 | `runc`, `gvisor`, `kata-*` | same as the value | no | none | none (follow-up) |
-| Nitro isolated (value is [open decision 1](#open-decisions)) | `isolated-sandbox` | yes | `sandbox.amazonaws.com/network-isolated: "true"` | DMI product name ends `.enclave` |
+| `nitro-isolated` | `isolated-sandbox` | yes | `sandbox.amazonaws.com/network-isolated: "true"` | DMI product name ends `.enclave` |
 
 Decisions inside this design and why:
 
@@ -372,8 +414,7 @@ Decisions inside this design and why:
   runtime's semantics.
 - **The profile carries the RuntimeClass name.** Today the value and
   the RuntimeClass name are the same string. Giving the profile its own
-  `runtimeClassName` costs nothing and is what makes open decision 1 a
-  free choice.
+  `runtimeClassName` costs nothing and separates the technology name from AWS's class name.
 - **`confidential-sandbox` is named in validation only to reject it**
   with an error that states G8 and points at the documentation. An
   operator will try it; the generic "unsupported executor.runtime"
@@ -388,31 +429,35 @@ Decisions inside this design and why:
 
 ### Checking what admission did
 
-`Create` returns the Pod as admitted. Before waiting for readiness the
-executor compares it with what it asked for, for every runtime:
+Require positive explicit CPU and memory for Nitro in validation and
+in the direct constructor. Preserve existing namespace-default behavior
+for other runtimes. This avoids a second admission pass and a race
+between dry-run defaults and real admission. Reject unsupported disk
+quota claims until V8 establishes enforcement.
 
-1. **RuntimeClass.** If the admitted `runtimeClassName` differs from
-   the requested one, delete the Pod and policy and fail. This catches
-   a rewriting webhook before anything boots. It also catches the
-   reverse case, a namespace policy that injects a sandbox RuntimeClass
-   into a Pod whose RunConfig left the runtime empty and which would
-   otherwise run with the wrong profile.
-2. **Sizing, for runtimes sized from requests.** If the admitted agent
-   container has no CPU or memory request, the guest would boot at the
-   platform default. See open decision 2 for what happens then. The
-   recommended behaviour is to fill only the missing request (and its
-   matching limit) with a harness default of 1 CPU and 1024 MiB. Because
-   Kubernetes fills only fields that are absent, a default set before
-   `Create` would silently override a namespace LimitRange, which
-   contradicts `docs/executors/k8s.md:211-212`. So the executor first
-   issues the same `Create` as a server-side dry run, reads back what
-   admission would produce, and adds defaults only where requests are
-   still empty. A dry-run create uses the `create` verb the Role already
-   grants.
+Inspect the actual Pod returned by `Create`, then recheck the same UID
+at readiness. Fail on unexpected RuntimeClass, missing or changed
+no-network annotation, or changed policy-selector labels. For Nitro,
+check the expected container set, commands, security settings, service
+account, credential-bearing env/volumes and positive resource requests
+and limits against the submitted contract. Allow ordinary API defaults
+and RuntimeClass scheduling/overhead; do not require whole-object
+byte equality. Reject injected sidecars or init containers in the first
+supported recipe. Trusted admission configuration must preserve these requirements
+before scheduling. The operator owns that configuration and RBAC. PR 2
+must document excluded mutating webhooks and the deployment checks;
+a generic cluster admission-policy engine is outside this change.
 
-`classifyPodCreateError` is narrowed in the same change so that it
-blames the RuntimeClass only when the API server's cause mentions it
-(G13).
+A response check occurs **after creation** and cannot stop the Pod
+starting first. It detects configuration drift and prevents tool use;
+it does not undo exposure during startup. The trusted cluster must
+preserve Stirrup's Pod contract at admission. Include a stripped
+annotation and rewritten labels in mutation tests, not just a changed
+RuntimeClass. A dry run would not remove this race.
+
+Narrow `classifyPodCreateError` so it blames the RuntimeClass only when
+the API server cause names that field. Preserve other admission errors.
+Use the teardown contract below on every failure after creation.
 
 ### Readiness
 
@@ -421,8 +466,10 @@ One change for all runtimes, replacing the constant:
 - A single ceiling of five minutes, still capped by the caller's
   context.
 - Fail immediately on terminal states: Pod phase `Failed`, or a
-  container waiting with `ErrImagePull`, `ImagePullBackOff`,
-  `InvalidImageName` or `CreateContainerConfigError`.
+  Pod phase `Succeeded` before readiness, `InvalidImageName` or a
+  permanent configuration error. `ErrImagePull` and `ImagePullBackOff`
+  can reflect transient registry failures: retry within the same
+  bounded deadline and include their last reason in the timeout.
 - Retry transient API errors until the deadline; fail at once on
   `Forbidden` or `Unauthorized`, as the `k8s-sandbox` poller does.
 - On timeout, report the Pod's phase and its `PodScheduled` condition
@@ -437,6 +484,11 @@ the run's deadline in `stirrup job` (`factory.go:263-266`). And a
 sandbox identity token is exchanged before the executor is built
 (`factory.go:129-162`), so a slow start consumes token lifetime;
 `docs/executors/k8s.md:713` recommends tokens of 15 minutes or less.
+PR 1 must test a token expiring during startup. Before initial token-file
+delivery and hooks, re-exchange an expired or nearly expired token or
+fail construction and clean up. Refresh starts only after executor
+construction today. Keep credentials out of failure diagnostics; an
+expiry warning alone is not an acceptance criterion.
 
 ### Network mode `none` on a Nitro Sandbox
 
@@ -460,8 +512,9 @@ RunConfig says it has no network. Rule of Two accounting is unchanged:
 network mode (`types/runconfig.go:3507-3521`).
 
 The residual vsock channel (a root process on the node can connect to
-a port the guest binds) must be stated in the documentation. It needs a
-compromised node, which is outside what isolated mode claims to defend.
+a port the guest binds) must be stated in the documentation. It is available to authorized parent-side processes with socket access,
+not only after a compromise. The trusted node/operator is outside this
+threat model; describe `none` as no guest IP network, not no possible I/O.
 
 ### Verifying the runtime after the Pod is Ready
 
@@ -471,13 +524,21 @@ It runs before lifecycle hooks. For Nitro isolated:
 
 1. `/sys/class/dmi/id/product_name` ends with `.enclave`.
 2. When `network.mode == "none"`: `/sys/class/net` contains only `lo`.
-   This confirms the annotation took effect.
+   This is a diagnostic consistent with the annotation taking effect.
 
 A failed check fails executor construction and deletes the Pod and
 policy through the existing cleanup path. The error states the value
 observed. This is fail-closed with no opt-out field: the operator named
 a runtime, and running under a different one is the event the runtime
 choice exists to prevent.
+
+These commands use binaries supplied by the sandbox image. An untrusted
+image can fabricate their output. They are configuration diagnostics,
+not attestation or proof against a malicious image, node or admission
+controller. Keep the event name and documentation honest about that
+limit. Do not weaken the hardware boundary's untrusted-code threat
+model by treating a guest assertion as its trust anchor. Bound and
+scrub observed output before logging it.
 
 Three things this needs:
 
@@ -499,56 +560,75 @@ Three things this needs:
 
 A control plane cannot currently tell a verification failure from a
 configuration error, because build errors pass through as text
-(`harness/cmd/stirrup/cmd/job.go:310-316`). Whether it should is open
-decision 5.
+(`harness/cmd/stirrup/cmd/job.go:310-316`). Typed build failures remain an optional follow-up.
 
 ### Detecting unenforced egress policy
 
-This is the remedy for G5 and for the kindnet caveat, and it applies to
-every `k8s` runtime. It is the least settled part of the design.
+PR 5 needs a separate network design before implementation. The original
+proposal to pass on the first refused or timed-out connection is
+withdrawn: a dead listener, routing failure or transient loss can all
+produce that result while policy enforcement is absent. A reachable
+proxy does not establish the health of the forbidden destination.
 
-The idea: after the Pod is Ready, attempt from inside the sandbox a
-connection the policy must refuse. If it succeeds, the policy is not
-being enforced, and the run fails.
+A future probe must use an operator-controlled forbidden listener with
+independent health/reachability evidence, a positive allowed control,
+bounded repeated observations and explicit pass/fail/inconclusive
+results. Inconclusive is an error, including a missing TCP client. The
+image contract and destination provisioning must be settled before PR 5
+is assigned. These remain sampled diagnostics, never lifetime proof.
 
-Review found three problems with the first draft, which was a single
-direct TCP connect to the API server Service:
+The enforcement boundary must exist before any image code starts.
+A probe after Ready cannot contain an image's startup code. Validate
+EKS Auto Mode's controller enablement plus the selected NodeClass's
+`networkPolicy: DefaultDeny`; do not assume the standard VPC CNI's
+configuration applies to Auto Mode. [EKS-AUTO-NETPOL] [EKS-NODECLASS]
 
-- **A single attempt misfires.** If the platform starts Pods
-  allow-all and reconciles shortly after (G5), one early success would
-  fail a run that is about to be confined.
-- **A refused connection proves little on its own.** A Service address
-  not yet programmed also refuses.
-- **The image contract has no TCP client.** busybox `sh` has no
-  `/dev/tcp`. Requiring `nc` or bash would break existing sandbox
-  images.
+The network contract must also resolve these paths:
 
-Revised specification:
+- `allowlistEgressPolicy` currently permits TCP/UDP 53 to any destination
+  (`k8s_netpol.go`). Restrict it to approved resolvers and document the
+  remaining DNS channel, or explicitly accept that exception. It is
+  incorrect to claim all egress is forced through the proxy today.
+- Kubernetes policies are additive. Another matching policy can reopen
+  egress. Namespace policy ownership and workload-label integrity are
+  operator prerequisites, not something one probe can establish.
+- Auto Mode IPv6 Pods can have an additional IPv4 egress interface that
+  NetworkPolicy does not cover. Initial support is IPv4 only; IPv6
+  needs `enableV4Egress: false` and validation of both families.
+  [EKS-NODECLASS]
+- Metadata and Pod Identity are served inside the guest. Do not assume
+  node NetworkPolicy filters these surrogate endpoints. Use a dedicated
+  sandbox service account with no Pod Identity association or IRSA role,
+  reject unexpected credential injection, and test the endpoints.
+  With the current executor this means the default service account in
+  a dedicated sandbox namespace; a configurable service-account name
+  would need a separately specified API change.
+  `automountServiceAccountToken: false` alone does not settle AWS
+  credential exposure. [EKS-METADATA]
 
-- **Wait until enforced.** Retry over a bounded settle window. Pass on
-  the first refused or timed-out attempt; fail only if every attempt
-  connects. This also guarantees the policy is in force before the
-  model's first command, which the current ordering does not guarantee
-  on a platform that reconciles late.
-- **Add a positive control in `allowlist` mode.** The proxy port must
-  connect. Without it, "everything refused" could mean the network is
-  simply down.
-- **Choose the forbidden destination deliberately.** Options: the API
-  server Service (`KUBERNETES_SERVICE_HOST`, injected into every
-  container), or a second listener on `stirrup egress-proxy` that no
-  policy ever allows. The second is routable in every cluster the
-  proxy runs in and does not depend on how a network plugin treats the
-  API server, but exists only in `allowlist` deployments.
-- **Decide how the probe makes a TCP connection** (open decision 4).
+Validate startup, steady state, policy changes and shutdown, including
+node loss, on each supported platform. Until then Nitro `allowlist` is
+rejected, not enabled with a warning.
 
-Because this changes behaviour for existing gVisor and Kata users, and
-would fail every run on the kind dev cluster, it is its own pull
-request. Validate it on the GKE Dataplane V2 cluster Stirrup already
-tests against and on an enforcing CNI in kind before merging.
+### Teardown and failed construction
 
-Until it lands, the documentation must say plainly that `allowlist`
-mode on EKS is confined only when NetworkPolicy enforcement is switched
-on, and the EKS recipe must include the step that switches it on.
+G14 is an unconditional lifecycle correction. Apply it to `Close`,
+readiness/verifier/admission failure, and ambiguous create responses.
+Do not remove policy while deletion failed or termination is uncertain.
+Use a bounded cleanup context independent of the canceled run and UID
+preconditions so retries cannot delete a replacement Pod. Reconcile a
+create timeout by the preselected name and ownership before cleanup.
+
+Prefer normal graceful deletion and retain confinement until workload
+termination is established. Force deletion followed by API `NotFound`
+is not evidence the guest stopped, especially with an unreachable node.
+[K8S-LIFECYCLE] On uncertainty retain the policy, report the orphan by
+run ID, and document an operator cleanup/reconciliation procedure with
+an owner. Do not attach a policy owner reference that removes it as soon
+as a force-deleted Pod object disappears. Test delete failure, node loss,
+cancellation, retry and no-policy-removal on ambiguous termination.
+
+
 
 ### Pod annotations (deferred until measured)
 
@@ -599,25 +679,26 @@ minutes.
 
 ## Pull request sequence
 
-Each pull request is independently mergeable and reviewer-gated in the
-usual way. Line references will have drifted; re-verify.
+PR 1 and PR 4 are independently mergeable. PR 2 and PR 3 merge together
+after their evidence gates; PR 5 requires a follow-up design. Line references will have drifted; re-verify.
 
 ### Step 0: live validation (no code; needs approval to spend)
 
 See [Live validation](#live-validation-paid-needs-approval). The
 findings are written back into this document. PR 1 and PR 4 do not
-depend on it. PR 2 can be drafted before the spike, but must not merge
-documentation claims the spike has not confirmed, and open decision 1
-must be settled before PR 2 is written.
+depend on it. PR 2 + PR 3 can be drafted before the spike, but must not merge until
+the handoff gates pass. The runtime name and explicit sizing are settled
+above. PR 4 must land before enabling Nitro.
 
 ### PR 1: readiness and admission checks for the `k8s` executor
 
-Closes G2, G13 and the RuntimeClass half of G6. No Nitro content; it
+Closes G2, G13, G14 and the admission-response half of G6. No Nitro content; it
 benefits every runtime and is reviewable without AWS knowledge.
 
 - `harness/internal/executor/k8s.go`: the readiness changes in
   [Readiness](#readiness); the admitted-RuntimeClass comparison;
   narrowed `classifyPodCreateError`.
+- Apply the teardown contract to Close and constructor rollback.
 - Unit tests for each terminal state, transient-error retry, the
   timeout message, and an admitted RuntimeClass that differs.
 - `docs/executors/k8s.md`: the troubleshooting row for the 60-second
@@ -628,7 +709,8 @@ benefits every runtime and is reviewable without AWS knowledge.
 
 ### PR 2: Nitro isolated runtime for the `k8s` executor
 
-Closes G1, G3, G4, G8. Depends on PR 1 and on open decisions 1 and 2.
+Closes G1, G3, G4, G8. Depends on PR 1, PR 4 and the handoff gates.
+Merge together with PR 3. Reject Nitro allowlist before cluster calls.
 
 - `types/runconfig.go`: add the value to `validK8sRuntimes`; reject
   `confidential-sandbox` (and, if the value is not the RuntimeClass
@@ -654,8 +736,8 @@ Closes G1, G3, G4, G8. Depends on PR 1 and on open decisions 1 and 2.
   `TestValidateRunConfig_RuntimeSetIsPerType`
   (`types/runconfig_test.go`); `types/runconfig_completions_test.go:56`
   pins each accessor to its map; Pod shape per profile (annotation only
-  for Nitro isolated with mode `none`; defaults only where requests are
-  empty; partial resources, CPU only or memory only; fractional CPU);
+  for Nitro isolated with mode `none`; missing or partial resources rejected; positive fractional CPU;
+  admitted resource mutation rejected);
   registry coverage; an example-RunConfig test following
   `TestExampleRunConfig_LoadsAndValidates_*` (`harness_test.go:1291`).
 - Docs and examples. Every place that lists the set:
@@ -666,10 +748,8 @@ Closes G1, G3, G4, G8. Depends on PR 1 and on open decisions 1 and 2.
   `examples/k8s/runtimeclass.yaml:3-7`;
   `examples/k8s/sample-sandbox-pod.yaml:50`; `examples/k8s/README.md:18`.
   New: an "EKS with Nitro Sandboxes" recipe in `docs/executors/k8s.md`
-  (including the enforcement switch and the statement that `allowlist`
-  mode is unconfined without it, the architecture pin, and the
-  requirement that the egress proxy runs in the sandbox namespace on an
-  ordinary runtime); the egress enforcement caveat extended from
+  (including first-release rejection of `allowlist`, the tested family
+  and architecture pins, IPv4 scope, and admission/identity prerequisites); the egress enforcement caveat extended from
   kindnet to EKS Auto Mode; `examples/runconfig/k8s-eks-nitro.json` and
   its entry in `examples/runconfig/README.md`.
 - Integration: make the suite exercise the annotation path, and add a
@@ -678,9 +758,8 @@ Closes G1, G3, G4, G8. Depends on PR 1 and on open decisions 1 and 2.
 
 ### PR 3: verify the runtime in force
 
-Closes the rest of G6 for Nitro isolated. Ship in the same release as
-PR 2 so there is no released version that accepts the runtime without
-verifying it.
+Adds the bounded runtime diagnostics for G6. Merge with PR 2; these
+checks do not attest the runtime against a malicious image.
 
 - Profile `verify` hook, called in `NewK8sExecutor` after readiness;
   the new security event and its plumbing.
@@ -693,21 +772,26 @@ verifying it.
 
 ### PR 4: read-only `--dry-run` for `k8s`
 
-Closes G11. Route the `k8s` and `k8s-sandbox` preflight through checks
-that create nothing: build the client, confirm the namespace is
-reachable and that the caller may create Pods and NetworkPolicies
-there. A RuntimeClass lookup is cluster-scoped and the reference Role
-cannot do it; either skip it or report it as "not checked". Independent
-of the Nitro work and can land at any point.
+Closes G11. Route both `k8s` and `k8s-sandbox` through metadata checks
+that never construct an executor or create Pods, Sandboxes or policies.
+Use namespaced reads and SelfSubjectAccessReview for the actual verbs
+needed by each executor, including `pods/exec`; `k8s-sandbox` needs
+Sandbox CR permissions, not merely Pod creation permission. Do not
+require `namespaces/get` or RuntimeClass reads: the reference Role does
+not grant these cluster-scoped permissions. Report unavailable optional
+checks as not checked, not success. Honor `--no-probe-executor` before
+client calls. Test that neither constructor nor persistent create/delete
+is invoked and that skip works for both executor types. Authorization
+review requests are allowed; they do not create a workload.
 
 ### PR 5: fail when egress policy is not enforced
 
-Closes G5 and the kindnet caveat, for every `k8s` runtime. Specified in
+Requires a reviewed follow-up design under
 [Detecting unenforced egress policy](#detecting-unenforced-egress-policy).
-Depends on open decisions 3 and 4. Measure G14 here and, if the window
-is real, make `Close` wait for the Pod to be gone before deleting the
-policy, as the `k8s-sandbox` executor already does
-(`agentsandbox.go:294-334`).
+Do not assign implementation until startup enforcement, DNS scope,
+credential paths, destination health and the image contract are settled.
+G14 is handled by PR 1, not deferred until a measured exploit window.
+Only this follow-up can enable Nitro `allowlist`.
 
 ### Conditional and later, each behind its own issue
 
@@ -730,8 +814,11 @@ the maintainer's approval, an AWS account, and credentials.
 
 Minimum environment, for roughly half a day:
 
-- One EKS Auto Mode cluster, Kubernetes 1.36 or later, in a US
-  commercial region.
+- One EKS Auto Mode cluster on a currently supported sandbox Kubernetes
+  version (minimum 1.36; recheck current support), in a verified US commercial
+  region. Record NodePool/NodeClass manifests, AMI/runtime version, IPv4
+  mode, tested family, image digest and controller settings. Check
+  current family exclusions and SMT/memory constraints. [EKS-LIMITS]
 - The standing objects from `examples/k8s/` (namespace, RBAC), and the
   egress proxy from `examples/k8s/egress-proxy/` deployed in the test
   namespace.
@@ -741,9 +828,10 @@ Minimum environment, for roughly half a day:
   isolated-sandbox`, so a capable node exists before the suite starts.
 
 The charges are the EKS cluster hourly fee, the Auto Mode management
-fee and one or two mid-sized EC2 instances. This should come to a few
-US dollars; confirm against current pricing before starting, and delete
-the cluster afterwards.
+fee and one or two mid-sized EC2 instances. Do not use the earlier unpriced "few dollars" estimate as a budget.
+Before provisioning, price the selected region/families, storage, NAT
+and load balancers as applicable; record a spending ceiling and named
+teardown owner. Delete all dedicated resources and verify cleanup.
 
 The integration suite cannot simply be pointed at the cluster. It
 builds `K8sExecutorConfig` directly and so bypasses the validation gap
@@ -765,7 +853,7 @@ builds `K8sExecutorConfig` directly and so bypasses the validation gap
   ten-minute limit; a timeout panics without running cleanup and
   leaves Pods and a node behind.
 
-Invocation, unmodified code:
+Baseline research invocation, unmodified code (not candidate release acceptance):
 
 ```sh
 cd harness
@@ -786,6 +874,11 @@ enforcement off (the Auto Mode default), where the egress tests are
 expected to fail and that failure is the finding; then with enforcement
 on.
 
+For the implementation candidate, run the supported offline cases and
+explicit rejection tests for Nitro allowlist. Networked baseline cases
+are research for V6/PR 5 and must not be required to pass on a candidate
+that intentionally rejects them. Record every skipped case and why.
+
 Three questions need hand-applied manifests, because `main` cannot
 express them: cold-start time (a Pod plus `kubectl wait
 --timeout=10m`, with and without a node present); the
@@ -798,18 +891,18 @@ on:
 
 | # | Question | Depends on it |
 |---|---|---|
-| V1 | Does the suite pass with the adjusted invocation (exec, 10 MB output, `tar` file I/O, process-group kill, timeouts)? | The verdict |
+| V1 | Do the supported offline suite cases pass (exec, bounded output, `tar` file I/O, process-group kill, timeouts), and does the candidate reject Nitro allowlist before cluster calls? | The verdict |
 | V2 | Does `exec` use WebSocket or the SPDY fallback (`k8s_execcore.go:432`) through the sandbox runtime? | Robustness |
 | V3 | Time to Ready with a node present, and with none. | Readiness ceiling; whether warm pools matter |
-| V4 | Guest size with no requests, with requests set, and with fractional CPU. | G3 defaults |
+| V4 | Guest size with no requests, with requests set, and with fractional CPU. | G3 explicit sizing |
 | V5 | With enforcement off, does a mode-`none` Pod reach the internet? With the annotation, does it not, and does `exec` still work? | G4, the design's central claim |
 | V6 | With enforcement off and on, can an `allowlist` Pod reach `169.254.169.254`, the Pod Identity endpoint, and an arbitrary internet host directly? How long after Pod start does enforcement begin? | G5, PR 5 |
-| V7 | Does `/sys/class/dmi/id/product_name` end in `.enclave` on every instance family the node pool can provision, including Graviton? | PR 3 verifier |
+| V7 | Does `/sys/class/dmi/id/product_name` end in `.enclave` on every amd64 instance family permitted by the initial recipe? Graviton is a later extension. | PR 3 verifier |
 | V8 | Is `ephemeral-storage` enforced inside the guest, and what does exceeding it look like? | G10 |
 | V9 | Wall-clock time for a representative `git clone` and dependency install through the egress proxy under default throttles. | G7 |
 | V10 | Do `activeDeadlineSeconds`, the owner reference and zero-grace deletion behave as on other runtimes? After deletion, how long does the guest keep running? | Lifecycle parity, G14 |
 | V11 | Does UID 65532 with `fsGroup` get a writable `/workspace` inside the guest? | PR 2 |
-| V12 | What is the mount type of the sandbox identity token directory inside the guest? | G12 |
+| V12 | What is the mount type of the sandbox identity token directory inside the guest? If unverified, reject Nitro sandboxIdentity configuration. | G12, conditional identity support |
 | V13 | Which regions actually offer the RuntimeClasses? | Documentation |
 
 Per the project's rule on negative claims, any documentation sentence
@@ -849,8 +942,8 @@ one capability here with no existing equivalent in Stirrup. It is
 recorded as a possible direction, not planned: no current deployment
 distrusts its own node operator.
 
-**Generating Cedar policies for the guest.** The in-guest policy can
-restrict `exec` only by command hash. Stirrup's own Cedar ring already
+**Generating Cedar policies for the guest.** AWS supports both command-hash rules and per-container unrestricted
+exec; policy generation is outside this first isolated-mode integration. Stirrup's own Cedar ring already
 gates tool calls before they reach the executor.
 
 **`ApplicationNetworkPolicy` instead of the egress proxy.** EKS Auto
@@ -862,61 +955,35 @@ mechanism.
 
 ## Open decisions
 
-For the maintainer. Each has a recommendation. Decision 1 blocks PR 2;
-the others block only the pull request named.
+The review adopted the runtime name, explicit sizing, offline-only first
+release and combined enablement/checks above. These no longer require
+agents to choose among alternatives.
 
-1. **What is the `executor.runtime` value?** This is the one choice
-   here that cannot be undone cheaply, because operators' RunConfigs
-   will contain it.
-   - `isolated-sandbox`: the RuntimeClass name AWS ships. Matches AWS's
-     documentation and keeps the value equal to the RuntimeClass name,
-     as it is for every existing value. But the name identifies no
-     vendor, and the profile attaches AWS-specific behaviour to it (an
-     `amazonaws.com` annotation, an `.enclave` check). Another platform
-     shipping a RuntimeClass of the same name would get that behaviour
-     and a verifier that always fails.
-   - `nitro-isolated` (or similar), mapped by the profile to
-     RuntimeClass `isolated-sandbox`. Names the technology, as `gvisor`
-     and `kata-fc` do. Validation rejects `isolated-sandbox` with a
-     message naming the right value, so an operator following AWS's
-     documentation is redirected at once.
+1. **Paid spike:** the owner must authorize an account, region, spend
+   ceiling and teardown owner. No approval is inferred from this review.
+2. **Supported deployment:** the spike owner must record tested family,
+   image digest, AWS/Kubernetes versions and region, then limit the
+   recipe to them. V8 and V12 determine disk and identity claims.
+3. **Networked follow-up:** settle the PR 5 contract before assigning
+   implementation, including the approved DNS exception, probe tooling
+   and fixture ownership. Do not add warning-only bypasses.
+4. **Typed build failures:** optional follow-up if a control plane needs
+   them. PR 3 emits scrubbed diagnostic events and build-error text.
 
-   Recommended: `nitro-isolated`. The existing values are technology
-   names that happen to coincide with conventional RuntimeClass names;
-   this keeps that meaning and leaves room for a later
-   `executor.k8sRuntimeClassName` override for clusters that rename
-   their classes.
-2. **Sizing when requests are empty on a guest-sized runtime (PR 2).**
-   Fill a default after a dry-run create, as designed above; or fail
-   with an error asking for `executor.resources` or a namespace
-   LimitRange. Recommended: fill the default and log it. Failing is
-   simpler to implement and stricter, but makes the minimal EKS
-   RunConfig fail, and the `k8s-sandbox` executor already fills
-   defaults.
-3. **PR 5 and the kind dev cluster.** Install an enforcing CNI in
-   `scripts/dev/kind-up.sh`; add an explicit development-only opt-out;
-   or apply the probe only to runtimes that claim isolation.
-   Recommended: an enforcing CNI in the dev cluster and no opt-out, so
-   the dev loop tests what production runs.
-4. **How the PR 5 probe opens a TCP connection.** Add a TCP client to
-   the sandbox image contract (a breaking change for existing images,
-   to be release-noted); or have the harness run the probe from a
-   short-lived second container; or skip the probe with a warning when
-   the image has no client. Recommended: decide after the spike shows
-   how large the unenforced window is. If it is zero on an enforcing
-   cluster, a skipped probe with a loud warning is tolerable; if not,
-   the contract change is justified.
-5. **Should a control plane be able to distinguish an isolation
-   verification failure from a configuration error?** Today both
-   arrive as build-error text. Recommended: not in PR 3; the security
-   event carries the distinction for operators, and a typed build error
-   can follow if a control plane asks for it.
-6. **Approve the paid spike?** Recommended: yes, before PR 2 merges.
-   PR 1 and PR 4 need no AWS validation and can proceed now.
+No remaining owner decision blocks PR 1 or PR 4. The paid spike and its
+results block Nitro enablement. Live measurements may require a design
+revision; agents must record it here before changing the agreed scope.
 
 ## Sources
 
-AWS documentation, read 2026-11-10:
+Additional review sources, read 2026-11-11:
+
+- [EKS-AUTO-NETPOL] <https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html>
+- [EKS-NODECLASS] <https://docs.aws.amazon.com/eks/latest/userguide/create-node-class.html>
+- [EKS-METADATA] <https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-metadata-credentials.html>
+- [K8S-LIFECYCLE] <https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-termination>
+
+AWS documentation, originally read 2026-11-10:
 
 - [WHATSNEW] <https://aws.amazon.com/about-aws/whats-new/2026/11/nitro-sandboxes-eks-ecs-ec2/>
 - [EC2] <https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html>
