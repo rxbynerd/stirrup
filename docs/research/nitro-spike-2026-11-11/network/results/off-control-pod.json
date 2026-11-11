@@ -1,0 +1,56 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "name": "nitro-network-probe",
+    "namespace": "nitro-spike",
+    "labels": {
+      "nitro-network-probe": "nitro-network-probe",
+      "nitro-spike-owned": "true"
+    }
+  },
+  "spec": {
+    "runtimeClassName": "isolated-sandbox",
+    "automountServiceAccountToken": false,
+    "activeDeadlineSeconds": 1200,
+    "terminationGracePeriodSeconds": 0,
+    "restartPolicy": "Never",
+    "nodeSelector": {
+      "kubernetes.io/arch": "amd64"
+    },
+    "containers": [
+      {
+        "name": "agent",
+        "image": "public.ecr.aws/docker/library/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4",
+        "command": [
+          "/bin/sh",
+          "-c",
+          "probe() {\n label=\"$1\"; url=\"$2\"\n start=$(date +%s)\n result=$(timeout 4 wget -S -T 2 -O /dev/null \"$url\" 2>&1)\n rc=$?\n status=$(printf '%s\\n' \"$result\" | awk 'index($1,\"HTTP/\")==1 {printf \"%s,\", $2}')\n printf 'probe=%s start=%s end=%s wget_rc=%s http_status=%s\\n' \"$label\" \"$start\" \"$(date +%s)\" \"$rc\" \"$status\"\n}\necho network-probe-start\nfor i in 1 2 3 4 5 6 7 8 9 10; do\n printf 'startup_iteration=%s ' \"$i\"\n probe internet_literal http://1.1.1.1/\n sleep 0.2\ndone\nsleep 1800\n"
+        ],
+        "resources": {
+          "requests": {
+            "cpu": "1",
+            "memory": "1Gi"
+          },
+          "limits": {
+            "cpu": "1",
+            "memory": "1Gi"
+          }
+        },
+        "securityContext": {
+          "runAsUser": 65532,
+          "runAsNonRoot": true,
+          "allowPrivilegeEscalation": false,
+          "capabilities": {
+            "drop": [
+              "ALL"
+            ]
+          },
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        }
+      }
+    ]
+  }
+}

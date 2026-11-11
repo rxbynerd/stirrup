@@ -1,0 +1,150 @@
+[
+    {
+        "Id": "vol-035bf28c3078b2781",
+        "State": "in-use",
+        "SizeGiB": 20,
+        "Type": "gp3",
+        "IOPS": 3000,
+        "Throughput": 125,
+        "Created": "2026-11-11T23:07:08.934000+00:00",
+        "Attachments": [
+            {
+                "Instance": "i-00de16c7f9f410e84",
+                "State": "attached"
+            }
+        ],
+        "Tags": [
+            {
+                "Key": "aws:ec2:managed-launch",
+                "Value": "eks-auto"
+            },
+            {
+                "Key": "kubernetes.io/cluster/equestrian-nitro-20261111",
+                "Value": "owned"
+            },
+            {
+                "Key": "eks:eks-cluster-name",
+                "Value": "equestrian-nitro-20261111"
+            },
+            {
+                "Key": "eks:kubernetes-node-class-name",
+                "Value": "nitro-deny"
+            },
+            {
+                "Key": "eks:kubernetes-node-pool-name",
+                "Value": "nitro-deny"
+            }
+        ]
+    },
+    {
+        "Id": "vol-0c1342db04cb80ade",
+        "State": "in-use",
+        "SizeGiB": 4,
+        "Type": "gp3",
+        "IOPS": 3000,
+        "Throughput": 125,
+        "Created": "2026-11-11T22:59:51.966000+00:00",
+        "Attachments": [
+            {
+                "Instance": "i-0a0a2ea59026805e3",
+                "State": "attached"
+            }
+        ],
+        "Tags": [
+            {
+                "Key": "eks:eks-cluster-name",
+                "Value": "equestrian-nitro-20261111"
+            },
+            {
+                "Key": "eks:kubernetes-node-class-name",
+                "Value": "nitro-spike"
+            },
+            {
+                "Key": "aws:ec2:managed-launch",
+                "Value": "eks-auto"
+            },
+            {
+                "Key": "eks:kubernetes-node-pool-name",
+                "Value": "nitro-spike"
+            },
+            {
+                "Key": "kubernetes.io/cluster/equestrian-nitro-20261111",
+                "Value": "owned"
+            }
+        ]
+    },
+    {
+        "Id": "vol-07bf4de945ec465c3",
+        "State": "in-use",
+        "SizeGiB": 20,
+        "Type": "gp3",
+        "IOPS": 3000,
+        "Throughput": 125,
+        "Created": "2026-11-11T22:59:50.808000+00:00",
+        "Attachments": [
+            {
+                "Instance": "i-0a0a2ea59026805e3",
+                "State": "attached"
+            }
+        ],
+        "Tags": [
+            {
+                "Key": "aws:ec2:managed-launch",
+                "Value": "eks-auto"
+            },
+            {
+                "Key": "eks:eks-cluster-name",
+                "Value": "equestrian-nitro-20261111"
+            },
+            {
+                "Key": "eks:kubernetes-node-class-name",
+                "Value": "nitro-spike"
+            },
+            {
+                "Key": "eks:kubernetes-node-pool-name",
+                "Value": "nitro-spike"
+            },
+            {
+                "Key": "kubernetes.io/cluster/equestrian-nitro-20261111",
+                "Value": "owned"
+            }
+        ]
+    },
+    {
+        "Id": "vol-09635816f8dae6b48",
+        "State": "in-use",
+        "SizeGiB": 4,
+        "Type": "gp3",
+        "IOPS": 3000,
+        "Throughput": 125,
+        "Created": "2026-11-11T23:07:08.933000+00:00",
+        "Attachments": [
+            {
+                "Instance": "i-00de16c7f9f410e84",
+                "State": "attached"
+            }
+        ],
+        "Tags": [
+            {
+                "Key": "aws:ec2:managed-launch",
+                "Value": "eks-auto"
+            },
+            {
+                "Key": "eks:kubernetes-node-pool-name",
+                "Value": "nitro-deny"
+            },
+            {
+                "Key": "kubernetes.io/cluster/equestrian-nitro-20261111",
+                "Value": "owned"
+            },
+            {
+                "Key": "eks:kubernetes-node-class-name",
+                "Value": "nitro-deny"
+            },
+            {
+                "Key": "eks:eks-cluster-name",
+                "Value": "equestrian-nitro-20261111"
+            }
+        ]
+    }
+]

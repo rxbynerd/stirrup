@@ -1,0 +1,18 @@
+=== RUN   TestNitroSpike_OutputDiagnostics
+=== RUN   TestNitroSpike_OutputDiagnostics/normal
+=== RUN   TestNitroSpike_OutputDiagnostics/normal/one_mib
+=== NAME  TestNitroSpike_OutputDiagnostics
+    nitro_spike_existing_test.go:38: stream method=GET request_upgrade= response_upgrade=websocket status=101 websocket_protocol=v5.channel.k8s.io error=<nil>
+=== NAME  TestNitroSpike_OutputDiagnostics/normal/one_mib
+    nitro_spike_existing_test.go:73: protocol=normal elapsed=2.189899709s stdout_bytes=1048576 error=<nil>
+=== RUN   TestNitroSpike_OutputDiagnostics/normal/original_cap_90s
+=== NAME  TestNitroSpike_OutputDiagnostics
+    nitro_spike_existing_test.go:38: stream method=GET request_upgrade= response_upgrade=websocket status=101 websocket_protocol=v5.channel.k8s.io error=<nil>
+=== NAME  TestNitroSpike_OutputDiagnostics/normal/original_cap_90s
+    nitro_spike_existing_test.go:84: protocol=normal elapsed=3.390326s retained_stdout_bytes=0 error=output exceeded 10 MB cap
+--- PASS: TestNitroSpike_OutputDiagnostics (5.58s)
+    --- PASS: TestNitroSpike_OutputDiagnostics/normal (5.58s)
+        --- PASS: TestNitroSpike_OutputDiagnostics/normal/one_mib (2.19s)
+        --- PASS: TestNitroSpike_OutputDiagnostics/normal/original_cap_90s (3.39s)
+PASS
+ok  	github.com/rxbynerd/stirrup/harness/internal/executor	6.316s

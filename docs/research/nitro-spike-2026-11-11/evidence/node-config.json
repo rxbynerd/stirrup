@@ -1,0 +1,87 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "eks.amazonaws.com/v1",
+      "kind": "NodeClass",
+      "metadata": {
+        "name": "nitro-spike"
+      },
+      "spec": {
+        "role": "equestrian-nitro-20261111-NodeRole",
+        "subnetSelectorTerms": [
+          {
+            "id": "subnet-0911178a21f1ba390"
+          },
+          {
+            "id": "subnet-074434360ca9acecb"
+          }
+        ],
+        "securityGroupSelectorTerms": [
+          {
+            "id": "sg-05acb3f45c2f2106b"
+          }
+        ],
+        "advancedNetworking": {
+          "associatePublicIPAddress": true
+        },
+        "networkPolicy": "DefaultAllow",
+        "ephemeralStorage": {
+          "size": "80Gi"
+        }
+      }
+    },
+    {
+      "apiVersion": "karpenter.sh/v1",
+      "kind": "NodePool",
+      "metadata": {
+        "name": "nitro-spike"
+      },
+      "spec": {
+        "template": {
+          "spec": {
+            "nodeClassRef": {
+              "group": "eks.amazonaws.com",
+              "kind": "NodeClass",
+              "name": "nitro-spike"
+            },
+            "requirements": [
+              {
+                "key": "node.kubernetes.io/instance-type",
+                "operator": "In",
+                "values": [
+                  "m5d.xlarge"
+                ]
+              },
+              {
+                "key": "kubernetes.io/arch",
+                "operator": "In",
+                "values": [
+                  "amd64"
+                ]
+              },
+              {
+                "key": "karpenter.sh/capacity-type",
+                "operator": "In",
+                "values": [
+                  "on-demand"
+                ]
+              }
+            ],
+            "expireAfter": "2h",
+            "terminationGracePeriod": "60s"
+          }
+        },
+        "limits": {
+          "cpu": "8",
+          "memory": "32Gi"
+        },
+        "disruption": {
+          "consolidationPolicy": "WhenEmpty",
+          "consolidateAfter": "30s"
+        }
+      }
+    }
+  ]
+}

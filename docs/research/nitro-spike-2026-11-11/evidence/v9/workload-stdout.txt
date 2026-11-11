@@ -1,0 +1,4 @@
+go_version=go version go1.27.3 linux/amd64
+git_version=git version 2.39.5
+proxy=http://stirrup-egress-proxy.nitro-spike.svc:8080
+started=2026-11-11T23:12:30Z

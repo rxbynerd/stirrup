@@ -1,0 +1,52 @@
+{
+  "at": "2026-11-11T23:20:51.059638+00:00",
+  "identity_account": "786874932855",
+  "results": [
+    {
+      "args": [
+        "ec2",
+        "describe-instances",
+        "--instance-ids",
+        "i-0a0a2ea59026805e3",
+        "--query",
+        "Reservations[].Instances[].{Id:InstanceId,State:State.Name,StateReason:StateTransitionReason,Launch:LaunchTime,Vpc:VpcId,PublicIP:PublicIpAddress,Volumes:BlockDeviceMappings[].Ebs.VolumeId}"
+      ],
+      "returncode": 0,
+      "stdout": [
+        {
+          "Id": "i-0a0a2ea59026805e3",
+          "State": "terminated",
+          "StateReason": "User initiated (2026-11-11 23:19:32 GMT)",
+          "Launch": "2026-11-11T22:59:50+00:00",
+          "Vpc": null,
+          "PublicIP": null,
+          "Volumes": []
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "args": [
+        "ec2",
+        "describe-instances",
+        "--instance-ids",
+        "i-00de16c7f9f410e84",
+        "--query",
+        "Reservations[].Instances[].{Id:InstanceId,State:State.Name,StateReason:StateTransitionReason,Launch:LaunchTime,Vpc:VpcId,PublicIP:PublicIpAddress,Volumes:BlockDeviceMappings[].Ebs.VolumeId}"
+      ],
+      "returncode": 0,
+      "stdout": [
+        {
+          "Id": "i-00de16c7f9f410e84",
+          "State": "terminated",
+          "StateReason": "User initiated (2026-11-11 23:11:45 GMT)",
+          "Launch": "2026-11-11T23:07:09+00:00",
+          "Vpc": null,
+          "PublicIP": null,
+          "Volumes": []
+        }
+      ],
+      "stderr": ""
+    }
+  ]
+}

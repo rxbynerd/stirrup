@@ -1,0 +1,16 @@
+{
+  "at": "2026-11-11T22:58:26.998540+00:00",
+  "command": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "create",
+    "-f",
+    "-"
+  ],
+  "seconds": 2.164154052734375,
+  "returncode": 0,
+  "stdout": "pod/nitro-offline created\n",
+  "stderr": ""
+}

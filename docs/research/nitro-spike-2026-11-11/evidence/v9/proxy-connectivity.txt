@@ -1,0 +1,18 @@
+Wed Nov 11 23:14:30 UTC 2026
+search nitro-spike.svc.cluster.local svc.cluster.local cluster.local ec2.internal
+nameserver 172.20.0.10
+options ndots:5
+Server:		172.20.0.10
+Address:	172.20.0.10:53
+
+Non-authoritative answer:
+
+Non-authoritative answer:
+Name:	github.com
+Address: 140.82.112.4
+
+Connecting to example.com (172.66.147.243:80)
+wget: download timed out
+Connecting to github.com (140.82.112.4:443)
+wget: download timed out
+command terminated with exit code 1

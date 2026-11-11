@@ -1,0 +1,17 @@
+{
+  "rc": 0,
+  "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+  "stderr": "",
+  "at": "2026-11-11T23:07:00.694034+00:00",
+  "elapsed": 0.8922437919536605,
+  "args": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "get",
+    "policyendpoints.networking.k8s.aws",
+    "-o",
+    "json"
+  ]
+}

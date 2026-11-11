@@ -1,0 +1,21 @@
+{
+  "rc": 0,
+  "stdout": "Wed Nov 11 23:07:51 UTC 2026\nuid=65532 gid=0(root) groups=0(root)\nInter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\ndummy0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n  eth0:     766       9    0    0    0     0          0         0     1056      10    0    0    0     0       0          0\nIface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT                                                       \neth0\t00000000\t0101FEA9\t0003\t0\t0\t0\t00000000\t0\t0\t0                                                                               \neth0\tE106570A\t00000000\t0005\t0\t0\t0\tFFFFFFFF\t0\t0\t0                                                                               \neth0\t0101FEA9\t00000000\t0005\t0\t0\t0\tFFFFFFFF\t0\t0\t0                                                                               \nprobe=internet_literal start=1794438471 end=1794438473 wget_rc=1 http_status=\nprobe=internet_dns start=1794438474 end=1794438476 wget_rc=1 http_status=\nprobe=imds_region start=1794438476 end=1794438476 wget_rc=1 http_status=401,\nprobe=pod_identity_root start=1794438476 end=1794438478 wget_rc=1 http_status=\n",
+  "stderr": "",
+  "at": "2026-11-11T23:07:59.088675+00:00",
+  "elapsed": 7.098596332943998,
+  "args": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "exec",
+    "nitro-network-probe",
+    "-c",
+    "agent",
+    "--",
+    "/bin/sh",
+    "-c",
+    "probe() {\n label=\"$1\"; url=\"$2\"\n start=$(date +%s)\n result=$(timeout 4 wget -S -T 2 -O /dev/null \"$url\" 2>&1)\n rc=$?\n status=$(printf '%s\\n' \"$result\" | awk 'index($1,\"HTTP/\")==1 {printf \"%s,\", $2}')\n printf 'probe=%s start=%s end=%s wget_rc=%s http_status=%s\\n' \"$label\" \"$start\" \"$(date +%s)\" \"$rc\" \"$status\"\n}\ndate -u; id; cat /proc/net/dev; cat /proc/net/route\nprobe internet_literal http://1.1.1.1/\nprobe internet_dns http://example.com/\nprobe imds_region http://169.254.169.254/latest/meta-data/placement/region\nprobe pod_identity_root http://169.254.170.23/\n"
+  ]
+}

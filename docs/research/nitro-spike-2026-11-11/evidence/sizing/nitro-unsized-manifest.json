@@ -1,0 +1,77 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "name": "nitro-unsized",
+    "namespace": "nitro-spike",
+    "labels": {
+      "app": "nitro-spike",
+      "nitro-spike-owned": "true"
+    },
+    "annotations": {
+      "sandbox.amazonaws.com/network-isolated": "true"
+    }
+  },
+  "spec": {
+    "runtimeClassName": "isolated-sandbox",
+    "restartPolicy": "Never",
+    "automountServiceAccountToken": false,
+    "activeDeadlineSeconds": 1200,
+    "terminationGracePeriodSeconds": 0,
+    "nodeSelector": {
+      "kubernetes.io/arch": "amd64"
+    },
+    "securityContext": {
+      "fsGroup": 65532
+    },
+    "volumes": [
+      {
+        "name": "workspace",
+        "emptyDir": {}
+      },
+      {
+        "name": "sandbox-identity",
+        "emptyDir": {
+          "medium": "Memory",
+          "sizeLimit": "64Ki"
+        }
+      }
+    ],
+    "containers": [
+      {
+        "name": "agent",
+        "image": "public.ecr.aws/docker/library/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4",
+        "imagePullPolicy": "IfNotPresent",
+        "command": [
+          "/bin/sh",
+          "-c",
+          "echo spike-started; sleep 3600"
+        ],
+        "workingDir": "/workspace",
+        "securityContext": {
+          "runAsNonRoot": true,
+          "runAsUser": 65532,
+          "allowPrivilegeEscalation": false,
+          "capabilities": {
+            "drop": [
+              "ALL"
+            ]
+          },
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "volumeMounts": [
+          {
+            "name": "workspace",
+            "mountPath": "/workspace"
+          },
+          {
+            "name": "sandbox-identity",
+            "mountPath": "/run/stirrup/sandbox-identity"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,589 @@
+{
+  "at": "2026-11-11T23:25:47.825107+00:00",
+  "account": "786874932855",
+  "results": [
+    {
+      "section": "exact_vpc",
+      "at": "2026-11-11T23:25:47.715024+00:00",
+      "args": [
+        "ec2",
+        "describe-vpcs",
+        "--vpc-ids",
+        "vpc-028a9b46aba88edba"
+      ],
+      "returncode": 254,
+      "data": null,
+      "error": "aws: [ERROR]: An error occurred (InvalidVpcID.NotFound) when calling the DescribeVpcs operation: The vpc ID 'vpc-028a9b46aba88edba' does not exist"
+    },
+    {
+      "section": "stack_arn",
+      "at": "2026-11-11T23:25:47.694353+00:00",
+      "args": [
+        "cloudformation",
+        "describe-stacks",
+        "--stack-name",
+        "arn:aws:cloudformation:us-east-1:786874932855:stack/equestrian-nitro-20261111/678bd3a0-de21-11f1-95c7-0effc37cb1c7",
+        "--query",
+        "Stacks[].{Id:StackId,Status:StackStatus,Created:CreationTime,Deleted:DeletionTime}"
+      ],
+      "returncode": 0,
+      "data": [
+        {
+          "Id": "arn:aws:cloudformation:us-east-1:786874932855:stack/equestrian-nitro-20261111/678bd3a0-de21-11f1-95c7-0effc37cb1c7",
+          "Status": "DELETE_COMPLETE",
+          "Created": "2026-11-11T22:44:07.840000+00:00",
+          "Deleted": "2026-11-11T23:20:16.810000+00:00"
+        }
+      ],
+      "error": ""
+    },
+    {
+      "section": "stack_events",
+      "at": "2026-11-11T23:25:47.824942+00:00",
+      "args": [
+        "cloudformation",
+        "describe-stack-events",
+        "--stack-name",
+        "arn:aws:cloudformation:us-east-1:786874932855:stack/equestrian-nitro-20261111/678bd3a0-de21-11f1-95c7-0effc37cb1c7",
+        "--query",
+        "StackEvents[].{At:Timestamp,Logical:LogicalResourceId,Type:ResourceType,Status:ResourceStatus,Reason:ResourceStatusReason}"
+      ],
+      "returncode": 0,
+      "data": [
+        {
+          "At": "2026-11-11T23:24:46.884000+00:00",
+          "Logical": "equestrian-nitro-20261111",
+          "Type": "AWS::CloudFormation::Stack",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:46.379000+00:00",
+          "Logical": "Vpc",
+          "Type": "AWS::EC2::VPC",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:44.695000+00:00",
+          "Logical": "Vpc",
+          "Type": "AWS::EC2::VPC",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:44.340000+00:00",
+          "Logical": "SubnetA",
+          "Type": "AWS::EC2::Subnet",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:43.978000+00:00",
+          "Logical": "RouteTable",
+          "Type": "AWS::EC2::RouteTable",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:42.998000+00:00",
+          "Logical": "SubnetB",
+          "Type": "AWS::EC2::Subnet",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:42.730000+00:00",
+          "Logical": "RouteTable",
+          "Type": "AWS::EC2::RouteTable",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:42.689000+00:00",
+          "Logical": "SubnetA",
+          "Type": "AWS::EC2::Subnet",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:42.367000+00:00",
+          "Logical": "SubnetARouteAssociation",
+          "Type": "AWS::EC2::SubnetRouteTableAssociation",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:41.400000+00:00",
+          "Logical": "SubnetB",
+          "Type": "AWS::EC2::Subnet",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:41.071000+00:00",
+          "Logical": "SubnetBRouteAssociation",
+          "Type": "AWS::EC2::SubnetRouteTableAssociation",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:35.882000+00:00",
+          "Logical": "ClusterRole",
+          "Type": "AWS::IAM::Role",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:35.504000+00:00",
+          "Logical": "NodeRole",
+          "Type": "AWS::IAM::Role",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:34.662000+00:00",
+          "Logical": "InternetGateway",
+          "Type": "AWS::EC2::InternetGateway",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:33.246000+00:00",
+          "Logical": "InternetGateway",
+          "Type": "AWS::EC2::InternetGateway",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:32.919000+00:00",
+          "Logical": "GatewayAttachment",
+          "Type": "AWS::EC2::VPCGatewayAttachment",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:31.711000+00:00",
+          "Logical": "GatewayAttachment",
+          "Type": "AWS::EC2::VPCGatewayAttachment",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:31.271000+00:00",
+          "Logical": "DefaultRoute",
+          "Type": "AWS::EC2::Route",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:24.807000+00:00",
+          "Logical": "SubnetBRouteAssociation",
+          "Type": "AWS::EC2::SubnetRouteTableAssociation",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:24.790000+00:00",
+          "Logical": "SubnetARouteAssociation",
+          "Type": "AWS::EC2::SubnetRouteTableAssociation",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:24.782000+00:00",
+          "Logical": "DefaultRoute",
+          "Type": "AWS::EC2::Route",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:24.777000+00:00",
+          "Logical": "NodeRole",
+          "Type": "AWS::IAM::Role",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:24.777000+00:00",
+          "Logical": "ClusterRole",
+          "Type": "AWS::IAM::Role",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:24:24.428000+00:00",
+          "Logical": "Cluster",
+          "Type": "AWS::EKS::Cluster",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:20:21.179000+00:00",
+          "Logical": "Cluster",
+          "Type": "AWS::EKS::Cluster",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:20:20.845000+00:00",
+          "Logical": "NodeAccessEntry",
+          "Type": "AWS::EKS::AccessEntry",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:20:20.659000+00:00",
+          "Logical": "AdminAccessEntry",
+          "Type": "AWS::EKS::AccessEntry",
+          "Status": "DELETE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:20:19.364000+00:00",
+          "Logical": "AdminAccessEntry",
+          "Type": "AWS::EKS::AccessEntry",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:20:19.348000+00:00",
+          "Logical": "NodeAccessEntry",
+          "Type": "AWS::EKS::AccessEntry",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T23:20:16.810000+00:00",
+          "Logical": "equestrian-nitro-20261111",
+          "Type": "AWS::CloudFormation::Stack",
+          "Status": "DELETE_IN_PROGRESS",
+          "Reason": "User Initiated"
+        },
+        {
+          "At": "2026-11-11T22:57:54.273000+00:00",
+          "Logical": "equestrian-nitro-20261111",
+          "Type": "AWS::CloudFormation::Stack",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:57:52.854000+00:00",
+          "Logical": "NodeAccessEntry",
+          "Type": "AWS::EKS::AccessEntry",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:57:52.696000+00:00",
+          "Logical": "AdminAccessEntry",
+          "Type": "AWS::EKS::AccessEntry",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:57:51.741000+00:00",
+          "Logical": "NodeAccessEntry",
+          "Type": "AWS::EKS::AccessEntry",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Resource creation Initiated"
+        },
+        {
+          "At": "2026-11-11T22:57:51.607000+00:00",
+          "Logical": "AdminAccessEntry",
+          "Type": "AWS::EKS::AccessEntry",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Resource creation Initiated"
+        },
+        {
+          "At": "2026-11-11T22:57:49.763000+00:00",
+          "Logical": "NodeAccessEntry",
+          "Type": "AWS::EKS::AccessEntry",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:57:49.518000+00:00",
+          "Logical": "AdminAccessEntry",
+          "Type": "AWS::EKS::AccessEntry",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:57:49.131000+00:00",
+          "Logical": "Cluster",
+          "Type": "AWS::EKS::Cluster",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:43.509000+00:00",
+          "Logical": "Cluster",
+          "Type": "AWS::EKS::Cluster",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Resource creation Initiated"
+        },
+        {
+          "At": "2026-11-11T22:44:40.148000+00:00",
+          "Logical": "Cluster",
+          "Type": "AWS::EKS::Cluster",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:39.512000+00:00",
+          "Logical": "DefaultRoute",
+          "Type": "AWS::EC2::Route",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:38.975000+00:00",
+          "Logical": "DefaultRoute",
+          "Type": "AWS::EC2::Route",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Resource creation Initiated"
+        },
+        {
+          "At": "2026-11-11T22:44:37.708000+00:00",
+          "Logical": "DefaultRoute",
+          "Type": "AWS::EC2::Route",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:37.366000+00:00",
+          "Logical": "RouteTable",
+          "Type": "AWS::EC2::RouteTable",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:32.326000+00:00",
+          "Logical": "ClusterRole",
+          "Type": "AWS::IAM::Role",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:32.259000+00:00",
+          "Logical": "SubnetBRouteAssociation",
+          "Type": "AWS::EC2::SubnetRouteTableAssociation",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:32.245000+00:00",
+          "Logical": "SubnetARouteAssociation",
+          "Type": "AWS::EC2::SubnetRouteTableAssociation",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:31.634000+00:00",
+          "Logical": "SubnetARouteAssociation",
+          "Type": "AWS::EC2::SubnetRouteTableAssociation",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Resource creation Initiated"
+        },
+        {
+          "At": "2026-11-11T22:44:31.625000+00:00",
+          "Logical": "SubnetBRouteAssociation",
+          "Type": "AWS::EC2::SubnetRouteTableAssociation",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Resource creation Initiated"
+        },
+        {
+          "At": "2026-11-11T22:44:30.431000+00:00",
+          "Logical": "NodeRole",
+          "Type": "AWS::IAM::Role",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:30.416000+00:00",
+          "Logical": "SubnetBRouteAssociation",
+          "Type": "AWS::EC2::SubnetRouteTableAssociation",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:30.383000+00:00",
+          "Logical": "SubnetARouteAssociation",
+          "Type": "AWS::EC2::SubnetRouteTableAssociation",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:30.067000+00:00",
+          "Logical": "SubnetB",
+          "Type": "AWS::EC2::Subnet",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:30.050000+00:00",
+          "Logical": "SubnetA",
+          "Type": "AWS::EC2::Subnet",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:28.632000+00:00",
+          "Logical": "InternetGateway",
+          "Type": "AWS::EC2::InternetGateway",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:28.281000+00:00",
+          "Logical": "GatewayAttachment",
+          "Type": "AWS::EC2::VPCGatewayAttachment",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:27.147000+00:00",
+          "Logical": "RouteTable",
+          "Type": "AWS::EC2::RouteTable",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Eventual consistency check initiated"
+        },
+        {
+          "At": "2026-11-11T22:44:26.635000+00:00",
+          "Logical": "SubnetA",
+          "Type": "AWS::EC2::Subnet",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Resource creation Initiated"
+        },
+        {
+          "At": "2026-11-11T22:44:26.587000+00:00",
+          "Logical": "RouteTable",
+          "Type": "AWS::EC2::RouteTable",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Resource creation Initiated"
+        },
+        {
+          "At": "2026-11-11T22:44:26.576000+00:00",
+          "Logical": "SubnetB",
+          "Type": "AWS::EC2::Subnet",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Resource creation Initiated"
+        },
+        {
+          "At": "2026-11-11T22:44:26.438000+00:00",
+          "Logical": "GatewayAttachment",
+          "Type": "AWS::EC2::VPCGatewayAttachment",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Resource creation Initiated"
+        },
+        {
+          "At": "2026-11-11T22:44:25.629000+00:00",
+          "Logical": "GatewayAttachment",
+          "Type": "AWS::EC2::VPCGatewayAttachment",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:25.613000+00:00",
+          "Logical": "SubnetB",
+          "Type": "AWS::EC2::Subnet",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:25.586000+00:00",
+          "Logical": "SubnetA",
+          "Type": "AWS::EC2::Subnet",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:25.578000+00:00",
+          "Logical": "RouteTable",
+          "Type": "AWS::EC2::RouteTable",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:25.232000+00:00",
+          "Logical": "Vpc",
+          "Type": "AWS::EC2::VPC",
+          "Status": "CREATE_COMPLETE",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:14.186000+00:00",
+          "Logical": "ClusterRole",
+          "Type": "AWS::IAM::Role",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Resource creation Initiated"
+        },
+        {
+          "At": "2026-11-11T22:44:13.346000+00:00",
+          "Logical": "Vpc",
+          "Type": "AWS::EC2::VPC",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Resource creation Initiated"
+        },
+        {
+          "At": "2026-11-11T22:44:13.235000+00:00",
+          "Logical": "InternetGateway",
+          "Type": "AWS::EC2::InternetGateway",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Eventual consistency check initiated"
+        },
+        {
+          "At": "2026-11-11T22:44:12.712000+00:00",
+          "Logical": "NodeRole",
+          "Type": "AWS::IAM::Role",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Resource creation Initiated"
+        },
+        {
+          "At": "2026-11-11T22:44:12.691000+00:00",
+          "Logical": "InternetGateway",
+          "Type": "AWS::EC2::InternetGateway",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "Resource creation Initiated"
+        },
+        {
+          "At": "2026-11-11T22:44:11.890000+00:00",
+          "Logical": "ClusterRole",
+          "Type": "AWS::IAM::Role",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:11.830000+00:00",
+          "Logical": "NodeRole",
+          "Type": "AWS::IAM::Role",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:11.823000+00:00",
+          "Logical": "Vpc",
+          "Type": "AWS::EC2::VPC",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:11.807000+00:00",
+          "Logical": "InternetGateway",
+          "Type": "AWS::EC2::InternetGateway",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": null
+        },
+        {
+          "At": "2026-11-11T22:44:07.840000+00:00",
+          "Logical": "equestrian-nitro-20261111",
+          "Type": "AWS::CloudFormation::Stack",
+          "Status": "CREATE_IN_PROGRESS",
+          "Reason": "User Initiated"
+        }
+      ],
+      "error": ""
+    }
+  ]
+}

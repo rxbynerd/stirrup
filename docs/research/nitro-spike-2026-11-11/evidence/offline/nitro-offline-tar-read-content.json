@@ -1,0 +1,20 @@
+{
+  "at": "2026-11-11T23:00:46.857749+00:00",
+  "command": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "exec",
+    "nitro-offline",
+    "-c",
+    "agent",
+    "--",
+    "cat",
+    "/workspace/roundtrip.bin"
+  ],
+  "seconds": 1.0893821716308594,
+  "returncode": 0,
+  "stdout": "ASCII\nUTF8: \u4e16\u754c\nNUL:\u0000after\n",
+  "stderr": ""
+}

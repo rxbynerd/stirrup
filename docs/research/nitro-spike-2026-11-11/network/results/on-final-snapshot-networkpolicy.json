@@ -1,0 +1,17 @@
+{
+  "rc": 0,
+  "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [\n        {\n            \"apiVersion\": \"networking.k8s.io/v1\",\n            \"kind\": \"NetworkPolicy\",\n            \"metadata\": {\n                \"annotations\": {\n                    \"kubectl.kubernetes.io/last-applied-configuration\": \"{\\\"apiVersion\\\":\\\"networking.k8s.io/v1\\\",\\\"kind\\\":\\\"NetworkPolicy\\\",\\\"metadata\\\":{\\\"annotations\\\":{},\\\"labels\\\":{\\\"nitro-spike-owned\\\":\\\"true\\\"},\\\"name\\\":\\\"nitro-network-probe\\\",\\\"namespace\\\":\\\"nitro-spike\\\"},\\\"spec\\\":{\\\"egress\\\":[{\\\"ports\\\":[{\\\"port\\\":53,\\\"protocol\\\":\\\"UDP\\\"},{\\\"port\\\":53,\\\"protocol\\\":\\\"TCP\\\"}]},{\\\"ports\\\":[{\\\"port\\\":8080,\\\"protocol\\\":\\\"TCP\\\"}],\\\"to\\\":[{\\\"podSelector\\\":{\\\"matchLabels\\\":{\\\"app\\\":\\\"stirrup-egress-proxy\\\"}}}]}],\\\"podSelector\\\":{\\\"matchLabels\\\":{\\\"nitro-network-probe\\\":\\\"nitro-network-probe\\\"}},\\\"policyTypes\\\":[\\\"Egress\\\"]}}\\n\"\n                },\n                \"creationTimestamp\": \"2026-11-11T23:04:11Z\",\n                \"finalizers\": [\n                    \"networking.k8s.aws/resources\"\n                ],\n                \"generation\": 1,\n                \"labels\": {\n                    \"nitro-spike-owned\": \"true\"\n                },\n                \"name\": \"nitro-network-probe\",\n                \"namespace\": \"nitro-spike\",\n                \"resourceVersion\": \"3953\",\n                \"uid\": \"bbd09a2a-64e8-4206-a16e-12233905b4c4\"\n            },\n            \"spec\": {\n                \"egress\": [\n                    {\n                        \"ports\": [\n                            {\n                                \"port\": 53,\n                                \"protocol\": \"UDP\"\n                            },\n                            {\n                                \"port\": 53,\n                                \"protocol\": \"TCP\"\n                            }\n                        ]\n                    },\n                    {\n                        \"ports\": [\n                            {\n                                \"port\": 8080,\n                                \"protocol\": \"TCP\"\n                            }\n                        ],\n                        \"to\": [\n                            {\n                                \"podSelector\": {\n                                    \"matchLabels\": {\n                                        \"app\": \"stirrup-egress-proxy\"\n                                    }\n                                }\n                            }\n                        ]\n                    }\n                ],\n                \"podSelector\": {\n                    \"matchLabels\": {\n                        \"nitro-network-probe\": \"nitro-network-probe\"\n                    }\n                },\n                \"policyTypes\": [\n                    \"Egress\"\n                ]\n            }\n        }\n    ],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+  "stderr": "",
+  "at": "2026-11-11T23:04:20.680452+00:00",
+  "elapsed": 0.5933677920838818,
+  "args": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "get",
+    "networkpolicy",
+    "-o",
+    "json"
+  ]
+}

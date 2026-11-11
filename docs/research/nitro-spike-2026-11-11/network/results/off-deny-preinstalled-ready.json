@@ -1,0 +1,17 @@
+{
+  "rc": 0,
+  "stdout": "pod/nitro-network-probe condition met\n",
+  "stderr": "",
+  "at": "2026-11-11T23:01:50.369962+00:00",
+  "elapsed": 6.833138959016651,
+  "args": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "wait",
+    "pod/nitro-network-probe",
+    "--for=condition=Ready",
+    "--timeout=300s"
+  ]
+}

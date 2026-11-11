@@ -1,0 +1,17 @@
+{
+  "rc": 0,
+  "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [\n        {\n            \"apiVersion\": \"networking.k8s.aws/v1alpha1\",\n            \"kind\": \"PolicyEndpoint\",\n            \"metadata\": {\n                \"annotations\": {\n                    \"networking.k8s.aws/last-change-trigger-time\": \"2026-11-11T23:02:38.445413391Z\"\n                },\n                \"creationTimestamp\": \"2026-11-11T23:02:38Z\",\n                \"generateName\": \"nitro-network-probe-\",\n                \"generation\": 1,\n                \"name\": \"nitro-network-probe-gnv5l\",\n                \"namespace\": \"nitro-spike\",\n                \"ownerReferences\": [\n                    {\n                        \"apiVersion\": \"networking.k8s.io/v1\",\n                        \"blockOwnerDeletion\": true,\n                        \"controller\": true,\n                        \"kind\": \"NetworkPolicy\",\n                        \"name\": \"nitro-network-probe\",\n                        \"uid\": \"d5acc7f6-92af-4892-9070-9fac17bfb690\"\n                    }\n                ],\n                \"resourceVersion\": \"3375\",\n                \"uid\": \"dac5f318-2a52-4d44-90f1-965a0ddafae3\"\n            },\n            \"spec\": {\n                \"egress\": [\n                    {\n                        \"cidr\": \"0.0.0.0/0\",\n                        \"ports\": [\n                            {\n                                \"port\": 53,\n                                \"protocol\": \"UDP\"\n                            },\n                            {\n                                \"port\": 53,\n                                \"protocol\": \"TCP\"\n                            }\n                        ]\n                    },\n                    {\n                        \"cidr\": \"::/0\",\n                        \"ports\": [\n                            {\n                                \"port\": 53,\n                                \"protocol\": \"UDP\"\n                            },\n                            {\n                                \"port\": 53,\n                                \"protocol\": \"TCP\"\n                            }\n                        ]\n                    }\n                ],\n                \"podIsolation\": [\n                    \"Egress\"\n                ],\n                \"podSelector\": {\n                    \"matchLabels\": {\n                        \"nitro-network-probe\": \"nitro-network-probe\"\n                    }\n                },\n                \"podSelectorEndpoints\": [\n                    {\n                        \"hostIP\": \"10.87.22.170\",\n                        \"name\": \"nitro-network-probe\",\n                        \"namespace\": \"nitro-spike\",\n                        \"podIP\": \"10.87.18.2\"\n                    }\n                ],\n                \"policyRef\": {\n                    \"name\": \"nitro-network-probe\",\n                    \"namespace\": \"nitro-spike\"\n                }\n            }\n        }\n    ],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+  "stderr": "",
+  "at": "2026-11-11T23:03:02.892129+00:00",
+  "elapsed": 1.1598147499607876,
+  "args": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "get",
+    "policyendpoints.networking.k8s.aws",
+    "-o",
+    "json"
+  ]
+}

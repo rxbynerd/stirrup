@@ -1,0 +1,76 @@
+{
+    "cluster": {
+        "name": "equestrian-nitro-20261111",
+        "arn": "arn:aws:eks:us-east-1:786874932855:cluster/equestrian-nitro-20261111",
+        "createdAt": "2026-11-11T22:44:43.169000+00:00",
+        "version": "1.36",
+        "endpoint": "https://1211FB68275F014FAB8919F35A81FD4A.gr7.us-east-1.eks.amazonaws.com",
+        "roleArn": "arn:aws:iam::786874932855:role/equestrian-nitro-20261111-ClusterRole",
+        "resourcesVpcConfig": {
+            "subnetIds": [
+                "subnet-0911178a21f1ba390",
+                "subnet-074434360ca9acecb"
+            ],
+            "securityGroupIds": [],
+            "vpcId": "vpc-028a9b46aba88edba",
+            "endpointPublicAccess": true,
+            "endpointPrivateAccess": true,
+            "publicAccessCidrs": [
+                "0.0.0.0/0"
+            ]
+        },
+        "kubernetesNetworkConfig": {
+            "serviceIpv4Cidr": "172.20.0.0/16",
+            "ipFamily": "ipv4",
+            "elasticLoadBalancing": {
+                "enabled": true
+            }
+        },
+        "logging": {
+            "clusterLogging": [
+                {
+                    "types": [
+                        "api",
+                        "audit",
+                        "authenticator",
+                        "controllerManager",
+                        "scheduler"
+                    ],
+                    "enabled": false
+                }
+            ]
+        },
+        "status": "CREATING",
+        "certificateAuthority": {},
+        "platformVersion": "eks.17",
+        "tags": {
+            "Project": "equestrian-nitro-spike",
+            "aws:cloudformation:stack-name": "equestrian-nitro-20261111",
+            "Owner": "Codex",
+            "aws:cloudformation:stack-id": "arn:aws:cloudformation:us-east-1:786874932855:stack/equestrian-nitro-20261111/678bd3a0-de21-11f1-95c7-0effc37cb1c7",
+            "aws:cloudformation:logical-id": "Cluster",
+            "Expires": "2026-11-11",
+            "ExpiresAt": "2026-11-12T00:45:00Z",
+            "Name": "equestrian-nitro-20261111-cluster"
+        },
+        "accessConfig": {
+            "authenticationMode": "API"
+        },
+        "upgradePolicy": {
+            "supportType": "EXTENDED"
+        },
+        "computeConfig": {
+            "enabled": true,
+            "nodePools": []
+        },
+        "storageConfig": {
+            "blockStorage": {
+                "enabled": true
+            }
+        },
+        "deletionProtection": false,
+        "controlPlaneScalingConfig": {
+            "tier": "standard"
+        }
+    }
+}

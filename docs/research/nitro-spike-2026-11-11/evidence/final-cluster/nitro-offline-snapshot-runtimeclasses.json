@@ -1,0 +1,17 @@
+{
+  "at": "2026-11-11T23:19:22.368870+00:00",
+  "command": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "get",
+    "runtimeclasses",
+    "-o",
+    "json"
+  ],
+  "seconds": 0.661992073059082,
+  "returncode": 0,
+  "stdout": "{\n    \"apiVersion\": \"v1\",\n    \"items\": [\n        {\n            \"apiVersion\": \"node.k8s.io/v1\",\n            \"handler\": \"confidential-sandbox\",\n            \"kind\": \"RuntimeClass\",\n            \"metadata\": {\n                \"creationTimestamp\": \"2026-11-11T22:55:08Z\",\n                \"name\": \"confidential-sandbox\",\n                \"resourceVersion\": \"971\",\n                \"uid\": \"422b79fd-bb40-4dfb-8615-c1c295ea1f5a\"\n            },\n            \"overhead\": {\n                \"podFixed\": {\n                    \"eks.amazonaws.com/nitro-sandbox\": \"1\",\n                    \"memory\": \"512Mi\"\n                }\n            },\n            \"scheduling\": {\n                \"nodeSelector\": {\n                    \"eks.amazonaws.com/nitro-sandbox\": \"true\"\n                }\n            }\n        },\n        {\n            \"apiVersion\": \"node.k8s.io/v1\",\n            \"handler\": \"isolated-sandbox\",\n            \"kind\": \"RuntimeClass\",\n            \"metadata\": {\n                \"creationTimestamp\": \"2026-11-11T22:55:08Z\",\n                \"name\": \"isolated-sandbox\",\n                \"resourceVersion\": \"970\",\n                \"uid\": \"a0da28bd-4270-45b8-a202-a90007396c2c\"\n            },\n            \"overhead\": {\n                \"podFixed\": {\n                    \"eks.amazonaws.com/nitro-sandbox\": \"1\",\n                    \"memory\": \"256Mi\"\n                }\n            },\n            \"scheduling\": {\n                \"nodeSelector\": {\n                    \"eks.amazonaws.com/nitro-sandbox\": \"true\"\n                }\n            }\n        }\n    ],\n    \"kind\": \"List\",\n    \"metadata\": {\n        \"resourceVersion\": \"\"\n    }\n}\n",
+  "stderr": ""
+}

@@ -1,0 +1,5 @@
+{
+  "observed": "NotFound",
+  "namespace": "kube-system",
+  "name": "amazon-vpc-cni"
+}

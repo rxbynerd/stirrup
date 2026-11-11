@@ -1,0 +1,10 @@
+{
+  "SubnetA": "subnet-0911178a21f1ba390",
+  "SubnetB": "subnet-074434360ca9acecb",
+  "VpcId": "vpc-028a9b46aba88edba",
+  "NodeRoleArn": "arn:aws:iam::786874932855:role/equestrian-nitro-20261111-NodeRole",
+  "ClusterName": "equestrian-nitro-20261111",
+  "ClusterSecurityGroupId": "sg-05acb3f45c2f2106b",
+  "SubnetIds": "subnet-0911178a21f1ba390,subnet-074434360ca9acecb",
+  "NodeRoleName": "equestrian-nitro-20261111-NodeRole"
+}

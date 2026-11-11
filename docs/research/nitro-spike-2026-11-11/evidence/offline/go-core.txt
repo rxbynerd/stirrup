@@ -1,0 +1,35 @@
+=== RUN   TestNitroSpike_ExistingPod
+=== RUN   TestNitroSpike_ExistingPod/exec
+=== RUN   TestNitroSpike_ExistingPod/forced_spdy
+=== RUN   TestNitroSpike_ExistingPod/tar
+=== RUN   TestNitroSpike_ExistingPod/output_cap
+E1111 23:01:23.683923   72266 v2.go:168] "Copying stderr failed" err="next reader: read tcp 10.113.7.195:61836->34.239.224.68:443: use of closed network connection" logger="UnhandledError"
+E1111 23:01:23.683945   72266 v2.go:151] "Copying stdout failed" err="next reader: read tcp 10.113.7.195:61836->34.239.224.68:443: use of closed network connection" logger="UnhandledError"
+E1111 23:01:24.028437   72266 websocket.go:521] "Websocket Ping failed" err="set tcp 10.113.7.195:61836: use of closed network connection"
+2026/11/11 23:01:24 WARN k8s executor could not kill timed-out command pod=nitro-offline err="command terminated with exit code 3" stderr="stirrup-kill: line 1: can't open /tmp/.stirrup-exec-b1e44255f88c77a8.pid: no such file"
+    nitro_spike_existing_test.go:85: 
+        	Error Trace:	/Users/rubynerd/Developer/stirrup/harness/internal/executor/nitro_spike_existing_test.go:85
+        	Error:      	Target error should be in err chain:
+        	            	expected: "output exceeded 10 MB cap"
+        	            	in chain: "command timed out after 30s: context deadline exceeded"
+        	            		"command timed out"
+        	            		"context deadline exceeded"
+        	Test:       	TestNitroSpike_ExistingPod/output_cap
+=== RUN   TestNitroSpike_ExistingPod/timeout_process_tree
+E1111 23:01:26.243345   72266 v2.go:168] "Copying stderr failed" err="next reader: read tcp 10.113.7.195:61950->34.239.224.68:443: use of closed network connection" logger="UnhandledError"
+E1111 23:01:26.243356   72266 v2.go:151] "Copying stdout failed" err="next reader: read tcp 10.113.7.195:61950->34.239.224.68:443: use of closed network connection" logger="UnhandledError"
+E1111 23:01:30.573857   72266 websocket.go:521] "Websocket Ping failed" err="set tcp 10.113.7.195:61950: use of closed network connection"
+E1111 23:01:33.590821   72266 v2.go:168] "Copying stderr failed" err="next reader: read tcp 10.113.7.195:61971->34.239.224.68:443: use of closed network connection" logger="UnhandledError"
+E1111 23:01:33.590821   72266 v2.go:151] "Copying stdout failed" err="next reader: read tcp 10.113.7.195:61971->34.239.224.68:443: use of closed network connection" logger="UnhandledError"
+E1111 23:01:37.909227   72266 websocket.go:521] "Websocket Ping failed" err="set tcp 10.113.7.195:61971: use of closed network connection"
+=== RUN   TestNitroSpike_ExistingPod/identity_tmpfs
+--- FAIL: TestNitroSpike_ExistingPod (54.05s)
+    --- PASS: TestNitroSpike_ExistingPod/exec (0.70s)
+    --- PASS: TestNitroSpike_ExistingPod/forced_spdy (0.63s)
+    --- PASS: TestNitroSpike_ExistingPod/tar (5.21s)
+    --- FAIL: TestNitroSpike_ExistingPod/output_cap (31.16s)
+    --- PASS: TestNitroSpike_ExistingPod/timeout_process_tree (15.52s)
+    --- PASS: TestNitroSpike_ExistingPod/identity_tmpfs (0.83s)
+FAIL
+FAIL	github.com/rxbynerd/stirrup/harness/internal/executor	54.953s
+FAIL

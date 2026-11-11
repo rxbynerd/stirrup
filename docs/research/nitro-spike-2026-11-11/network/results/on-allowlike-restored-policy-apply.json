@@ -1,0 +1,16 @@
+{
+  "rc": 0,
+  "stdout": "networkpolicy.networking.k8s.io/nitro-network-probe created\n",
+  "stderr": "",
+  "at": "2026-11-11T23:04:11.349024+00:00",
+  "elapsed": 1.5451654170174152,
+  "args": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "apply",
+    "-f",
+    "-"
+  ]
+}

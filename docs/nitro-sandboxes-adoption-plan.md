@@ -1,12 +1,14 @@
 # AWS Nitro Sandboxes: assessment and adoption plan
 
-Status: reviewed proposal, 2026-11-11. Nothing in this document is implemented.
+Status: reviewed proposal with a completed live spike, 2026-11-11. The executor changes are not implemented.
+See the [spike report](research/nitro-spike-2026-11-11/README.md) for measured results, failed probes and remaining release gates.
 Every Stirrup file and line reference was checked against `main` at
 `eeaad430`. AWS behaviour is drawn from current AWS documentation and sample
 material, with review corrections checked on 2026-11-11 and cited in
-[Sources](#sources); none of it has been exercised against a live
-cluster. Statements that the plan depends on and that only a live run
-can settle are collected in
+[Sources](#sources); a bounded subset has now been exercised on EKS 1.36 Auto Mode, IPv4/amd64,
+`m5d.xlarge` in us-east-1. The spike report is authoritative for those
+measurements; documentation claims are not promoted to live results. Remaining
+questions and the original validation procedure are collected in
 [Live validation](#live-validation-paid-needs-approval).
 
 A first draft was reviewed adversarially against the code. The review
@@ -20,6 +22,7 @@ the line references before acting on them; the code will have moved.
 ## Contents
 
 - [Implementation handoff gates](#implementation-handoff-gates)
+- [Live spike findings](#live-spike-findings-incorporated-on-2026-11-11)
 - [Verdict](#verdict)
 - [What Nitro Sandboxes are](#what-nitro-sandboxes-are)
 - [How this meets Stirrup's sandbox seams](#how-this-meets-stirrups-sandbox-seams)
@@ -35,8 +38,10 @@ the line references before acting on them; the code will have moved.
 
 The executor direction is approved as a design recommendation. General
 hardening (PR 1 and PR 4) can proceed. Nitro enablement is **not ready
-for release** until the paid spike establishes the gates below. This
-review authorizes no AWS provisioning or spend.
+for release** until the paid spike establishes the gates below. The original
+review authorized no AWS provisioning or spend. The owner subsequently authorized
+the dated spike under a USD 25 soft/USD 40 hard budget; that is not standing
+authorization for future paid runs.
 
 Decisions adopted by this review so agents need not invent them:
 
@@ -69,6 +74,46 @@ blocker for offline execution. V13 verifies the chosen region; it need
 not survey every region. Unsupported configurations fail explicitly.
 An agent must not mark a skipped live test as a pass or replace a gate
 with an AWS documentation quote.
+
+## Live spike findings incorporated on 2026-11-11
+
+The [dated report](research/nitro-spike-2026-11-11/README.md) supports the offline
+executor direction on the tested recipe. It does not approve release: no
+implementation candidate, admission mutation/rollback suite, identity-expiry
+handling or full harness acceptance was exercised.
+
+- V5's central claim held: the network-isolated annotation removed guest IP
+  networking while exec and binary tar I/O worked. UID 65532/fsGroup workspace
+  access and the `.enclave` DMI diagnostic worked on `m5d.xlarge`.
+- V6 found actual startup leakage with controller enabled and DefaultAllow:
+  three requests escaped a preinstalled policy. A separate DefaultDeny node
+  blocked ten sampled startup requests with healthy positive controls. IMDS
+  still returned 401 under deny-all in both profiles; credential issuance was
+  not tested. Keep Nitro allowlist rejected.
+- V8 did not establish a hard disk quota: a 128 MiB write succeeded against a 64 MiB
+  limit without eviction over the observation window. **Reject explicit Nitro
+  `diskMb` in the initial implementation.**
+- V12 confirmed memory emptyDir was tmpfs and the dummy-token writer worked.
+  Identity configuration still needs the remaining token lifecycle/expiry gates.
+- V10 observed heartbeat arrivals 1.94 s after a successful zero-grace delete
+  response. Preserve confinement through confirmed termination; response success
+  is not a guest-stop acknowledgement.
+- Add the default `sandbox.amazonaws.com/log-bandwidth: 2M` to G7. It also
+  throttled exec stdout: 11 MiB took ~44 s; 20M reduced that to 4.48 s. The original 30 s
+  output-cap probe failed; targeted 90 s probes returned the expected cap error.
+  Resolve output budgets and any permitted annotation in implementation rather
+  than silently relabelling that failure.
+- A clean cold-node sample reached Ready in 43.84 s; warm BusyBox samples were ~6–8 s.
+  These are samples, not timeout ceilings. Full harness dependencies downloaded
+  through the real proxy in 10.58 s after a 1.224 s clone, with default throttles.
+- Pin the initial recipe to the recorded amd64 `m5d.xlarge`, IPv4 and image
+  digest. The live RuntimeClass had no toleration. Current AWS region wording
+  now says all commercial regions; only us-east-1 was verified here.
+
+The report records setup failures (custom NodeClass tags and proxy egress),
+managed-resource visibility pitfalls, exact versions/manifests, costs and teardown.
+PR 1/PR 4 and the combined PR 2/PR 3 candidate checks remain required. PR 5 remains a
+separate design and validation gate.
 
 ## Verdict
 
@@ -122,8 +167,8 @@ There are three ways to consume it:
 1. **EKS.** A Pod opts in with `runtimeClassName: isolated-sandbox` or
    `confidential-sandbox`. On EKS Auto Mode both RuntimeClasses exist on
    every cluster and a capable node is provisioned on demand; the
-   RuntimeClass carries the node selector and toleration, so the Pod
-   spec needs neither. Standard node groups need a custom AMI.
+   RuntimeClass carries the node selector. The tested Auto Mode class had
+   no toleration; custom operator taints may still need one. Standard node groups need a custom AMI.
    Kubernetes 1.36 is the documented minimum; confirm the current
    supported version window before provisioning. [EKS-OVERVIEW] [EKS-ISOLATED]
 2. **ECS.** A task definition sets
@@ -183,9 +228,9 @@ Facts that shape the design:
   [SAMPLES-SKILL]
 - **Unsupported**: `hostUsers: false`, `hostNetwork`, GPU passthrough,
   in-place resize, snapshot and restore. [EKS-LIMITS]
-- **Regions.** The announcement says all commercial regions; the EKS
-  guide says US commercial regions. These conflict and the EKS guide is
-  the more specific source. [WHATSNEW] [EKS-OVERVIEW]
+- **Regions.** Current announcement and EKS overview wording say all commercial
+  regions. The earlier documentation conflict has resolved. The spike verified
+  us-east-1 only. [WHATSNEW] [EKS-OVERVIEW]
 
 AWS's own sample repository contains an example with Stirrup's shape, an
 agent loop outside the sandbox that sends commands into it
@@ -291,7 +336,12 @@ spec.
 **G7. Default throttles may slow real agent work.** 1,500 packets per
 second is roughly 18 Mbps at a 1,500-byte MTU. Dependency installs and
 large clones in `allowlist` mode may be visibly slow. Raising the
-limits needs Pod annotations. Whether this matters is unmeasured.
+limits needs Pod annotations. The spike measured a separate default 2M log
+throttle affecting exec stdout: 11 MiB took about 44 seconds; setting
+`sandbox.amazonaws.com/log-bandwidth: 20M` reduced that to 4.48 seconds.
+The original 30-second output-cap probe timed out. Resolve transfer budgets
+and permitted annotations explicitly. A single clone/dependency experiment
+succeeded under default throttles; broader workload effects remain unmeasured.
 
 **G8. `confidential-sandbox` does not fit an external harness.** The
 mode protects the workload from the node operator. Stirrup's threat is
@@ -316,12 +366,15 @@ feature that AWS recommends for fast starts ("about two seconds"
 (`agentsandbox.go:263-270`), because its per-Pod egress policy would
 not bind to an adopted Pod.
 
-**G10. `executor.resources.diskMb` may not be enforced.** It maps to an
+**G10. The tested `diskMb` mapping is not a hard workspace quota.** It maps to an
 `ephemeral-storage` limit (`k8s.go:435`), which the kubelet enforces by
 measuring usage. Usage inside a Nitro Sandbox reports as zero.
 [EKS-LIMITS] AWS's stated workaround is to set the limit anyway, which
 suggests the runtime sizes the overlay from it, but the documentation
-does not say so.
+does not say so. The live spike wrote 128 MiB against a 64 MiB limit and
+observed no eviction over the follow-up window. Reject explicit Nitro `diskMb`
+until its requested-byte enforcement can be established; do not infer unlimited
+storage or a general size formula from that sample.
 
 **G11. `--dry-run` creates a real sandbox for `k8s`.** The preflight
 special-cases only the `container` executor
@@ -330,13 +383,16 @@ real executor under a 30-second budget (`preflight.go:94`). This is
 already true today. On a Nitro Sandbox it boots a VM, may provision a
 node, and will usually time out.
 
-**G12. The sandbox identity token volume may reach node disk.** The
+**G12. Memory-volume behavior is measured; identity lifecycle remains gated.** The
 token directory is an `emptyDir` with `medium: Memory`
 (`k8s.go:253-262`), and `docs/executors/k8s.md:680-682` promises the
 token never touches node disk. AWS says `emptyDir` volumes live on the
 guest's overlay disk, which is backed by the node's instance store,
 and does not say whether memory-medium volumes are an exception.
-[EKS-STORAGE]
+[EKS-STORAGE] The spike confirmed the memory-medium token directory was tmpfs
+with guest swap disabled and the production dummy-token writer worked. This
+resolves the mount question for the tested recipe only; real identity exchange,
+refresh and expiry remain untested.
 
 **G13. Pod-create errors blame the RuntimeClass too readily.**
 `classifyPodCreateError` (`k8s.go:382-390`) attributes any `Invalid` or
@@ -349,7 +405,10 @@ runtimes and default sizing make this more likely to be hit.
 be running.** `Close` deletes the Pod with zero grace and then deletes
 the NetworkPolicy immediately (`k8s.go:318-331`). Zero grace removes
 the API object before the workload has stopped. This exists today; a
-VM that is slower to stop widens the window in `allowlist` mode.
+VM that is slower to stop widens the window in `allowlist` mode. The spike
+observed heartbeat arrivals 1.94 seconds after a successful delete response,
+with a healthy receiver afterward. Receipt timing can include buffering and
+is not exact CPU-halt evidence; it does not justify removing policy early.
 
 ## Design
 
@@ -809,8 +868,10 @@ Only this follow-up can enable Nitro `allowlist`.
 
 ## Live validation (paid, needs approval)
 
-Nothing here has been run. It creates billable AWS resources and needs
-the maintainer's approval, an AWS account, and credentials.
+The first authorized spike has been run; see the [results and V1–V13 ledger](research/nitro-spike-2026-11-11/README.md).
+The procedure below is retained for reproduction and candidate acceptance.
+Future runs create billable resources and require their own authorization,
+account, spending ceiling and teardown owner. Skipped candidate tests remain open.
 
 Minimum environment, for roughly half a day:
 
@@ -838,7 +899,7 @@ builds `K8sExecutorConfig` directly and so bypasses the validation gap
 (G1), but on unmodified `main`:
 
 - readiness is 60 seconds and each test's context 90 seconds, so a cold
-  node fails the first test (hence the placeholder Pod);
+  node or large image can fail the first test (hence the placeholder Pod);
 - `TestK8sRuntimeClass_Admitted` iterates `""`, `runc`, `gvisor` unless
   `STIRRUP_TEST_RUNTIME_CLASSES` is set (`k8s_test.go:454-460`);
 - the egress tests skip unless `STIRRUP_TEST_ENFORCE_EGRESS` is set
@@ -959,8 +1020,9 @@ The review adopted the runtime name, explicit sizing, offline-only first
 release and combined enablement/checks above. These no longer require
 agents to choose among alternatives.
 
-1. **Paid spike:** the owner must authorize an account, region, spend
-   ceiling and teardown owner. No approval is inferred from this review.
+1. **Paid spike:** authorization and execution for the 2026-11-11 run are recorded
+   in the spike report. Future paid work needs a fresh budget and teardown owner;
+   this report is not standing authorization.
 2. **Supported deployment:** the spike owner must record tested family,
    image digest, AWS/Kubernetes versions and region, then limit the
    recipe to them. V8 and V12 determine disk and identity claims.
@@ -970,9 +1032,11 @@ agents to choose among alternatives.
 4. **Typed build failures:** optional follow-up if a control plane needs
    them. PR 3 emits scrubbed diagnostic events and build-error text.
 
-No remaining owner decision blocks PR 1 or PR 4. The paid spike and its
-results block Nitro enablement. Live measurements may require a design
-revision; agents must record it here before changing the agreed scope.
+No remaining owner decision blocks PR 1 or PR 4. The dated spike and design
+corrections above are recorded. Nitro release still requires the implementation
+candidate, admission/rollback/configuration tests, lifecycle acceptance and
+identity-expiry evidence if identity is enabled. Further measurements may change
+the design; record those changes here before changing the agreed scope.
 
 ## Sources
 

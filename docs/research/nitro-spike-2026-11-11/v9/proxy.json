@@ -1,0 +1,93 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "name": "nitro-v9-proxy",
+    "namespace": "nitro-spike",
+    "labels": {
+      "nitro-spike-owned": "true",
+      "app": "stirrup-egress-proxy"
+    }
+  },
+  "spec": {
+    "restartPolicy": "Never",
+    "automountServiceAccountToken": false,
+    "activeDeadlineSeconds": 1800,
+    "terminationGracePeriodSeconds": 0,
+    "nodeSelector": {
+      "kubernetes.io/arch": "amd64"
+    },
+    "securityContext": {
+      "fsGroup": 65532
+    },
+    "volumes": [
+      {
+        "name": "workspace",
+        "emptyDir": {}
+      },
+      {
+        "name": "allowlist",
+        "configMap": {
+          "name": "nitro-v9-allowlist"
+        }
+      }
+    ],
+    "containers": [
+      {
+        "name": "proxy",
+        "image": "public.ecr.aws/docker/library/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4",
+        "command": [
+          "/bin/sh",
+          "-c",
+          "while [ ! -f /workspace/start ]; do sleep 1; done; exec /workspace/stirrup egress-proxy --listen :8080 --allowlist-file /etc/stirrup/allowlist.txt --log-level info"
+        ],
+        "ports": [
+          {
+            "name": "proxy",
+            "containerPort": 8080
+          }
+        ],
+        "readinessProbe": {
+          "tcpSocket": {
+            "port": "proxy"
+          },
+          "periodSeconds": 2
+        },
+        "securityContext": {
+          "runAsUser": 65532,
+          "runAsNonRoot": true,
+          "allowPrivilegeEscalation": false,
+          "capabilities": {
+            "drop": [
+              "ALL"
+            ]
+          },
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "resources": {
+          "requests": {
+            "cpu": "50m",
+            "memory": "64Mi"
+          },
+          "limits": {
+            "cpu": "500m",
+            "memory": "256Mi"
+          }
+        },
+        "volumeMounts": [
+          {
+            "name": "workspace",
+            "mountPath": "/workspace"
+          },
+          {
+            "name": "allowlist",
+            "mountPath": "/etc/stirrup",
+            "readOnly": true
+          }
+        ]
+      }
+    ]
+  }
+}

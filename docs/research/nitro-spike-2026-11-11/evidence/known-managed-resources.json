@@ -1,0 +1,22 @@
+{
+  "run": "equestrian-nitro-20261111",
+  "vpc_id": "vpc-028a9b46aba88edba",
+  "instance_ids": [
+    "i-0a0a2ea59026805e3",
+    "i-00de16c7f9f410e84"
+  ],
+  "volume_ids": [
+    "vol-0c1342db04cb80ade",
+    "vol-07bf4de945ec465c3",
+    "vol-09635816f8dae6b48",
+    "vol-035bf28c3078b2781"
+  ],
+  "eni_ids": [
+    "eni-03fc7c583abeb28ca",
+    "eni-0cb80307166977197"
+  ],
+  "launch_template_ids": [
+    "lt-0ce3ee13f77c83c56",
+    "lt-0bd6f99dc919ae748"
+  ]
+}

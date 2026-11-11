@@ -1,0 +1,6 @@
+{
+  "seconds": 1.0478764169383794,
+  "rc": 0,
+  "stdout": "m5d.enclave\nMemTotal:        1161768 kB\nMemFree:          861144 kB\nMemAvailable:    1049164 kB\nBuffers:            5044 kB\ndm-0\nvda\nvdb\nvdc\nInter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\ndummy0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n",
+  "stderr": ""
+}

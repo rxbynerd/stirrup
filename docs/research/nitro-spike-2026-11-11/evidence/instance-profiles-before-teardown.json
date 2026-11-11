@@ -1,0 +1,18 @@
+[
+    {
+        "Name": "eks-us-east-1-equestrian-nitro-20261111-11350383555636663856",
+        "Arn": "arn:aws:iam::786874932855:instance-profile/eks/us-east-1/equestrian-nitro-20261111/eks-us-east-1-equestrian-nitro-20261111-11350383555636663856",
+        "Created": "2026-11-11T22:58:15+00:00",
+        "Roles": [
+            "equestrian-nitro-20261111-NodeRole"
+        ]
+    },
+    {
+        "Name": "eks-us-east-1-equestrian-nitro-20261111-9543070466654543297",
+        "Arn": "arn:aws:iam::786874932855:instance-profile/eks/us-east-1/equestrian-nitro-20261111/eks-us-east-1-equestrian-nitro-20261111-9543070466654543297",
+        "Created": "2026-11-11T23:06:27+00:00",
+        "Roles": [
+            "equestrian-nitro-20261111-NodeRole"
+        ]
+    }
+]

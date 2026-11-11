@@ -1,0 +1,266 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "eks.amazonaws.com/v1",
+            "kind": "NodeClass",
+            "metadata": {
+                "annotations": {
+                    "eks.amazonaws.com/nodeclass-hash": "17902612597820267397",
+                    "eks.amazonaws.com/nodeclass-hash-version": "v2",
+                    "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"eks.amazonaws.com/v1\",\"kind\":\"NodeClass\",\"metadata\":{\"annotations\":{},\"name\":\"nitro-spike\"},\"spec\":{\"advancedNetworking\":{\"associatePublicIPAddress\":true},\"ephemeralStorage\":{\"size\":\"80Gi\"},\"networkPolicy\":\"DefaultAllow\",\"role\":\"equestrian-nitro-20261111-NodeRole\",\"securityGroupSelectorTerms\":[{\"id\":\"sg-05acb3f45c2f2106b\"}],\"subnetSelectorTerms\":[{\"id\":\"subnet-0911178a21f1ba390\"},{\"id\":\"subnet-074434360ca9acecb\"}],\"tags\":{\"Expires\":\"2026-11-11\",\"Project\":\"equestrian-nitro-spike\"}}}\n"
+                },
+                "creationTimestamp": "2026-11-11T22:58:14Z",
+                "finalizers": [
+                    "eks.amazonaws.com/termination"
+                ],
+                "generation": 1,
+                "name": "nitro-spike",
+                "resourceVersion": "1885",
+                "uid": "d4e50b43-2363-4111-8fb3-4e2d2d62f41a"
+            },
+            "spec": {
+                "advancedNetworking": {
+                    "associatePublicIPAddress": true,
+                    "enableV4Egress": true,
+                    "ipv4PrefixSize": "Auto"
+                },
+                "ephemeralStorage": {
+                    "iops": 3000,
+                    "size": "80Gi",
+                    "throughput": 125
+                },
+                "networkPolicy": "DefaultAllow",
+                "networkPolicyEventLogs": "Disabled",
+                "role": "equestrian-nitro-20261111-NodeRole",
+                "securityGroupSelectorTerms": [
+                    {
+                        "id": "sg-05acb3f45c2f2106b"
+                    }
+                ],
+                "snatPolicy": "Random",
+                "subnetSelectorTerms": [
+                    {
+                        "id": "subnet-0911178a21f1ba390"
+                    },
+                    {
+                        "id": "subnet-074434360ca9acecb"
+                    }
+                ],
+                "tags": {
+                    "Expires": "2026-11-11",
+                    "Project": "equestrian-nitro-spike"
+                }
+            },
+            "status": {
+                "conditions": [
+                    {
+                        "lastTransitionTime": "2026-11-11T22:58:15Z",
+                        "message": "",
+                        "observedGeneration": 1,
+                        "reason": "SubnetsReady",
+                        "status": "True",
+                        "type": "SubnetsReady"
+                    },
+                    {
+                        "lastTransitionTime": "2026-11-11T22:58:15Z",
+                        "message": "",
+                        "observedGeneration": 1,
+                        "reason": "SecurityGroupsReady",
+                        "status": "True",
+                        "type": "SecurityGroupsReady"
+                    },
+                    {
+                        "lastTransitionTime": "2026-11-11T22:58:15Z",
+                        "message": "",
+                        "observedGeneration": 1,
+                        "reason": "PodSubnetsReady",
+                        "status": "True",
+                        "type": "PodSubnetsReady"
+                    },
+                    {
+                        "lastTransitionTime": "2026-11-11T22:58:15Z",
+                        "message": "",
+                        "observedGeneration": 1,
+                        "reason": "PodSecurityGroupsReady",
+                        "status": "True",
+                        "type": "PodSecurityGroupsReady"
+                    },
+                    {
+                        "lastTransitionTime": "2026-11-11T22:58:15Z",
+                        "message": "",
+                        "observedGeneration": 1,
+                        "reason": "InstanceProfileReady",
+                        "status": "True",
+                        "type": "InstanceProfileReady"
+                    },
+                    {
+                        "lastTransitionTime": "2026-11-11T22:58:15Z",
+                        "message": "",
+                        "observedGeneration": 1,
+                        "reason": "CapacityReservationsReady",
+                        "status": "True",
+                        "type": "CapacityReservationsReady"
+                    },
+                    {
+                        "lastTransitionTime": "2026-11-11T22:58:15Z",
+                        "message": "",
+                        "observedGeneration": 1,
+                        "reason": "PlacementGroupReady",
+                        "status": "True",
+                        "type": "PlacementGroupReady"
+                    },
+                    {
+                        "lastTransitionTime": "2026-11-11T22:58:15Z",
+                        "message": "Controller isn't authorized to call ec2:CreateLaunchTemplate",
+                        "observedGeneration": 1,
+                        "reason": "CreateLaunchTemplateAuthCheckFailed",
+                        "status": "False",
+                        "type": "ValidationSucceeded"
+                    },
+                    {
+                        "lastTransitionTime": "2026-11-11T22:58:15Z",
+                        "message": "ValidationSucceeded=False",
+                        "observedGeneration": 1,
+                        "reason": "UnhealthyDependents",
+                        "status": "False",
+                        "type": "Ready"
+                    }
+                ],
+                "instanceProfile": "eks-us-east-1-equestrian-nitro-20261111-11350383555636663856",
+                "securityGroups": [
+                    {
+                        "id": "sg-05acb3f45c2f2106b",
+                        "name": "eks-cluster-sg-equestrian-nitro-20261111-1336836187"
+                    }
+                ],
+                "subnets": [
+                    {
+                        "id": "subnet-0911178a21f1ba390",
+                        "zone": "us-east-1a",
+                        "zoneID": "use1-az1"
+                    },
+                    {
+                        "id": "subnet-074434360ca9acecb",
+                        "zone": "us-east-1b",
+                        "zoneID": "use1-az2"
+                    }
+                ]
+            }
+        },
+        {
+            "apiVersion": "karpenter.sh/v1",
+            "kind": "NodePool",
+            "metadata": {
+                "annotations": {
+                    "karpenter.sh/nodepool-hash": "171226709647080755",
+                    "karpenter.sh/nodepool-hash-version": "v3",
+                    "kubectl.kubernetes.io/last-applied-configuration": "{\"apiVersion\":\"karpenter.sh/v1\",\"kind\":\"NodePool\",\"metadata\":{\"annotations\":{},\"name\":\"nitro-spike\"},\"spec\":{\"disruption\":{\"consolidateAfter\":\"30s\",\"consolidationPolicy\":\"WhenEmpty\"},\"limits\":{\"cpu\":\"8\",\"memory\":\"32Gi\"},\"template\":{\"spec\":{\"expireAfter\":\"2h\",\"nodeClassRef\":{\"group\":\"eks.amazonaws.com\",\"kind\":\"NodeClass\",\"name\":\"nitro-spike\"},\"requirements\":[{\"key\":\"node.kubernetes.io/instance-type\",\"operator\":\"In\",\"values\":[\"m5d.xlarge\"]},{\"key\":\"kubernetes.io/arch\",\"operator\":\"In\",\"values\":[\"amd64\"]},{\"key\":\"karpenter.sh/capacity-type\",\"operator\":\"In\",\"values\":[\"on-demand\"]}],\"terminationGracePeriod\":\"60s\"}}}}\n"
+                },
+                "creationTimestamp": "2026-11-11T22:58:14Z",
+                "generation": 1,
+                "name": "nitro-spike",
+                "resourceVersion": "1888",
+                "uid": "052e18ed-9c3f-41a5-abc5-577e9e4b2cea"
+            },
+            "spec": {
+                "disruption": {
+                    "budgets": [
+                        {
+                            "nodes": "10%"
+                        }
+                    ],
+                    "consolidateAfter": "30s",
+                    "consolidationPolicy": "WhenEmpty"
+                },
+                "limits": {
+                    "cpu": "8",
+                    "memory": "32Gi"
+                },
+                "template": {
+                    "spec": {
+                        "expireAfter": "2h",
+                        "nodeClassRef": {
+                            "group": "eks.amazonaws.com",
+                            "kind": "NodeClass",
+                            "name": "nitro-spike"
+                        },
+                        "requirements": [
+                            {
+                                "key": "node.kubernetes.io/instance-type",
+                                "operator": "In",
+                                "values": [
+                                    "m5d.xlarge"
+                                ]
+                            },
+                            {
+                                "key": "kubernetes.io/arch",
+                                "operator": "In",
+                                "values": [
+                                    "amd64"
+                                ]
+                            },
+                            {
+                                "key": "karpenter.sh/capacity-type",
+                                "operator": "In",
+                                "values": [
+                                    "on-demand"
+                                ]
+                            }
+                        ],
+                        "terminationGracePeriod": "60s"
+                    }
+                }
+            },
+            "status": {
+                "conditions": [
+                    {
+                        "lastTransitionTime": "2026-11-11T22:58:14Z",
+                        "message": "object is awaiting reconciliation",
+                        "observedGeneration": 1,
+                        "reason": "AwaitingReconciliation",
+                        "status": "Unknown",
+                        "type": "NodeRegistrationHealthy"
+                    },
+                    {
+                        "lastTransitionTime": "2026-11-11T22:58:14Z",
+                        "message": "",
+                        "observedGeneration": 1,
+                        "reason": "ValidationSucceeded",
+                        "status": "True",
+                        "type": "ValidationSucceeded"
+                    },
+                    {
+                        "lastTransitionTime": "2026-11-11T22:58:14Z",
+                        "message": "ValidationSucceeded=False",
+                        "observedGeneration": 1,
+                        "reason": "UnhealthyDependents",
+                        "status": "False",
+                        "type": "NodeClassReady"
+                    },
+                    {
+                        "lastTransitionTime": "2026-11-11T22:58:14Z",
+                        "message": "NodeClassReady=False",
+                        "observedGeneration": 1,
+                        "reason": "UnhealthyDependents",
+                        "status": "False",
+                        "type": "Ready"
+                    }
+                ],
+                "nodeClassObservedGeneration": 1,
+                "nodes": 0,
+                "resources": {
+                    "cpu": "0",
+                    "ephemeral-storage": "0",
+                    "memory": "0",
+                    "nodes": "0",
+                    "pods": "0"
+                }
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}

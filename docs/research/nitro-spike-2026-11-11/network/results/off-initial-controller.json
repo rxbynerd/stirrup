@@ -1,0 +1,20 @@
+{
+  "rc": 1,
+  "stdout": "",
+  "stderr": "Error from server (NotFound): configmaps \"amazon-vpc-cni\" not found\n",
+  "at": "2026-11-11T23:00:39.464340+00:00",
+  "elapsed": 0.7230598339810967,
+  "args": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "get",
+    "configmap",
+    "amazon-vpc-cni",
+    "-n",
+    "kube-system",
+    "-o",
+    "json"
+  ]
+}

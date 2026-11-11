@@ -1,0 +1,264 @@
+{
+  "run_id": "08cb01b47dd64bf9b87d300528960392",
+  "events": [
+    {
+      "utc": "2026-11-11T23:10:46.954526+00:00",
+      "monotonic": 619511.295105833,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 1"
+    },
+    {
+      "utc": "2026-11-11T23:10:47.156164+00:00",
+      "monotonic": 619511.496736333,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 2"
+    },
+    {
+      "utc": "2026-11-11T23:10:47.361394+00:00",
+      "monotonic": 619511.701987041,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 3"
+    },
+    {
+      "utc": "2026-11-11T23:10:47.563820+00:00",
+      "monotonic": 619511.90439975,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 4"
+    },
+    {
+      "utc": "2026-11-11T23:10:47.768814+00:00",
+      "monotonic": 619512.109386291,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 5"
+    },
+    {
+      "utc": "2026-11-11T23:10:47.973431+00:00",
+      "monotonic": 619512.313989083,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 6"
+    },
+    {
+      "utc": "2026-11-11T23:10:48.174786+00:00",
+      "monotonic": 619512.515343458,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 7"
+    },
+    {
+      "utc": "2026-11-11T23:10:48.378474+00:00",
+      "monotonic": 619512.719047958,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 8"
+    },
+    {
+      "utc": "2026-11-11T23:10:48.583484+00:00",
+      "monotonic": 619512.924065708,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 9"
+    },
+    {
+      "utc": "2026-11-11T23:10:48.786052+00:00",
+      "monotonic": 619513.126607083,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 10"
+    },
+    {
+      "utc": "2026-11-11T23:10:49.007785+00:00",
+      "monotonic": 619513.348340875,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 11"
+    },
+    {
+      "utc": "2026-11-11T23:10:49.194901+00:00",
+      "monotonic": 619513.535475791,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 12"
+    },
+    {
+      "utc": "2026-11-11T23:10:49.397527+00:00",
+      "monotonic": 619513.738106208,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 13"
+    },
+    {
+      "utc": "2026-11-11T23:10:49.601107+00:00",
+      "monotonic": 619513.941678291,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 14"
+    },
+    {
+      "utc": "2026-11-11T23:10:49.804922+00:00",
+      "monotonic": 619514.145505958,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 15"
+    },
+    {
+      "utc": "2026-11-11T23:10:50.008690+00:00",
+      "monotonic": 619514.349277583,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 16"
+    },
+    {
+      "utc": "2026-11-11T23:10:50.212989+00:00",
+      "monotonic": 619514.553571166,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 17"
+    },
+    {
+      "utc": "2026-11-11T23:10:50.416652+00:00",
+      "monotonic": 619514.757238416,
+      "line": "08cb01b47dd64bf9b87d300528960392 heartbeat 18"
+    },
+    {
+      "utc": "2026-11-11T23:10:59.585320+00:00",
+      "monotonic": 619523.925900791,
+      "line": "08cb01b47dd64bf9b87d300528960392 CONTROL"
+    }
+  ],
+  "calls": [
+    {
+      "label": "heartbeat-policy",
+      "start": {
+        "utc": "2026-11-11T23:10:42.831342+00:00",
+        "monotonic": 619507.171986208
+      },
+      "args": [
+        "kubectl",
+        "--request-timeout=50s",
+        "-n",
+        "nitro-spike",
+        "apply",
+        "-f",
+        "-"
+      ],
+      "end": {
+        "utc": "2026-11-11T23:10:44.826902+00:00",
+        "monotonic": 619509.167494333
+      },
+      "rc": 0,
+      "stdout": "networkpolicy.networking.k8s.io/nitro-network-probe configured\n",
+      "stderr": ""
+    },
+    {
+      "label": "delete-sender",
+      "start": {
+        "utc": "2026-11-11T23:10:47.791439+00:00",
+        "monotonic": 619512.1320065
+      },
+      "args": [
+        "kubectl",
+        "--request-timeout=50s",
+        "-n",
+        "nitro-spike",
+        "delete",
+        "pod",
+        "nitro-network-probe",
+        "--grace-period=0",
+        "--wait=false"
+      ],
+      "end": {
+        "utc": "2026-11-11T23:10:48.481076+00:00",
+        "monotonic": 619512.821653041
+      },
+      "rc": 0,
+      "stdout": "pod \"nitro-network-probe\" deleted from nitro-spike namespace\n",
+      "stderr": ""
+    },
+    {
+      "label": "receiver-control",
+      "start": {
+        "utc": "2026-11-11T23:10:58.481496+00:00",
+        "monotonic": 619522.822064791
+      },
+      "args": [
+        "kubectl",
+        "--request-timeout=50s",
+        "-n",
+        "nitro-spike",
+        "exec",
+        "nitro-v9-proxy",
+        "-c",
+        "proxy",
+        "--",
+        "sh",
+        "-c",
+        "printf \"08cb01b47dd64bf9b87d300528960392 CONTROL\\n\" | timeout 3 nc -w 1 127.0.0.1 19090"
+      ],
+      "end": {
+        "utc": "2026-11-11T23:10:59.583164+00:00",
+        "monotonic": 619523.923773666
+      },
+      "rc": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "label": "delete-sender-final",
+      "start": {
+        "utc": "2026-11-11T23:11:48.598834+00:00",
+        "monotonic": 619572.939513916
+      },
+      "args": [
+        "kubectl",
+        "--request-timeout=50s",
+        "-n",
+        "nitro-spike",
+        "delete",
+        "pod",
+        "nitro-network-probe",
+        "--grace-period=0",
+        "--wait=false",
+        "--ignore-not-found"
+      ],
+      "end": {
+        "utc": "2026-11-11T23:11:49.227868+00:00",
+        "monotonic": 619573.568562416
+      },
+      "rc": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "label": "delete-policy",
+      "start": {
+        "utc": "2026-11-11T23:11:49.227935+00:00",
+        "monotonic": 619573.568596375
+      },
+      "args": [
+        "kubectl",
+        "--request-timeout=50s",
+        "-n",
+        "nitro-spike",
+        "delete",
+        "networkpolicy",
+        "nitro-network-probe",
+        "--ignore-not-found"
+      ],
+      "end": {
+        "utc": "2026-11-11T23:11:50.012375+00:00",
+        "monotonic": 619574.353077083
+      },
+      "rc": 0,
+      "stdout": "networkpolicy.networking.k8s.io \"nitro-network-probe\" deleted from nitro-spike namespace\n",
+      "stderr": ""
+    }
+  ],
+  "scope": "Observed network activity after zero-grace DeletePod; not proof of guest CPU halt",
+  "receiver": {
+    "pod": "nitro-v9-proxy",
+    "ip": "10.87.18.3",
+    "uid": "9f5eeb39-4f9d-42e9-885c-9f7b65aaef25"
+  },
+  "listener_start": {
+    "utc": "2026-11-11T23:10:44.832894+00:00",
+    "monotonic": 619509.173557875
+  },
+  "sender_start": {
+    "utc": "2026-11-11T23:10:45.849285+00:00",
+    "monotonic": 619510.190001291
+  },
+  "predelete_count": 5,
+  "post_observation_end": {
+    "utc": "2026-11-11T23:10:58.481414+00:00",
+    "monotonic": 619522.82202375
+  },
+  "listener_local_timeout": true,
+  "listener_rc": null,
+  "listener_stderr": "",
+  "sender_stdout": "",
+  "sender_stderr": "command terminated with exit code 137\n",
+  "sender_rc": 137,
+  "end": {
+    "utc": "2026-11-11T23:11:50.012445+00:00",
+    "monotonic": 619574.35310675
+  },
+  "listener_command_actual": [
+    "timeout",
+    "45",
+    "sh",
+    "-c",
+    "while :; do nc -l -p 19090; done"
+  ]
+}

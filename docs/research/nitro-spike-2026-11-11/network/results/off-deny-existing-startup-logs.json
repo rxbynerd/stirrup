@@ -1,0 +1,18 @@
+{
+  "rc": 0,
+  "stdout": "network-probe-start\nstartup_iteration=1 probe=internet_literal start=1794438046 end=1794438046 wget_rc=0 http_status=301,301,200,\nstartup_iteration=2 probe=internet_literal start=1794438046 end=1794438047 wget_rc=0 http_status=301,301,200,\nstartup_iteration=3 probe=internet_literal start=1794438047 end=1794438047 wget_rc=0 http_status=301,301,200,\nstartup_iteration=4 probe=internet_literal start=1794438047 end=1794438047 wget_rc=0 http_status=301,301,200,\nstartup_iteration=5 probe=internet_literal start=1794438047 end=1794438048 wget_rc=0 http_status=301,301,200,\nstartup_iteration=6 probe=internet_literal start=1794438048 end=1794438048 wget_rc=0 http_status=301,301,200,\nstartup_iteration=7 probe=internet_literal start=1794438048 end=1794438049 wget_rc=0 http_status=301,301,200,\nstartup_iteration=8 probe=internet_literal start=1794438049 end=1794438049 wget_rc=0 http_status=301,301,200,\nstartup_iteration=9 probe=internet_literal start=1794438049 end=1794438049 wget_rc=0 http_status=301,301,200,\nstartup_iteration=10 probe=internet_literal start=1794438050 end=1794438050 wget_rc=0 http_status=301,301,200,\n",
+  "stderr": "",
+  "at": "2026-11-11T23:01:11.006582+00:00",
+  "elapsed": 0.7524562500184402,
+  "args": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "logs",
+    "nitro-network-probe",
+    "-c",
+    "agent",
+    "--tail=50"
+  ]
+}

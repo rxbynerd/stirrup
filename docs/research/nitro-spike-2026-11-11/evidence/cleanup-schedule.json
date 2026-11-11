@@ -1,0 +1,23 @@
+{
+    "ActionAfterCompletion": "NONE",
+    "Arn": "arn:aws:scheduler:us-east-1:786874932855:schedule/default/equestrian-nitro-20261111-cleanup",
+    "CreationDate": "2026-11-11T22:44:07.169000+00:00",
+    "FlexibleTimeWindow": {
+        "Mode": "OFF"
+    },
+    "GroupName": "default",
+    "LastModificationDate": "2026-11-11T22:44:07.169000+00:00",
+    "Name": "equestrian-nitro-20261111-cleanup",
+    "ScheduleExpression": "at(2026-11-12T00:45:00)",
+    "ScheduleExpressionTimezone": "UTC",
+    "State": "ENABLED",
+    "Target": {
+        "Arn": "arn:aws:scheduler:::aws-sdk:cloudformation:deleteStack",
+        "Input": "{\"StackName\":\"equestrian-nitro-20261111\"}",
+        "RetryPolicy": {
+            "MaximumEventAgeInSeconds": 86400,
+            "MaximumRetryAttempts": 185
+        },
+        "RoleArn": "arn:aws:iam::786874932855:role/equestrian-nitro-20261111-cleanup"
+    }
+}

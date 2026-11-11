@@ -1,0 +1,17 @@
+{
+  "rc": 0,
+  "stdout": "networkpolicy.networking.k8s.io \"nitro-network-probe\" deleted from nitro-spike namespace\n",
+  "stderr": "",
+  "at": "2026-11-11T23:03:16.776562+00:00",
+  "elapsed": 0.7305979579687119,
+  "args": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "delete",
+    "networkpolicy",
+    "nitro-network-probe",
+    "--ignore-not-found"
+  ]
+}

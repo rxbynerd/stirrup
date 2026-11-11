@@ -1,0 +1,16 @@
+{
+  "rc": 0,
+  "stdout": "pod/nitro-network-probe created\n",
+  "stderr": "",
+  "at": "2026-11-11T23:00:40.943172+00:00",
+  "elapsed": 1.4184711660491303,
+  "args": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "create",
+    "-f",
+    "-"
+  ]
+}

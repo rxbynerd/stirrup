@@ -1,0 +1,10 @@
+[
+    {
+        "ImageId": "ami-09ef60d209279212e",
+        "Name": "eks-auto-standard-1.36-x86_64-20261031",
+        "CreationDate": "2026-10-31T17:39:02.000Z",
+        "Architecture": "x86_64",
+        "OwnerId": "992382739861",
+        "State": "available"
+    }
+]

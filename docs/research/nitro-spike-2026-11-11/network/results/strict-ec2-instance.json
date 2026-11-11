@@ -1,0 +1,81 @@
+[
+    {
+        "InstanceId": "i-00de16c7f9f410e84",
+        "ImageId": "ami-09ef60d209279212e",
+        "InstanceType": "m5d.xlarge",
+        "LaunchTime": "2026-11-11T23:07:09+00:00",
+        "Placement": {
+            "AvailabilityZoneId": "use1-az1",
+            "GroupName": "",
+            "Tenancy": "default",
+            "AvailabilityZone": "us-east-1a"
+        },
+        "CpuOptions": {
+            "CoreCount": 2,
+            "ThreadsPerCore": 2
+        },
+        "EnclaveOptions": {
+            "Enabled": true
+        },
+        "BlockDeviceMappings": [
+            {
+                "DeviceName": "/dev/xvda",
+                "Ebs": {
+                    "AttachTime": "2026-11-11T23:07:08.862000+00:00",
+                    "DeleteOnTermination": true,
+                    "Status": "attached",
+                    "VolumeId": "vol-09635816f8dae6b48",
+                    "EbsCardIndex": 0
+                }
+            },
+            {
+                "DeviceName": "/dev/xvdb",
+                "Ebs": {
+                    "AttachTime": "2026-11-11T23:07:08.862000+00:00",
+                    "DeleteOnTermination": true,
+                    "Status": "attached",
+                    "VolumeId": "vol-035bf28c3078b2781",
+                    "EbsCardIndex": 0
+                }
+            }
+        ],
+        "Tags": [
+            {
+                "Key": "aws:ec2:managed-launch",
+                "Value": "eks-auto"
+            },
+            {
+                "Key": "kubernetes.io/cluster/equestrian-nitro-20261111",
+                "Value": "owned"
+            },
+            {
+                "Key": "aws:eks:cluster-name",
+                "Value": "equestrian-nitro-20261111"
+            },
+            {
+                "Key": "eks:kubernetes-node-pool-name",
+                "Value": "nitro-deny"
+            },
+            {
+                "Key": "eks:kubernetes-node-class-name",
+                "Value": "nitro-deny"
+            },
+            {
+                "Key": "aws:ec2:fleet-id",
+                "Value": "fleet-efb5a535-3cae-c487-861a-a388b8d0f85f"
+            },
+            {
+                "Key": "aws:ec2launchtemplate:version",
+                "Value": "1"
+            },
+            {
+                "Key": "eks:eks-cluster-name",
+                "Value": "equestrian-nitro-20261111"
+            },
+            {
+                "Key": "aws:ec2launchtemplate:id",
+                "Value": "lt-0ce3ee13f77c83c56"
+            }
+        ]
+    }
+]

@@ -1,0 +1,21 @@
+{
+  "at": "2026-11-11T23:03:08.678208+00:00",
+  "command": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "exec",
+    "nitro-offline",
+    "-c",
+    "agent",
+    "--",
+    "/bin/sh",
+    "-c",
+    "dd if=/dev/zero of=/workspace/disk-probe.bin bs=1048576 count=128; r=$?; du -k /workspace/disk-probe.bin; df -k /workspace; exit \"$r\""
+  ],
+  "seconds": 1.148982048034668,
+  "returncode": 0,
+  "stdout": "131072\t/workspace/disk-probe.bin\nFilesystem           1K-blocks      Used Available Use% Mounted on\n/dev/vdb2               394220    165400    228820  42% /workspace\n",
+  "stderr": "128+0 records in\n128+0 records out\n134217728 bytes (128.0MB) copied, 0.032143 seconds, 3.9GB/s\n"
+}

@@ -1,0 +1,24 @@
+{
+  "apiVersion": "networking.k8s.io/v1",
+  "kind": "NetworkPolicy",
+  "metadata": {
+    "name": "nitro-network-probe",
+    "namespace": "nitro-spike",
+    "labels": {
+      "nitro-spike-owned": "true"
+    }
+  },
+  "spec": {
+    "podSelector": {
+      "matchLabels": {
+        "nitro-network-probe": "nitro-network-probe"
+      }
+    },
+    "policyTypes": [
+      "Egress"
+    ],
+    "egress": [
+      {}
+    ]
+  }
+}

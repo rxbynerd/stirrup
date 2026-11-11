@@ -1,0 +1,24 @@
+{
+  "at": "2026-11-11T23:04:09.839193+00:00",
+  "command": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "exec",
+    "-i",
+    "nitro-fractional",
+    "-c",
+    "agent",
+    "--",
+    "tar",
+    "xf",
+    "-",
+    "-C",
+    "/workspace"
+  ],
+  "seconds": 1.1186821460723877,
+  "returncode": 0,
+  "stdout": "",
+  "stderr": ""
+}

@@ -1,0 +1,190 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "karpenter.sh/v1",
+            "kind": "NodeClaim",
+            "metadata": {
+                "annotations": {
+                    "eks.amazonaws.com/ca-bundle-hash": "11273051374778820146",
+                    "eks.amazonaws.com/kubelet-version": "1.36",
+                    "eks.amazonaws.com/nodeclass-hash": "1569170934585087508",
+                    "eks.amazonaws.com/nodeclass-hash-version": "v2",
+                    "karpenter.sh/nodeclaim-min-values-relaxed": "false",
+                    "karpenter.sh/nodepool-hash": "171226709647080755",
+                    "karpenter.sh/nodepool-hash-version": "v3"
+                },
+                "creationTimestamp": "2026-11-11T22:59:48Z",
+                "finalizers": [
+                    "karpenter.sh/termination"
+                ],
+                "generateName": "nitro-spike-",
+                "generation": 1,
+                "labels": {
+                    "app.kubernetes.io/managed-by": "eks",
+                    "eks.amazonaws.com/compute-type": "auto",
+                    "eks.amazonaws.com/instance-capability-flex": "false",
+                    "eks.amazonaws.com/instance-category": "m",
+                    "eks.amazonaws.com/instance-cpu": "4",
+                    "eks.amazonaws.com/instance-cpu-manufacturer": "intel",
+                    "eks.amazonaws.com/instance-cpu-sustained-clock-speed-mhz": "3100",
+                    "eks.amazonaws.com/instance-ebs-bandwidth": "4750",
+                    "eks.amazonaws.com/instance-encryption-in-transit-supported": "false",
+                    "eks.amazonaws.com/instance-family": "m5d",
+                    "eks.amazonaws.com/instance-generation": "5",
+                    "eks.amazonaws.com/instance-hypervisor": "nitro",
+                    "eks.amazonaws.com/instance-local-nvme": "150",
+                    "eks.amazonaws.com/instance-memory": "16384",
+                    "eks.amazonaws.com/instance-min-cpus-per-numa": "4",
+                    "eks.amazonaws.com/instance-min-memory-per-numa": "15615",
+                    "eks.amazonaws.com/instance-network-bandwidth": "1250",
+                    "eks.amazonaws.com/instance-numa-nodes": "1",
+                    "eks.amazonaws.com/instance-size": "xlarge",
+                    "eks.amazonaws.com/nitro-sandbox": "true",
+                    "eks.amazonaws.com/nodeclass": "nitro-spike",
+                    "karpenter.k8s.aws/instance-tenancy": "default",
+                    "karpenter.sh/capacity-type": "on-demand",
+                    "karpenter.sh/nodepool": "nitro-spike",
+                    "kubernetes.io/arch": "amd64",
+                    "kubernetes.io/os": "linux",
+                    "node.kubernetes.io/instance-type": "m5d.xlarge",
+                    "topology.k8s.aws/zone-id": "use1-az2",
+                    "topology.kubernetes.io/region": "us-east-1",
+                    "topology.kubernetes.io/zone": "us-east-1b"
+                },
+                "name": "nitro-spike-tvpkx",
+                "ownerReferences": [
+                    {
+                        "apiVersion": "karpenter.sh/v1",
+                        "blockOwnerDeletion": true,
+                        "kind": "NodePool",
+                        "name": "nitro-spike",
+                        "uid": "052e18ed-9c3f-41a5-abc5-577e9e4b2cea"
+                    }
+                ],
+                "resourceVersion": "2552",
+                "uid": "83a45273-2ee5-4f78-ab7e-3a8e1ff8971e"
+            },
+            "spec": {
+                "expireAfter": "2h",
+                "nodeClassRef": {
+                    "group": "eks.amazonaws.com",
+                    "kind": "NodeClass",
+                    "name": "nitro-spike"
+                },
+                "requirements": [
+                    {
+                        "key": "node.kubernetes.io/instance-type",
+                        "operator": "In",
+                        "values": [
+                            "m5d.xlarge"
+                        ]
+                    },
+                    {
+                        "key": "karpenter.sh/nodepool",
+                        "operator": "In",
+                        "values": [
+                            "nitro-spike"
+                        ]
+                    },
+                    {
+                        "key": "kubernetes.io/arch",
+                        "operator": "In",
+                        "values": [
+                            "amd64"
+                        ]
+                    },
+                    {
+                        "key": "karpenter.sh/capacity-type",
+                        "operator": "In",
+                        "values": [
+                            "on-demand"
+                        ]
+                    },
+                    {
+                        "key": "eks.amazonaws.com/nodeclass",
+                        "operator": "In",
+                        "values": [
+                            "nitro-spike"
+                        ]
+                    },
+                    {
+                        "key": "eks.amazonaws.com/nitro-sandbox",
+                        "operator": "In",
+                        "values": [
+                            "true"
+                        ]
+                    }
+                ],
+                "resources": {
+                    "requests": {
+                        "cpu": "1",
+                        "eks.amazonaws.com/nitro-sandbox": "1",
+                        "ephemeral-storage": "64Mi",
+                        "memory": "1280Mi",
+                        "pods": "1"
+                    }
+                },
+                "terminationGracePeriod": "1m0s"
+            },
+            "status": {
+                "allocatable": {
+                    "cpu": "3770m",
+                    "eks.amazonaws.com/nitro-sandbox": "20",
+                    "ephemeral-storage": "133926258176",
+                    "memory": "13983268045",
+                    "pods": "56"
+                },
+                "capacity": {
+                    "cpu": "4",
+                    "eks.amazonaws.com/nitro-sandbox": "20",
+                    "ephemeral-storage": "150G",
+                    "memory": "15990460Ki",
+                    "pods": "56"
+                },
+                "conditions": [
+                    {
+                        "lastTransitionTime": "2026-11-11T22:59:51Z",
+                        "message": "",
+                        "observedGeneration": 1,
+                        "reason": "Launched",
+                        "status": "True",
+                        "type": "Launched"
+                    },
+                    {
+                        "lastTransitionTime": "2026-11-11T23:00:06Z",
+                        "message": "",
+                        "observedGeneration": 1,
+                        "reason": "Registered",
+                        "status": "True",
+                        "type": "Registered"
+                    },
+                    {
+                        "lastTransitionTime": "2026-11-11T23:00:08Z",
+                        "message": "",
+                        "observedGeneration": 1,
+                        "reason": "Initialized",
+                        "status": "True",
+                        "type": "Initialized"
+                    },
+                    {
+                        "lastTransitionTime": "2026-11-11T23:00:08Z",
+                        "message": "",
+                        "observedGeneration": 1,
+                        "reason": "Ready",
+                        "status": "True",
+                        "type": "Ready"
+                    }
+                ],
+                "imageID": "ami-09ef60d209279212e",
+                "lastPodEventTime": "2026-11-11T23:00:13Z",
+                "nodeName": "i-0a0a2ea59026805e3",
+                "providerID": "aws:///us-east-1b/i-0a0a2ea59026805e3"
+            }
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}

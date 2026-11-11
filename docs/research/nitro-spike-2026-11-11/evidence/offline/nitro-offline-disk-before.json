@@ -1,0 +1,21 @@
+{
+  "at": "2026-11-11T23:03:07.527820+00:00",
+  "command": [
+    "kubectl",
+    "--request-timeout=35s",
+    "-n",
+    "nitro-spike",
+    "exec",
+    "nitro-offline",
+    "-c",
+    "agent",
+    "--",
+    "/bin/sh",
+    "-c",
+    "df -k /workspace; du -k /workspace"
+  ],
+  "seconds": 1.0163719654083252,
+  "returncode": 0,
+  "stdout": "Filesystem           1K-blocks      Used Available Use% Mounted on\n/dev/vdb2               394220     33952    360268   9% /workspace\n4\t/workspace/nested\n24\t/workspace\n",
+  "stderr": ""
+}

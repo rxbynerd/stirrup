@@ -1,0 +1,3 @@
+time=2026-11-11T23:08:32.179Z level=INFO msg="egress proxy listening" addr=[::]:8080 allowlist_entries=5
+time=2026-11-11T23:12:41.706Z level=INFO msg="egress blocked" component=egressproxy method=CONNECT host=github.com port=443 reason=upstream_dial_failed
+{"timestamp":"2026-11-11T23:12:41Z","level":"warn","runId":"","event":"egress_blocked","data":{"host":"github.com","method":"CONNECT","port":443,"reason":"upstream_dial_failed"}}

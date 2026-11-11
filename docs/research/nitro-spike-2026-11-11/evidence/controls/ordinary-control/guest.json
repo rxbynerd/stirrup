@@ -1,0 +1,6 @@
+{
+  "seconds": 1.5354757909663022,
+  "rc": 0,
+  "stdout": "m5d.xlarge\nMemTotal:       16013356 kB\nMemFree:        12206928 kB\nMemAvailable:   13491700 kB\nBuffers:            6436 kB\ndm-0\nloop0\nloop1\nloop2\nloop3\nloop4\nloop5\nloop6\nloop7\nnvme0n1\nnvme1n1\nnvme2n1\nzram0\nInter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n  eth0:     486       5    0    0    0     0          0         0      586       7    0    1    0     0       0          0\n",
+  "stderr": ""
+}
