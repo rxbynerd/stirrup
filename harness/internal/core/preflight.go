@@ -82,8 +82,9 @@ type PreflightOptions struct {
 	SkipMCP      bool
 	SkipTrace    bool
 	SkipEgress   bool
-	// SkipExecutor gates the container-engine probe (--no-probe-executor).
-	// No effect on local/api executors, which expose no Probe regardless.
+	// SkipExecutor gates the container-engine probe and the k8s/k8s-sandbox
+	// access probe (--no-probe-executor); neither makes a call when set. No
+	// effect on local/api executors, which expose no Probe regardless.
 	SkipExecutor bool
 	Timeout      time.Duration
 }
@@ -154,8 +155,9 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 	}
 	ok("secret-store", "secret store constructed")
 
-	// Executor construction is read-only here (nil for container, built for
-	// local/api); its construction step is emitted by buildComponents below.
+	// Executor construction is read-only here (nil for container, k8s and
+	// k8s-sandbox, built for local/api); its construction step is emitted by
+	// buildComponents below.
 	execResult := preflightExecutorConstruct(ctx, config, secrets, secLogger)
 
 	// Resolved up front so a secret:// resolution failure surfaces as its
@@ -340,21 +342,30 @@ func isNilComponent(component any) bool {
 // and emit as the "executor" construction step; it does not emit the step
 // itself.
 //
-// The container path is deliberately NOT routed through buildExecutor:
-// constructing a ContainerExecutor creates and STARTS a real container (and
-// the egress proxy in allowlist mode), which contradicts the read-only
-// intent of a dry-run. For container it returns a nil executor, checked
-// read-only in preflightExecutorProbe instead. local and api executors are
-// cheap and side-effect-free, so they are built here for the probe phase.
+// The container, k8s and k8s-sandbox types are deliberately NOT routed
+// through buildExecutor: constructing one creates and STARTS a real container
+// (and the egress proxy in allowlist mode) or creates a NetworkPolicy and a
+// sandbox Pod or Sandbox, which contradicts the read-only intent of a
+// dry-run. For these it returns a nil executor, checked read-only in
+// preflightExecutorProbe instead. local and api executors are cheap and
+// side-effect-free, so they are built here for the probe phase.
 func preflightExecutorConstruct(
 	ctx context.Context,
 	config *types.RunConfig,
 	secrets security.SecretStore,
 	secLogger *security.SecurityLogger,
 ) executorBuildResult {
-	if config.Executor.Type == "container" {
+	switch config.Executor.Type {
+	case "container":
 		return executorBuildResult{
 			detail: "container executor not constructed in dry-run; engine checked in executor-probe",
+		}
+	case "k8s", "k8s-sandbox":
+		if err := executor.ValidateK8sNetwork(config.Executor.Network, config.Executor.K8sEgressProxyURL); err != nil {
+			return executorBuildResult{err: err, hint: "set executor.network.mode to \"none\", or to \"allowlist\" with executor.k8sEgressProxyUrl"}
+		}
+		return executorBuildResult{
+			detail: fmt.Sprintf("%s executor not constructed in dry-run; cluster access checked in executor-probe", config.Executor.Type),
 		}
 	}
 
@@ -372,8 +383,10 @@ func preflightExecutorConstruct(
 
 // preflightExecutorProbe runs the "executor-probe" step. For the container
 // executor this is the read-only engine probe (socket ping + image-present,
-// no pull, no container, no proxy) gated by --no-probe-executor. For
-// local/api it delegates to the generic probeComponent against the executor
+// no pull, no container, no proxy); for k8s and k8s-sandbox it is the
+// read-only access check (permission reviews and reads, no Pod, Sandbox or
+// NetworkPolicy). Both are gated by --no-probe-executor, which is honoured
+// before any call is made. For local/api it delegates to the generic probeComponent against the executor
 // constructed in preflightExecutorConstruct (neither implements a Probe, so
 // the step records a skip; a nil executor — construction failed — likewise
 // skips).
@@ -398,14 +411,33 @@ func preflightExecutorProbe(
 		ok("executor-probe", "container engine reachable and image present")
 		return
 	}
+	if isK8sExecutorType(config.Executor.Type) {
+		if opts.SkipExecutor {
+			skip("executor-probe", "--no-probe-executor set")
+			return
+		}
+		detail, err := executor.ProbeK8sAccess(ctx, k8sProbeConfig(config.Executor))
+		if err != nil {
+			fail("executor-probe", err, executorHint(config.Executor.Type))
+			return
+		}
+		ok("executor-probe", detail)
+		return
+	}
 	probeComponent(ctx, "executor-probe", exec, false, "", ok, skip, fail)
+}
+
+// isK8sExecutorType reports whether t is an executor whose sandbox is a
+// cluster object, which a dry-run never creates.
+func isK8sExecutorType(t string) bool {
+	return t == "k8s" || t == "k8s-sandbox"
 }
 
 // preflightGitStrategyProbe runs the "git-strategy-probe" step. The
 // deterministic strategy runs `git --version` inside the executor. With
-// the container executor no container is started in a dry-run, so the
-// sandbox image's git cannot be probed and the step records a skip. The
-// none strategy exposes no Probe and skips through probeComponent.
+// the container, k8s and k8s-sandbox executors no sandbox is started in a
+// dry-run, so the sandbox image's git cannot be probed and the step records
+// a skip. The none strategy exposes no Probe and skips through probeComponent.
 func preflightGitStrategyProbe(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -414,8 +446,9 @@ func preflightGitStrategyProbe(
 	skip func(string, string),
 	fail func(string, error, string),
 ) {
-	if config.GitStrategy.Type == "deterministic" && config.Executor.Type == "container" {
-		skip("git-strategy-probe", "container is not started in a dry-run; git in the sandbox image is not probed")
+	executorType := config.Executor.Type
+	if config.GitStrategy.Type == "deterministic" && (executorType == "container" || isK8sExecutorType(executorType)) {
+		skip("git-strategy-probe", fmt.Sprintf("%s is not started in a dry-run; git in the sandbox image is not probed", executorType))
 		return
 	}
 	probe, isProbe := gs.(Preflighter)
@@ -440,6 +473,17 @@ func containerProbeConfig(cfg types.ExecutorConfig) executor.ContainerExecutorCo
 		Network:           cfg.Network,
 		Runtime:           cfg.Runtime,
 		RegistryAllowlist: cfg.RegistryAllowlist,
+	}
+}
+
+// k8sProbeConfig projects the RunConfig's executor block onto the subset
+// ProbeK8sAccess needs.
+func k8sProbeConfig(cfg types.ExecutorConfig) executor.K8sProbeConfig {
+	return executor.K8sProbeConfig{
+		Type:             cfg.Type,
+		Namespace:        cfg.K8sNamespace,
+		Kubeconfig:       cfg.K8sKubeconfig,
+		RuntimeClassName: cfg.Runtime,
 	}
 }
 
@@ -605,14 +649,20 @@ func executorTypeName(t string) string {
 	return t
 }
 
-// executorHint returns a remediation hint for an executor construction
-// failure, tailored to the container path where the common causes
-// (daemon down, image absent) have concrete operator actions.
+// executorHint returns a remediation hint for an executor construction or
+// probe failure, tailored to the container and k8s paths where the common
+// causes have concrete operator actions.
 func executorHint(t string) string {
-	if t == "container" {
+	switch t {
+	case "container":
 		return "check the Docker/Podman daemon is running and the image is present (pull it first)"
+	case "k8s":
+		return "check the kubeconfig or in-cluster ServiceAccount reaches the API server and may create SelfSubjectAccessReviews, and that its Role grants the verbs in examples/k8s/rbac.yaml for executor.k8sNamespace"
+	case "k8s-sandbox":
+		return "check the kubeconfig or in-cluster ServiceAccount reaches the API server and may create SelfSubjectAccessReviews, that its Role grants the verbs in examples/k8s/agent-sandbox/rbac-agent-sandbox.yaml for executor.k8sNamespace, and that the Agent Sandbox controller is installed"
+	default:
+		return ""
 	}
-	return ""
 }
 
 // traceTypeName renders the configured trace emitter type, defaulting an
