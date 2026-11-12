@@ -1,12 +1,15 @@
 # AWS Nitro Sandboxes: assessment and adoption plan
 
 Status: reviewed proposal with a completed live spike, 2026-11-11. The executor changes are not implemented.
-See the [spike report](research/nitro-spike-2026-11-11/README.md) for measured results, failed probes and remaining release gates.
+Measured results are summarised in [Live spike findings](#live-spike-findings-incorporated-on-2026-11-11)
+and [Tested recipe](#tested-recipe-2026-11-11). The raw spike evidence was removed
+from the tree once distilled; it remains at commit `bccf4862` under `docs/research/nitro-spike-2026-11-11/`
+(PR #881), with key learnings in the Alexandria `equestrianism` space.
 Every Stirrup file and line reference was checked against `main` at
 `eeaad430`. AWS behaviour is drawn from current AWS documentation and sample
 material, with review corrections checked on 2026-11-11 and cited in
 [Sources](#sources); a bounded subset has now been exercised on EKS 1.36 Auto Mode, IPv4/amd64,
-`m5d.xlarge` in us-east-1. The spike report is authoritative for those
+`m5d.xlarge` in us-east-1. The spike evidence is authoritative for those
 measurements; documentation claims are not promoted to live results. Remaining
 questions and the original validation procedure are collected in
 [Live validation](#live-validation-paid-needs-approval).
@@ -77,7 +80,7 @@ with an AWS documentation quote.
 
 ## Live spike findings incorporated on 2026-11-11
 
-The [dated report](research/nitro-spike-2026-11-11/README.md) supports the offline
+The dated spike supports the offline
 executor direction on the tested recipe. It does not approve release: no
 implementation candidate, admission mutation/rollback suite, identity-expiry
 handling or full harness acceptance was exercised.
@@ -110,10 +113,52 @@ handling or full harness acceptance was exercised.
   digest. The live RuntimeClass had no toleration. Current AWS region wording
   now says all commercial regions; only us-east-1 was verified here.
 
-The report records setup failures (custom NodeClass tags and proxy egress),
-managed-resource visibility pitfalls, exact versions/manifests, costs and teardown.
 PR 1/PR 4 and the combined PR 2/PR 3 candidate checks remain required. PR 5 remains a
 separate design and validation gate.
+
+### Tested recipe (2026-11-11)
+
+The initial supported recipe pins these values. Broader support needs its own
+recorded evidence.
+
+| Item | Tested value |
+|---|---|
+| Cluster | EKS Auto Mode, Kubernetes 1.36, platform `eks.17`, IPv4, us-east-1 |
+| Instance | `m5d.xlarge`, amd64, on-demand |
+| AMI | `ami-09ef60d209279212e` (`eks-auto-standard-1.36-x86_64-20261031`) |
+| Node software | Bottlerocket 2026.10.31, kubelet `v1.36.4-eks-cfb47f5`, kernel 6.18.56, containerd `2.2.9+bottlerocket`; guest kernel 6.18.54 |
+| Sandbox image | `public.ecr.aws/docker/library/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4` (BusyBox 1.37.0-glibc) |
+| Workload image (V9 only) | `public.ecr.aws/docker/library/golang@sha256:025eefc1e8dbe63201734a72aaa0a55d7a077f2d8410432f8ae2f3e939f32871` (Go 1.27.3) |
+| Pod shape | 1 CPU / 1 GiB requests equal to limits, UID 65532, fsGroup 65532 (primary GID 0), all capabilities dropped, `RuntimeDefault` seccomp, no service-account token |
+| Stirrup code | `cc8d529d`; probes called production `podExecCore` on hand-made Pods, bypassing the constructor and validation |
+
+Facts measured on that recipe that the implementation needs:
+
+- The `isolated-sandbox` RuntimeClass sets node selector
+  `eks.amazonaws.com/nitro-sandbox: "true"` and overhead of 256 MiB plus one
+  `eks.amazonaws.com/nitro-sandbox` extended resource. Admission left
+  container requests and limits unchanged.
+- A network-isolated Pod still has a PodIP in its API status. The verifier
+  must check `/sys/class/net` inside the guest, not the Pod status.
+- `activeDeadlineSeconds` counts from Pod start and so includes VM boot (a
+  120-second deadline stopped the container about 121 seconds after start).
+- The workspace `emptyDir` was XFS mounted `noquota` (about 394 MiB); this is
+  why the 64 MiB limit did not bound writes (V8).
+- `podExecCore.Exec` checks context expiry before the output-cap flag. Under
+  the 2M log throttle, a stream that reaches the cap can still return a
+  timeout. Output-cap tests need a measured timeout for this runtime.
+- `exec` negotiated WebSocket `v5.channel.k8s.io`; forced SPDY/3.1 also
+  worked. The automatic fallback branch was not exercised (V2).
+- With a `DefaultDeny` NodeClass, deleting a Pod's policy does not restore
+  egress, so the egress proxy Pod needs its own explicit egress-allow policy.
+  The proxy also needed one on the `DefaultAllow` node; that cause was not
+  isolated.
+- Auto Mode serves CoreDNS node-locally at the service CIDR's `.10` address.
+- Setup pitfalls for future spikes: optional custom NodeClass tags fail the
+  managed `AmazonEKSComputePolicy` tag-key condition
+  (`CreateLaunchTemplateAuthCheckFailed`); default AWS CLI EC2 listings hide
+  Auto Mode managed instances and volumes, so cleanup must query recorded IDs.
+  The modelled cost of the run was about USD 0.26.
 
 ## Verdict
 
@@ -868,7 +913,9 @@ Only this follow-up can enable Nitro `allowlist`.
 
 ## Live validation (paid, needs approval)
 
-The first authorized spike has been run; see the [results and V1–V13 ledger](research/nitro-spike-2026-11-11/README.md).
+The first authorized spike has been run; its outcomes are in
+[Live spike findings](#live-spike-findings-incorporated-on-2026-11-11) and
+[Tested recipe](#tested-recipe-2026-11-11).
 The procedure below is retained for reproduction and candidate acceptance.
 Future runs create billable resources and require their own authorization,
 account, spending ceiling and teardown owner. Skipped candidate tests remain open.
@@ -1021,7 +1068,7 @@ release and combined enablement/checks above. These no longer require
 agents to choose among alternatives.
 
 1. **Paid spike:** authorization and execution for the 2026-11-11 run are recorded
-   in the spike report. Future paid work needs a fresh budget and teardown owner;
+   in the spike evidence at commit `bccf4862` under `docs/research/nitro-spike-2026-11-11/`. Future paid work needs a fresh budget and teardown owner;
    this report is not standing authorization.
 2. **Supported deployment:** the spike owner must record tested family,
    image digest, AWS/Kubernetes versions and region, then limit the

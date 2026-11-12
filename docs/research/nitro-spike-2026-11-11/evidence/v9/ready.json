@@ -1,7 +1,0 @@
-{
-  "at": "2026-11-11T23:11:35.640894+00:00",
-  "seconds": 32.54733525007032,
-  "rc": 0,
-  "stdout": "pod/nitro-v9-workload condition met\n",
-  "stderr": ""
-}

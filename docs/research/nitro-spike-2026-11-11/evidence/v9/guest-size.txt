@@ -1,6 +1,0 @@
-m5d.enclave
-Filesystem     1K-blocks  Used Available Use% Mounted on
-/dev/vdb2         930796 54676    876120   6% /workspace
-MemTotal:        1161772 kB
-MemFree:          820476 kB
-MemAvailable:    1042668 kB
