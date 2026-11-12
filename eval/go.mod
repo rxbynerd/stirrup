@@ -1,6 +1,6 @@
 module github.com/rxbynerd/stirrup/eval
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/hashicorp/hcl/v2 v2.25.0
