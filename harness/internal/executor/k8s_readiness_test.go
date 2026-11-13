@@ -16,12 +16,13 @@ import (
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
+	"k8s.io/utils/ptr"
 )
 
 // testAdmission returns the admission contract for a Pod created as
 // readyPod(uid).
 func testAdmission(uid k8stypes.UID) podAdmission {
-	return podAdmission{submitted: readyPod(uid), uid: uid, checks: baseAdmissionChecks}
+	return newPodAdmission(readyPod(uid), readyPod(uid))
 }
 
 // slowReadyTiming has a ceiling long enough that a test returning quickly
@@ -293,5 +294,20 @@ func TestWaitForPodReady_RechecksAdmission(t *testing.T) {
 		cs := fake.NewClientset(pod)
 		_, _, err := waitReady(t, cs, slowReadyTiming)
 		must.ErrorContains(err, `metadata.labels[stirrup.dev/pod]: expected "`+testK8sPodName+`", observed "someone-else"`)
+	})
+
+	t.Run("runtime class rewritten after create", func(t *testing.T) {
+		must := require.New(t)
+		admitted := readyPod("uid-1")
+		admitted.Spec.RuntimeClassName = ptr.To("gvisor")
+		observed := admitted.DeepCopy()
+		observed.Spec.RuntimeClassName = ptr.To("runc")
+		cs := fake.NewClientset(observed)
+		logger, _ := testLogger()
+
+		_, err := waitForPodReady(context.Background(), cs, testK8sNamespace, testK8sPodName, newPodAdmission(admitted, admitted), slowReadyTiming, logger)
+
+		must.ErrorIs(err, errPodNotReady)
+		must.ErrorContains(err, `spec.runtimeClassName: expected "gvisor", observed "runc"`)
 	})
 }

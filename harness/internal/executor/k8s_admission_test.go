@@ -32,10 +32,15 @@ func TestPodAdmission_AcceptsUnmodifiedPod(t *testing.T) {
 	must := require.New(t)
 	submitted := submittedPod("gvisor")
 	admitted := admittedCopy(submitted)
-	// Ordinary API defaulting is not a contract violation.
+	// Ordinary API defaulting and added labels are not contract violations.
 	admitted.Spec.SchedulerName = "default-scheduler"
 	admitted.Labels["added-by-webhook"] = "true"
-	must.NoError(podAdmission{submitted: submitted, uid: "uid-1", checks: baseAdmissionChecks}.check(admitted))
+	admission := newPodAdmission(submitted, admitted)
+	must.NoError(admission.checkCreate())
+
+	observed := admitted.DeepCopy()
+	observed.Spec.NodeName = "node-1"
+	must.NoError(admission.checkPoll(observed))
 }
 
 func TestPodAdmission_RejectsChangedRuntimeClass(t *testing.T) {
@@ -50,11 +55,11 @@ func TestPodAdmission_RejectsChangedRuntimeClass(t *testing.T) {
 			admitted := admittedCopy(submitted)
 			admitted.Spec.RuntimeClassName = admittedClass
 
-			err := podAdmission{submitted: submitted, checks: baseAdmissionChecks}.check(admitted)
+			err := newPodAdmission(submitted, admitted).checkCreate()
 
 			must.Error(err)
 			must.ErrorContains(err, `spec.runtimeClassName: expected "gvisor", observed `+optionalQuoted(admittedClass))
-			must.ErrorContains(err, testK8sNamespace+"/"+testK8sPodName)
+			must.ErrorContains(err, "admitted pod "+testK8sNamespace+"/"+testK8sPodName+" does not match the submitted pod")
 		})
 	}
 }
@@ -64,7 +69,13 @@ func TestPodAdmission_AcceptsDefaultedRuntimeClassWhenNoneRequested(t *testing.T
 	submitted := submittedPod("")
 	admitted := admittedCopy(submitted)
 	admitted.Spec.RuntimeClassName = ptr.To("cluster-default")
-	must.NoError(podAdmission{submitted: submitted, checks: baseAdmissionChecks}.check(admitted))
+	admission := newPodAdmission(submitted, admitted)
+	must.NoError(admission.checkCreate())
+
+	observed := admitted.DeepCopy()
+	observed.Spec.RuntimeClassName = ptr.To("runc")
+	must.ErrorContains(admission.checkPoll(observed), `spec.runtimeClassName: expected "cluster-default", observed "runc"`,
+		"the admitted class is the baseline for the readiness wait")
 }
 
 func TestPodAdmission_RejectsChangedSelectorLabels(t *testing.T) {
@@ -96,10 +107,19 @@ func TestPodAdmission_RejectsChangedSelectorLabels(t *testing.T) {
 			admitted := admittedCopy(submitted)
 			tc.mutate(admitted.Labels)
 
-			err := podAdmission{submitted: submitted, checks: baseAdmissionChecks}.check(admitted)
-			must.ErrorContains(err, tc.wantErr)
+			must.ErrorContains(newPodAdmission(submitted, admitted).checkCreate(), tc.wantErr)
 		})
 	}
+}
+
+func TestPodAdmission_RendersMissingExpectedLabelAsAbsent(t *testing.T) {
+	must := require.New(t)
+	submitted := submittedPod("gvisor")
+	delete(submitted.Labels, k8sSandboxLabel)
+	admitted := admittedCopy(submitted)
+	admitted.Labels[k8sSandboxLabel] = "true"
+
+	must.ErrorContains(newPodAdmission(submitted, admitted).checkCreate(), `metadata.labels[stirrup-sandbox]: expected absent, observed "true"`)
 }
 
 func TestPodAdmission_ReportsEveryMismatch(t *testing.T) {
@@ -109,28 +129,69 @@ func TestPodAdmission_ReportsEveryMismatch(t *testing.T) {
 	admitted.Spec.RuntimeClassName = ptr.To("runc")
 	admitted.Labels[k8sPodNameLabel] = "other"
 
-	err := podAdmission{submitted: submitted, checks: baseAdmissionChecks}.check(admitted)
+	err := newPodAdmission(submitted, admitted).checkCreate()
 	must.Error(err)
 	must.ErrorContains(err, "spec.runtimeClassName")
 	must.ErrorContains(err, "metadata.labels[stirrup.dev/pod]")
 }
 
-func TestPodAdmission_RequiresServerAssignedMatchingUID(t *testing.T) {
-	t.Run("missing uid", func(t *testing.T) {
+func TestPodAdmission_ChecksUIDAtEachStage(t *testing.T) {
+	t.Run("create response without a uid", func(t *testing.T) {
 		must := require.New(t)
 		submitted := submittedPod("gvisor")
-		err := podAdmission{submitted: submitted, checks: baseAdmissionChecks}.check(submitted.DeepCopy())
+		err := newPodAdmission(submitted, submitted.DeepCopy()).checkCreate()
 		must.ErrorContains(err, "metadata.uid: expected a server-assigned UID, observed none")
 	})
 
-	t.Run("different uid", func(t *testing.T) {
+	t.Run("observed pod with a different uid", func(t *testing.T) {
 		must := require.New(t)
 		submitted := submittedPod("gvisor")
 		admitted := admittedCopy(submitted)
-		admitted.UID = "uid-2"
-		err := podAdmission{submitted: submitted, uid: "uid-1", checks: baseAdmissionChecks}.check(admitted)
+		observed := admitted.DeepCopy()
+		observed.UID = "uid-2"
+		err := newPodAdmission(submitted, admitted).checkPoll(observed)
+		must.ErrorContains(err, "observed pod "+testK8sNamespace+"/"+testK8sPodName+" no longer matches the admitted pod")
 		must.ErrorContains(err, "metadata.uid: expected uid-1, observed uid-2")
 	})
+}
+
+func TestPodAdmission_RunsEachStageAgainstItsBaseline(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	submitted := submittedPod("gvisor")
+	admitted := admittedCopy(submitted)
+	observed := admitted.DeepCopy()
+
+	var createSaw, pollSaw [][2]*corev1.Pod
+	admission := newPodAdmission(submitted, admitted)
+	admission.createChecks = []admissionCheck{func(expected, got *corev1.Pod) []admissionMismatch {
+		createSaw = append(createSaw, [2]*corev1.Pod{expected, got})
+		return nil
+	}}
+	admission.pollChecks = []admissionCheck{func(expected, got *corev1.Pod) []admissionMismatch {
+		pollSaw = append(pollSaw, [2]*corev1.Pod{expected, got})
+		return nil
+	}}
+
+	must.NoError(admission.checkCreate())
+	must.Len(createSaw, 1)
+	check.Empty(pollSaw, "a poll-time check ran at creation")
+	check.Same(submitted, createSaw[0][0], "the create-time baseline is the submitted pod")
+	check.Same(admitted, createSaw[0][1])
+
+	must.NoError(admission.checkPoll(observed))
+	must.Len(pollSaw, 1)
+	check.Len(createSaw, 1, "a create-time check ran during the readiness wait")
+	check.Same(admitted, pollSaw[0][0], "the poll-time baseline is the Create response")
+	check.Same(observed, pollSaw[0][1])
+}
+
+func TestNewPodAdmission_CopiesTheBaseChecks(t *testing.T) {
+	must := require.New(t)
+	submitted := submittedPod("gvisor")
+	admission := newPodAdmission(submitted, admittedCopy(submitted))
+	admission.createChecks[0] = nil
+	must.NotNil(baseAdmissionChecks[0], "changing one admission's checks changed the shared base list")
 }
 
 func TestPodAdmission_BoundsObservedValues(t *testing.T) {
@@ -140,7 +201,7 @@ func TestPodAdmission_BoundsObservedValues(t *testing.T) {
 	admitted := admittedCopy(submitted)
 	admitted.Spec.RuntimeClassName = ptr.To("evil\n" + strings.Repeat("x", 4*k8sClusterTextMax))
 
-	err := podAdmission{submitted: submitted, checks: baseAdmissionChecks}.check(admitted)
+	err := newPodAdmission(submitted, admitted).checkCreate()
 	must.Error(err)
 	check.NotContains(err.Error(), "\n")
 	check.Less(len(err.Error()), k8sClusterTextMax+300)

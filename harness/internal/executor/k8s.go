@@ -217,8 +217,8 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev
 	}
 	teardown.podUID = created.UID
 
-	admission := podAdmission{submitted: pod, uid: created.UID, checks: baseAdmissionChecks}
-	if err := admission.check(created); err != nil {
+	admission := newPodAdmission(pod, created)
+	if err := admission.checkCreate(); err != nil {
 		return nil, withTeardownErr(err, teardown.run())
 	}
 	if cfg.RuntimeClassName == "" && created.Spec.RuntimeClassName != nil {

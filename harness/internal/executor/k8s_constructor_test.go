@@ -165,8 +165,17 @@ func TestNewK8sExecutor_LogsDefaultedRuntimeClass(t *testing.T) {
 	cs := fake.NewClientset()
 	admitPods(cs, func(pod *corev1.Pod) { pod.Spec.RuntimeClassName = ptr.To("cluster-default") })
 
-	exec, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg(""))
+	exec, logs, err := newLoggedFakeK8sExecutor(context.Background(), cs, constructorCfg(""))
 	must.NoError(err, "a RuntimeClass the cluster assigns when none was requested is not a mismatch")
+	for _, want := range []string{
+		"level=INFO",
+		"k8s executor pod admitted with a cluster-assigned RuntimeClass",
+		"namespace=" + testK8sNamespace,
+		"pod=" + exec.podName,
+		"runtimeClassName=cluster-default",
+	} {
+		must.Contains(logs.String(), want)
+	}
 	must.NoError(exec.Close())
 }
 

@@ -49,7 +49,7 @@ func waitForPodReady(ctx context.Context, clientset kubernetes.Interface, namesp
 		switch {
 		case err == nil:
 			seen.observe(pod)
-			if err := admission.check(pod); err != nil {
+			if err := admission.checkPoll(pod); err != nil {
 				return nil, fmt.Errorf("%w: %w", errPodNotReady, err)
 			}
 			if reason, terminal := podTerminalReason(pod); terminal {
