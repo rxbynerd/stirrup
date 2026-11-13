@@ -780,10 +780,10 @@ is documented in [`safety-rings.md`](safety-rings.md).
 For a `k8s` runtime that can be checked from inside the guest, the
 executor reads guest files after the sandbox Pod is Ready and fails the
 run when they do not match the runtime. Only `nitro-isolated` has such
-checks today. Their outcome is the `sandbox_runtime_diagnostic_passed`
+checks. Their outcome is the `sandbox_runtime_diagnostic_passed`
 (info) or `sandbox_runtime_diagnostic_failed` (error) security event,
-documented with its keys in
-[EKS with Nitro Sandboxes](executors/k8s.md#runtime-diagnostics); a
+documented with its keys under
+[Runtime diagnostics](executors/k8s.md#runtime-diagnostics); a
 failure of the [whole-Pod admission check](executors/k8s.md#whole-pod-admission-check)
 for that runtime emits the same failure event with check `admitted_pod`.
 The values the guest and the diagnostics `exec` supply have every Unicode
