@@ -530,6 +530,7 @@ func TestRetryDelay_HalfOfRemainingLifetimeOrNone(t *testing.T) {
 func TestDueForRefresh_AtRefreshFractionOrExpiry(t *testing.T) {
 	issued := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
 	expiresAt := issued.Add(10 * time.Minute).Unix()
+	expiredBeforeIssue := issued.Add(-time.Minute).Unix()
 	cases := []struct {
 		name      string
 		now       time.Time
@@ -541,6 +542,8 @@ func TestDueForRefresh_AtRefreshFractionOrExpiry(t *testing.T) {
 		{"at the refresh point", issued.Add(8 * time.Minute), &expiresAt, true},
 		{"expired", issued.Add(11 * time.Minute), &expiresAt, true},
 		{"no expiry", issued.Add(24 * time.Hour), nil, false},
+		{"expiry exactly now", issued.Add(10 * time.Minute), &expiresAt, true},
+		{"expiry before issue", issued, &expiredBeforeIssue, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
