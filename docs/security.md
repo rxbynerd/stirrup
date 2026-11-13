@@ -783,11 +783,17 @@ run when they do not match the runtime. Only `nitro-isolated` has such
 checks today. Their outcome is the `sandbox_runtime_diagnostic_passed`
 (info) or `sandbox_runtime_diagnostic_failed` (error) security event,
 documented with its keys in
-[EKS with Nitro Sandboxes](executors/k8s.md#runtime-diagnostics). The
-values in the event are reported by the sandbox image, so they are
-scrubbed and length-bounded before they are emitted, and the checks are
-configuration diagnostics rather than attestation: a hostile image can
-fabricate the output.
+[EKS with Nitro Sandboxes](executors/k8s.md#runtime-diagnostics); a
+failure of the [whole-Pod admission check](executors/k8s.md#admission-check)
+for that runtime emits the same failure event with check `admitted_pod`.
+The values the guest and the diagnostics `exec` supply are stripped of
+control characters, scrubbed and cut to 256 characters before they enter
+the returned error, a log line or the event, and the event scrubs them
+again and cuts each to 256 bytes. The checks are configuration
+diagnostics rather than attestation: a hostile image can fabricate the
+output. Security events are JSON lines on the harness's stderr (plus an
+OTel counter tagged with the event name when metrics are exported); they
+are not sent on the `HarnessEvent` stream or in the `RunResult`.
 
 ### Egress proxy CONNECT/SNI protocol
 
