@@ -21,8 +21,10 @@ import (
 // that offers AWS Nitro Sandboxes (EKS Auto Mode with the isolated-sandbox
 // RuntimeClass). It is gated on STIRRUP_TEST_NITRO_ISOLATED as well as
 // STIRRUP_TEST_KUBECONFIG, because on any other cluster the Pod is rejected
-// or fails its diagnostics by design. The Pod is pinned to the tested
-// instance type, m5d.xlarge. With STIRRUP_TEST_EVIDENCE_DIR set, the
+// or fails its diagnostics by design. The Pod is pinned to the instance type
+// in STIRRUP_TEST_NITRO_INSTANCE_TYPE and the architecture in
+// STIRRUP_TEST_NITRO_ARCH (default m5d.xlarge and amd64, the tested recipe).
+// With STIRRUP_TEST_EVIDENCE_DIR set, the
 // submitted Pod, the Create response, the Ready Pod and the workspace size
 // are written there.
 func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
@@ -47,8 +49,8 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 		Namespace:  cfg.namespace,
 		Kubeconfig: cfg.kubeconfig,
 		NodeSelector: map[string]string{
-			"kubernetes.io/arch":               "amd64",
-			"node.kubernetes.io/instance-type": "m5d.xlarge",
+			"kubernetes.io/arch":               envOr("STIRRUP_TEST_NITRO_ARCH", "amd64"),
+			"node.kubernetes.io/instance-type": envOr("STIRRUP_TEST_NITRO_INSTANCE_TYPE", "m5d.xlarge"),
 		},
 		Runtime:    "nitro-isolated",
 		Resources:  &types.ResourceLimits{CPUs: 1, MemoryMB: 1024},
