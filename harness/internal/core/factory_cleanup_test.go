@@ -97,4 +97,20 @@ func TestBuildLoopWithTransport_FailedBuildReportsRetainedObjects(t *testing.T) 
 		must.ErrorContains(err, "resolve trace emitter headers")
 		must.ErrorIs(err, errRetainedOnClose)
 	})
+
+	t.Run("successful build is not affected by a failing close", func(t *testing.T) {
+		must := require.New(t)
+		closeErrExecutors(t)
+		sock, _, cleanupEngine := fakeDockerEngine(t)
+		defer cleanupEngine()
+		t.Setenv("DOCKER_HOST", "unix://"+sock)
+
+		tp := &fakeControlPlaneTransport{respondToken: "jwt"}
+		config := sandboxIdentityFailClosedConfig(t, "cleanup-error-success-test")
+
+		loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+
+		must.NoError(err)
+		must.ErrorContains(loop.Close(), errRetainedOnClose.Error(), "the close error surfaces at shutdown instead")
+	})
 }
