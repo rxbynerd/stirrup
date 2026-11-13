@@ -21,7 +21,10 @@ import (
 
 // guestExec serves every pods/exec call with stdout and err, counting calls.
 func guestExec(stdout string, err error, calls *int) podExecFunc {
-	return func(_ context.Context, _ []string, _ io.Reader, out, _ io.Writer) error {
+	return func(_ context.Context, command []string, _ io.Reader, out, _ io.Writer) error {
+		if isExecProbe(command) {
+			return nil
+		}
 		*calls++
 		if _, writeErr := io.WriteString(out, stdout); writeErr != nil {
 			return writeErr
@@ -98,7 +101,10 @@ func TestNewK8sExecutor_NitroDiagnosticsFailureTearsDown(t *testing.T) {
 // blockingGuestExec blocks every pods/exec call until its ctx ends, after
 // calling onStart, and returns the ctx error.
 func blockingGuestExec(onStart func()) podExecFunc {
-	return func(ctx context.Context, _ []string, _ io.Reader, _, _ io.Writer) error {
+	return func(ctx context.Context, command []string, _ io.Reader, _, _ io.Writer) error {
+		if isExecProbe(command) {
+			return nil
+		}
 		if onStart != nil {
 			onStart()
 		}

@@ -42,6 +42,11 @@ const (
 	// a node, still capped by the caller's context.
 	k8sReadyTimeout    = 5 * time.Minute
 	k8sReadyPollPeriod = 1 * time.Second
+	// k8sExecReachableTimeout bounds the wait for the API server to reach
+	// the Pod's kubelet once the Pod is Ready; k8sExecProbeTimeout bounds
+	// each attempt.
+	k8sExecReachableTimeout = 60 * time.Second
+	k8sExecProbeTimeout     = 10 * time.Second
 	// k8sReadyProgressPeriod spaces the readiness wait's progress log lines.
 	k8sReadyProgressPeriod = 30 * time.Second
 	k8sCloseTimeout        = 30 * time.Second
@@ -286,6 +291,9 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 		networkPolicyName: policy.Name,
 		runID:             cfg.Lifecycle.RunID,
 		timing:            timing,
+	}
+	if err := waitForExecReachable(ctx, &exec.podExecCore, timing, logger); err != nil {
+		return nil, withTeardownErr(fmt.Errorf("pod %s/%s %w", cfg.Namespace, podName, err), teardown.run())
 	}
 	// The diagnostics run before the executor is returned, so before any
 	// token delivery or lifecycle hook reaches the sandbox.

@@ -101,7 +101,7 @@ func newLoggedFakeK8sExecutor(ctx context.Context, cs *fake.Clientset, cfg K8sEx
 	if err != nil {
 		return nil, logs, err
 	}
-	exec, err := newK8sExecutor(ctx, cfg, profile, proxyEnv, cs, nil, nil, fastK8sTiming, logger)
+	exec, err := newK8sExecutor(ctx, cfg, profile, proxyEnv, cs, nil, reachableExec, fastK8sTiming, logger)
 	return exec, logs, err
 }
 

@@ -33,6 +33,9 @@ type k8sTiming struct {
 	// fileIOTimeout bounds each file I/O exec, the runtime diagnostics
 	// included; zero means k8sFileIOTimeout.
 	fileIOTimeout time.Duration
+	// execReachableTimeout bounds the wait for exec to reach the Pod after
+	// readiness; zero means k8sExecReachableTimeout.
+	execReachableTimeout time.Duration
 }
 
 var defaultK8sTiming = k8sTiming{
