@@ -50,8 +50,9 @@ func TestNewK8sExecutor_NitroDiagnosticsPassReturnsExecutor(t *testing.T) {
 }
 
 func TestNewK8sExecutor_NitroDiagnosticsFailureTearsDown(t *testing.T) {
+	must := require.New(t)
 	ordinaryPod, err := os.ReadFile(filepath.Join("testdata", "runtime-diagnostics-ordinary-pod.txt"))
-	require.NoError(t, err)
+	must.NoError(err)
 
 	cases := []struct {
 		name      string

@@ -110,8 +110,9 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedGuestPasses(t *testing.T) {
 }
 
 func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
+	must := require.New(t)
 	ordinaryPod, err := os.ReadFile(filepath.Join("testdata", "runtime-diagnostics-ordinary-pod.txt"))
-	require.NoError(t, err)
+	must.NoError(err)
 
 	cases := []struct {
 		name         string
@@ -572,7 +573,8 @@ func TestGuestFileDumpScript_ParsesUnderARealShell(t *testing.T) {
 	indented := write(t, "indented", "   leading\n\ttab\n")
 	missing := filepath.Join(dir, "missing")
 	directory := filepath.Join(dir, "directory")
-	require.New(t).NoError(os.Mkdir(directory, 0o700))
+	must := require.New(t)
+	must.NoError(os.Mkdir(directory, 0o700))
 
 	cases := []struct {
 		name string
