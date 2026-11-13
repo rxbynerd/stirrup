@@ -40,7 +40,7 @@ type SecurityEventEmitter interface {
 	PathTraversalBlocked(path, workspace string)
 	FileSizeLimitExceeded(path string, size, limit int64)
 	OutputTruncated(command string, originalSize, limit int)
-	// SandboxRuntimeDiagnostic reports the guest-side checks a runtime
+	// SandboxRuntimeDiagnostic reports the runtime diagnostics a runtime
 	// profile runs after the sandbox is Ready. observed holds values the
 	// sandbox image reported; check and reason are empty when passed.
 	SandboxRuntimeDiagnostic(runtime string, passed bool, check, reason string, observed map[string]string)
