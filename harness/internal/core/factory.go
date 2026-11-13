@@ -68,7 +68,7 @@ func BuildLoop(ctx context.Context, config *types.RunConfig, opts ...LoopOption)
 // pre-built Transport; a non-nil tp is used directly, skipping
 // buildTransport, so a caller (e.g. the K8s job binary) can reuse an
 // already-connected transport.
-func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp transport.Transport, opts ...LoopOption) (*AgenticLoop, error) {
+func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp transport.Transport, opts ...LoopOption) (builtLoop *AgenticLoop, buildErr error) {
 	var loopOpts LoopOptions
 	for _, opt := range opts {
 		opt(&loopOpts)
@@ -81,14 +81,25 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// transport or write through a closed executor.
 	var sandboxRefresher *sandboxidentity.Refresher
 	emitReady := tp == nil
+	// cleanup closes what a failed build owns. Its errors (an executor that
+	// had to retain cluster objects, for example) are joined onto the
+	// returned build error rather than dropped.
+	var cleanupErr error
 	cleanup := func() {
+		var errs []error
 		if sandboxRefresher != nil {
-			_ = sandboxRefresher.Close()
+			errs = append(errs, sandboxRefresher.Close())
 		}
 		for i := len(ownedClosers) - 1; i >= 0; i-- {
-			_ = ownedClosers[i].Close()
+			errs = append(errs, ownedClosers[i].Close())
 		}
+		cleanupErr = errors.Join(errs...)
 	}
+	defer func() {
+		if buildErr != nil && cleanupErr != nil {
+			buildErr = fmt.Errorf("%w; cleanup: %w", buildErr, cleanupErr)
+		}
+	}()
 
 	// secLogger is constructed before ValidateRunConfig so a validation
 	// failure can still emit config_validation_failed.
@@ -167,7 +178,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// 3. Executor (built early because context strategy may need it).
 	// secLogger is threaded into the container executor so its in-process
 	// egress proxy can emit egress_allowed/egress_blocked events.
-	exec, err := buildExecutor(ctx, config.Executor, secrets, secLogger, sandboxExtraEnv, sandboxLifecycle(config, loopOpts.sessionBudget))
+	exec, err := buildExecutorFn(ctx, config.Executor, secrets, secLogger, sandboxExtraEnv, sandboxLifecycle(config, loopOpts.sessionBudget))
 	if err != nil {
 		return nil, fmt.Errorf("build executor: %w", err)
 	}
@@ -1322,6 +1333,10 @@ func sandboxLifecycle(config *types.RunConfig, sessionBudget time.Duration) exec
 // implies, is honoured only by the container and k8s cases;
 // ValidateRunConfig confines SandboxIdentity and GitProxy to those types,
 // so it is empty elsewhere by construction.
+// buildExecutorFn is buildExecutor; tests replace it to observe how a build
+// failure closes the executor.
+var buildExecutorFn = buildExecutor
+
 func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore, secLogger *security.SecurityLogger, extraEnv []executor.EnvPair, life executor.Lifecycle) (executor.Executor, error) {
 	sandboxIdentityToken := cfg.SandboxIdentity != nil
 	switch cfg.Type {
