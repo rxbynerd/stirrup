@@ -155,6 +155,15 @@ func TestPodAdmission_StrictRejectsAdmittedPodMutations(t *testing.T) {
 		{name: "host network", mutate: func(p *corev1.Pod) { p.Spec.HostNetwork = true }, wantField: "spec.hostNetwork"},
 		{name: "host users", mutate: func(p *corev1.Pod) { p.Spec.HostUsers = ptr.To(false) }, wantField: "spec.hostUsers"},
 		{name: "submitted node selector dropped", mutate: func(p *corev1.Pod) { delete(p.Spec.NodeSelector, "kubernetes.io/arch") }, wantField: "spec.nodeSelector: expected at least"},
+		{name: "overhead removed", mutate: func(p *corev1.Pod) { p.Spec.Overhead = nil }, wantField: "spec.overhead[eks.amazonaws.com/nitro-sandbox]: expected present, observed absent"},
+		{name: "overhead without the sandbox resource", mutate: func(p *corev1.Pod) {
+			p.Spec.Overhead = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")}
+		}, wantField: "spec.overhead[eks.amazonaws.com/nitro-sandbox]: expected present, observed absent"},
+		{name: "runtime class selector removed and toleration added", mutate: func(p *corev1.Pod) {
+			delete(p.Spec.NodeSelector, "eks.amazonaws.com/nitro-sandbox")
+			p.Spec.Tolerations = append(p.Spec.Tolerations, corev1.Toleration{Operator: corev1.TolerationOpExists})
+		}, wantField: `spec.nodeSelector[eks.amazonaws.com/nitro-sandbox]: expected "true", observed absent`},
+		{name: "runtime class selector value changed", mutate: func(p *corev1.Pod) { p.Spec.NodeSelector["eks.amazonaws.com/nitro-sandbox"] = "false" }, wantField: `spec.nodeSelector[eks.amazonaws.com/nitro-sandbox]: expected "true", observed "false"`},
 	}
 	profile := k8sRuntimeProfiles["nitro-isolated"]
 	for _, tc := range cases {
@@ -250,6 +259,8 @@ func TestNewK8sExecutor_StrictAdmissionMismatchTearsDownAndReports(t *testing.T)
 			p.Spec.Containers[0].Env = append(p.Spec.Containers[0].Env, corev1.EnvVar{Name: "AWS_ROLE_ARN", Value: "arn"})
 		}, wantField: "spec.containers[agent].env"},
 		{name: "changed runtime class", mutate: func(p *corev1.Pod) { p.Spec.RuntimeClassName = ptr.To("runc") }, wantField: "spec.runtimeClassName"},
+		{name: "overhead removed", mutate: func(p *corev1.Pod) { p.Spec.Overhead = nil }, wantField: "spec.overhead[eks.amazonaws.com/nitro-sandbox]"},
+		{name: "runtime class selector removed", mutate: func(p *corev1.Pod) { delete(p.Spec.NodeSelector, "eks.amazonaws.com/nitro-sandbox") }, wantField: "spec.nodeSelector[eks.amazonaws.com/nitro-sandbox]"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -276,32 +287,76 @@ func TestNewK8sExecutor_StrictAdmissionMismatchTearsDownAndReports(t *testing.T)
 }
 
 func TestNewK8sExecutor_StrictAdmissionRechecksDuringReadiness(t *testing.T) {
+	cases := []struct {
+		name      string
+		mutate    func(pod *corev1.Pod)
+		wantField string
+	}{
+		{name: "annotation stripped", mutate: func(p *corev1.Pod) { delete(p.Annotations, "sandbox.amazonaws.com/network-isolated") }, wantField: "metadata.annotations[sandbox.amazonaws.com/network-isolated]"},
+		{name: "overhead removed", mutate: func(p *corev1.Pod) { p.Spec.Overhead = nil }, wantField: "spec.overhead[eks.amazonaws.com/nitro-sandbox]"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cs := fake.NewClientset()
+			admitPods(cs, nil)
+			lingering := lingerOnDelete(t, cs, 3)
+			cs.PrependReactor("get", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+				if lingering.terminating {
+					return false, nil, nil
+				}
+				obj, err := cs.Tracker().Get(podsResource, testK8sNamespace, action.(clienttesting.GetAction).GetName())
+				if err != nil {
+					return true, nil, err
+				}
+				changed := obj.(*corev1.Pod).DeepCopy()
+				tc.mutate(changed)
+				return true, changed, nil
+			})
+			cfg, security := nitroConstructorCfg()
+
+			_, err := newFakeK8sExecutor(context.Background(), cs, cfg)
+
+			must.ErrorIs(err, errPodNotReady)
+			must.ErrorContains(err, "no longer matches the admitted pod: "+tc.wantField)
+			requireTornDown(t, cs)
+			requireRemovedAfterRelease(t, lingering)
+			must.Len(security.runtimeDiagnostics, 1)
+			must.Equal("admitted_pod", security.runtimeDiagnostics[0].check)
+		})
+	}
+}
+
+func TestK8sRuntimeProfiles_PlatformMarksOnlyForNitroIsolated(t *testing.T) {
 	must := require.New(t)
-	cs := fake.NewClientset()
-	admitPods(cs, nil)
-	lingering := lingerOnDelete(t, cs, 3)
-	cs.PrependReactor("get", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
-		if lingering.terminating {
-			return false, nil, nil
+	nitro := k8sRuntimeProfiles["nitro-isolated"]
+	must.Equal([]corev1.ResourceName{"eks.amazonaws.com/nitro-sandbox"}, nitro.requiredOverheadResources)
+	must.Equal(map[string]string{"eks.amazonaws.com/nitro-sandbox": "true"}, nitro.requiredNodeSelector)
+	for runtime, profile := range k8sRuntimeProfiles {
+		if runtime == "nitro-isolated" {
+			continue
 		}
-		obj, err := cs.Tracker().Get(podsResource, testK8sNamespace, action.(clienttesting.GetAction).GetName())
-		if err != nil {
-			return true, nil, err
-		}
-		changed := obj.(*corev1.Pod).DeepCopy()
-		delete(changed.Annotations, "sandbox.amazonaws.com/network-isolated")
-		return true, changed, nil
-	})
-	cfg, security := nitroConstructorCfg()
+		must.Empty(profile.requiredOverheadResources, runtime)
+		must.Empty(profile.requiredNodeSelector, runtime)
+	}
+}
 
-	_, err := newFakeK8sExecutor(context.Background(), cs, cfg)
+func TestPodAdmission_BaseProfilesAcceptAPodWithoutPlatformMarks(t *testing.T) {
+	for _, runtime := range []string{"", "gvisor"} {
+		t.Run("runtime "+runtime, func(t *testing.T) {
+			must := require.New(t)
+			cfg := constructorCfg(runtime)
+			profile := k8sRuntimeProfiles[runtime]
+			submitted := buildSandboxPod(cfg, profile, testK8sPodName, nil)
+			admitted := admittedCopy(submitted)
+			must.Nil(admitted.Spec.Overhead)
 
-	must.ErrorIs(err, errPodNotReady)
-	must.ErrorContains(err, "no longer matches the admitted pod: metadata.annotations[sandbox.amazonaws.com/network-isolated]")
-	requireTornDown(t, cs)
-	requireRemovedAfterRelease(t, lingering)
-	must.Len(security.runtimeDiagnostics, 1)
-	must.Equal("admitted_pod", security.runtimeDiagnostics[0].check)
+			admission := newPodAdmission(submitted, admitted, profile)
+
+			must.NoError(admission.checkCreate())
+			must.NoError(admission.checkPoll(admitted.DeepCopy()))
+		})
+	}
 }
 
 func TestNewK8sExecutor_BaseAdmissionMismatchEmitsNoDiagnostic(t *testing.T) {

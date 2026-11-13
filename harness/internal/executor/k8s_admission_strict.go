@@ -47,7 +47,7 @@ var strictPodSpecFields = map[string]admissionField{
 	"TerminationGracePeriodSeconds": comparedField,
 	"ActiveDeadlineSeconds":         comparedField,
 	"DNSPolicy":                     {fieldPlatformOwned, "API defaulting sets ClusterFirst; the guest has no network in the supported mode"},
-	"NodeSelector":                  {fieldSubmittedSubset, "the RuntimeClass's scheduling selector is merged in"},
+	"NodeSelector":                  {fieldSubmittedSubset, "the RuntimeClass's scheduling selector is merged in; the profile's required entries are checked separately (checkPlatformMarks)"},
 	"ServiceAccountName":            comparedField,
 	"DeprecatedServiceAccount":      {fieldPlatformOwned, "API defaulting mirrors serviceAccountName into it"},
 	"AutomountServiceAccountToken":  comparedField,
@@ -71,7 +71,7 @@ var strictPodSpecFields = map[string]admissionField{
 	"RuntimeClassName":              comparedField,
 	"EnableServiceLinks":            {fieldPlatformOwned, "API defaulting sets true"},
 	"PreemptionPolicy":              {fieldPlatformOwned, "the Priority admission plugin sets it from the class"},
-	"Overhead":                      {fieldPlatformOwned, "the RuntimeClass admission plugin sets the RuntimeClass's overhead"},
+	"Overhead":                      {fieldPlatformOwned, "the RuntimeClass admission plugin sets the RuntimeClass's overhead; the profile's required resource names are checked separately (checkPlatformMarks)"},
 	"TopologySpreadConstraints":     comparedField,
 	"SetHostnameAsFQDN":             comparedField,
 	"OS":                            comparedField,
@@ -114,12 +114,11 @@ var strictContainerFields = map[string]admissionField{
 	"TTY":                      comparedField,
 }
 
-// strictAdmissionChecks are the whole-Pod checks a runtime profile with
-// strictAdmission adds at both admission stages. noNetworkAnnotations are
-// the annotations that must keep their submitted value.
-func strictAdmissionChecks(noNetworkAnnotations map[string]string) []admissionCheck {
-	keys := make([]string, 0, len(noNetworkAnnotations))
-	for k := range noNetworkAnnotations {
+// strictAdmissionChecks are the whole-Pod admission checks a runtime profile
+// with strictAdmission adds at both admission stages.
+func strictAdmissionChecks(profile k8sRuntimeProfile) []admissionCheck {
+	keys := make([]string, 0, len(profile.noNetworkAnnotations))
+	for k := range profile.noNetworkAnnotations {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
@@ -127,10 +126,40 @@ func strictAdmissionChecks(noNetworkAnnotations map[string]string) []admissionCh
 		func(expected, observed *corev1.Pod) []admissionMismatch {
 			return checkAnnotationsKept(keys, expected, observed)
 		},
+		func(_, observed *corev1.Pod) []admissionMismatch {
+			return checkPlatformMarks(profile.requiredOverheadResources, profile.requiredNodeSelector, observed)
+		},
 		checkSubmittedLabelsKept,
 		checkOwnerReferencesKept,
 		checkStrictPodSpec,
 	}
+}
+
+// checkPlatformMarks requires the observed Pod to carry what the platform's
+// RuntimeClass sets at admission: each resource name as a spec.overhead key
+// (its amount is not compared) and each node-selector entry with exactly its
+// value. The RuntimeClass object itself is not read.
+func checkPlatformMarks(overhead []corev1.ResourceName, nodeSelector map[string]string, observed *corev1.Pod) []admissionMismatch {
+	var out []admissionMismatch
+	for _, name := range overhead {
+		if _, ok := observed.Spec.Overhead[name]; !ok {
+			out = append(out, admissionMismatch{field: "spec.overhead[" + string(name) + "]", expected: "present", observed: "absent"})
+		}
+	}
+	keys := make([]string, 0, len(nodeSelector))
+	for k := range nodeSelector {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		want := nodeSelector[key]
+		got, ok := observed.Spec.NodeSelector[key]
+		if ok && got == want {
+			continue
+		}
+		out = append(out, admissionMismatch{field: "spec.nodeSelector[" + key + "]", expected: labelValue(want, true), observed: labelValue(got, ok)})
+	}
+	return out
 }
 
 // checkAnnotationsKept requires each named annotation the expected Pod

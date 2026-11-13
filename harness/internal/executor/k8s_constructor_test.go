@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/fake"
@@ -31,18 +32,47 @@ func constructorCfg(runtimeClass string) K8sExecutorConfig {
 	}
 }
 
-// admitPods makes the fake API server assign a UID to every created Pod, let
-// mutate rewrite it as admission might, and report it Running and Ready.
+// admitPods makes the fake API server assign a UID to every created Pod, add
+// the RuntimeClass marks a profile requires (as the RuntimeClass admission
+// plugin does for the platform's class), let mutate rewrite it as admission
+// might, and report it Running and Ready.
 func admitPods(cs *fake.Clientset, mutate func(pod *corev1.Pod)) {
 	cs.PrependReactor("create", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		pod := action.(clienttesting.CreateAction).GetObject().(*corev1.Pod)
 		pod.UID = "uid-1"
 		pod.Status = readyPod("uid-1").Status
+		applyRuntimeClassMarks(pod)
 		if mutate != nil {
 			mutate(pod)
 		}
 		return false, nil, nil
 	})
+}
+
+// applyRuntimeClassMarks adds the overhead and node-selector marks of the
+// profile whose RuntimeClass the Pod names.
+func applyRuntimeClassMarks(pod *corev1.Pod) {
+	if pod.Spec.RuntimeClassName == nil {
+		return
+	}
+	for _, profile := range k8sRuntimeProfiles {
+		if profile.runtimeClassName != *pod.Spec.RuntimeClassName {
+			continue
+		}
+		for _, name := range profile.requiredOverheadResources {
+			if pod.Spec.Overhead == nil {
+				pod.Spec.Overhead = corev1.ResourceList{}
+			}
+			pod.Spec.Overhead[name] = resource.MustParse("1")
+		}
+		for k, v := range profile.requiredNodeSelector {
+			if pod.Spec.NodeSelector == nil {
+				pod.Spec.NodeSelector = map[string]string{}
+			}
+			pod.Spec.NodeSelector[k] = v
+		}
+		return
+	}
 }
 
 // createdPodName returns the name of the Pod the constructor submitted.

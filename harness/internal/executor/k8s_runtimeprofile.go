@@ -9,6 +9,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -26,6 +28,13 @@ type k8sRuntimeProfile struct {
 	// (strictAdmissionChecks) at creation and during the readiness wait,
 	// and reports an admission failure as a runtime diagnostic event.
 	strictAdmission bool
+	// requiredOverheadResources must each be a key of the admitted Pod's
+	// spec.overhead, and requiredNodeSelector entries must be in its
+	// spec.nodeSelector with exactly these values: the marks the platform's
+	// own RuntimeClass sets, which a same-named class elsewhere lacks.
+	// Checked only under strictAdmission.
+	requiredOverheadResources []corev1.ResourceName
+	requiredNodeSelector      map[string]string
 	// verify runs guest diagnostics after readiness and returns what the
 	// guest reported; nil means the runtime has none. A failed check is a
 	// *k8sRuntimeDiagnosticError.
@@ -45,10 +54,12 @@ var k8sRuntimeProfiles = map[string]k8sRuntimeProfile{
 		runtimeClassName: "isolated-sandbox",
 		// The default 2M log throttle also throttles exec stdout, the only
 		// path results leave an offline guest by.
-		podAnnotations:       map[string]string{"sandbox.amazonaws.com/log-bandwidth": "20M"},
-		noNetworkAnnotations: map[string]string{"sandbox.amazonaws.com/network-isolated": "true"},
-		strictAdmission:      true,
-		verify:               verifyNitroIsolatedGuest,
+		podAnnotations:            map[string]string{"sandbox.amazonaws.com/log-bandwidth": "20M"},
+		noNetworkAnnotations:      map[string]string{"sandbox.amazonaws.com/network-isolated": "true"},
+		strictAdmission:           true,
+		requiredOverheadResources: []corev1.ResourceName{"eks.amazonaws.com/nitro-sandbox"},
+		requiredNodeSelector:      map[string]string{"eks.amazonaws.com/nitro-sandbox": "true"},
+		verify:                    verifyNitroIsolatedGuest,
 	},
 }
 
