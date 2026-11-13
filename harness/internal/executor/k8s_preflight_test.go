@@ -114,7 +114,7 @@ func TestProbeK8sAccess_AllGrantedReportsOK(t *testing.T) {
 			addRuntimeClass(t, kube, "gvisor")
 			kube.ClearActions()
 
-			detail, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: executorType, Namespace: probeTestNamespace, RuntimeClassName: "gvisor"})
+			detail, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: executorType, Namespace: probeTestNamespace, Runtime: "gvisor"})
 
 			must.NoError(err)
 			check.Contains(detail, fmt.Sprintf("%d required permissions granted", len(k8sRequiredAccess(executorType))))
@@ -266,7 +266,7 @@ func TestProbeK8sAccess_ClientBuildFailureIsClassified(t *testing.T) {
 }
 
 func TestProbeK8sAccess_RuntimeClassOutcomes(t *testing.T) {
-	cfg := K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace, RuntimeClassName: "gvisor"}
+	cfg := K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace, Runtime: "gvisor"}
 
 	t.Run("existing class is reported", func(t *testing.T) {
 		must := require.New(t)
@@ -343,9 +343,31 @@ func TestProbeK8sAccess_RuntimeClassOutcomes(t *testing.T) {
 		kube := accessClient()
 		serveSandboxAPI(kube)
 
-		_, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s-sandbox", Namespace: probeTestNamespace, RuntimeClassName: "other"})
+		_, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s-sandbox", Namespace: probeTestNamespace, Runtime: "other"})
 
 		must.ErrorContains(err, `RuntimeClass "gvisor" does not exist`)
+	})
+
+	t.Run("nitro-isolated checks the class its profile maps to", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		kube := accessClient()
+		addRuntimeClass(t, kube, "isolated-sandbox")
+
+		detail, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace, Runtime: "nitro-isolated"})
+
+		must.NoError(err)
+		check.Contains(detail, `RuntimeClass "isolated-sandbox" exists`)
+	})
+
+	t.Run("a runtime without a profile fails before any call", func(t *testing.T) {
+		must := require.New(t)
+		kube := accessClient()
+
+		_, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace, Runtime: "isolated-sandbox"})
+
+		must.ErrorContains(err, `unsupported executor.runtime "isolated-sandbox"`)
+		must.Empty(kube.Actions())
 	})
 }
 

@@ -498,10 +498,10 @@ func k8sProbeHint(executorType string, err error) string {
 // ProbeK8sAccess needs.
 func k8sProbeConfig(cfg types.ExecutorConfig) executor.K8sProbeConfig {
 	return executor.K8sProbeConfig{
-		Type:             cfg.Type,
-		Namespace:        cfg.K8sNamespace,
-		Kubeconfig:       cfg.K8sKubeconfig,
-		RuntimeClassName: cfg.Runtime,
+		Type:       cfg.Type,
+		Namespace:  cfg.K8sNamespace,
+		Kubeconfig: cfg.K8sKubeconfig,
+		Runtime:    cfg.Runtime,
 	}
 }
 
