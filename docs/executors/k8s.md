@@ -224,9 +224,11 @@ server) are also retried until the deadline.
 
 When the wait times out, the error reports the Pod's phase, its
 `PodScheduled` condition (status, reason and message), the last waiting
-reason of the `agent` container, and the last API error, if any. Each
-cluster-supplied string is stripped of control characters, scrubbed of
-credentials, and cut to 256 characters with an ellipsis appended. For
+reason of the `agent` container, and the last API error, if any. From
+each cluster-supplied string every Unicode control character (C0 and C1)
+and format character (category Cf, for example U+202E and U+200B) is
+dropped; the rest is then scrubbed of credentials and cut to 256
+characters with an ellipsis appended. For
 example (one line in the log, wrapped here):
 
 ```
@@ -336,7 +338,11 @@ In the metadata:
   unchanged; added labels are allowed;
 - every annotation under `sandbox.amazonaws.com/` must keep its submitted
   presence and value, so `network-isolated` must keep `"true"` and an
-  added key such as `sandbox.amazonaws.com/policy` fails the run;
+  added key such as `sandbox.amazonaws.com/policy` fails the run. The
+  prefix is matched without regard to case and key names byte for byte,
+  so every case variant of the prefix or of a key name that is not
+  byte-equal to a submitted or throttle key (such as
+  `Sandbox.amazonaws.com/network-isolated`) fails the run;
 - the exception is the eleven throttle keys AWS documentation lists
   ([resource isolation](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-resource-isolation.html)):
   `log-bandwidth`, `ingress-bandwidth`, `egress-bandwidth`,
@@ -344,8 +350,9 @@ In the metadata:
   `dns-packets-per-second`, `overlay-disk-bandwidth`,
   `overlay-disk-iops`, `rootfs-disk-bandwidth`, `rootfs-disk-iops` and
   `conntrack-limit`, each under the same prefix. Admission may add one
-  or change its value, so an operator's mutating policy can retune them;
-  a submitted one must not be removed
+  or change its value, so an operator's mutating policy can retune them.
+  A submitted one must not be removed, and one that admission added must
+  not be removed during the readiness wait
   (`expected present with any value, observed absent`). The list comes
   from AWS documentation, not from measurement; on the tested recipe the
   platform kept the submitted annotations unchanged and added none;
@@ -353,12 +360,14 @@ In the metadata:
 
 A mismatch fails the run, emits `sandbox_runtime_diagnostic_failed` with
 `check: admitted_pod`, and tears the Pod down as in
-[Teardown](#teardown). The error lists every UID, RuntimeClass,
-metadata, annotation and platform-mark mismatch, together with the first
+[Teardown](#teardown). The error lists the UID, RuntimeClass, metadata,
+annotation and platform-mark mismatches, together with the first
 differing spec field, each with expected and observed values, scrubbed
-and cut to 256 characters. A container list is shown by container names,
-and an environment difference names the variable and says whether its
-value or its source changed, never the value. A passing check emits no
+and cut to 256 characters. It shows at most the first ten mismatches,
+followed by `and N more` for the rest. A container list is shown by
+container names, and an environment difference names the variable and
+says whether its value or its source changed, never the value. A
+passing check emits no
 event; the `sandbox_runtime_diagnostic_passed` event after the runtime
 diagnostics implies it. A create error, such as a quota rejection or a
 missing RuntimeClass, is an ordinary create failure and emits no event.
@@ -1334,18 +1343,23 @@ What `observed` holds depends on how far the checks got:
   lists, with the whole mismatch text in `reason`.
 
 Every value the guest or the `exec` supplies, in the returned error, a log
-line or `observed`, first has control characters stripped, is scrubbed of
+line or `observed`, first has every control and format character dropped
+(as for cluster text, see [Readiness](#readiness)), is then scrubbed of
 credentials and is cut to 256 characters with an ellipsis appended. The
 security event then scrubs each `observed` value and the `reason` again
 and cuts each to 256 bytes on a character boundary. The event name says
 *diagnostic* rather than *verified*.
 
-When the diagnostics end because the run's own context was cancelled or
-its deadline passed, construction fails with `runtime diagnostics for
-executor.runtime "nitro-isolated" interrupted: <context error>`, the Pod is
-torn down, and no event is emitted. A diagnostics `exec` that hits its own
-60-second bound while the run is still live fails as `diagnostic_exec`,
-with the event.
+A failure is reported as an interruption only when the run's own
+context is done (cancelled, or its deadline passed) and the error was
+caused by that context: construction then fails with `runtime
+diagnostics for executor.runtime "nitro-isolated" interrupted: <context
+error>`, the Pod is torn down, and no event is emitted. A content check
+that completed and failed (`dmi_product_name`, `network_interfaces`,
+`route_table` or `diagnostic_output`) stays a failure with its event,
+even if the run has just been cancelled. A diagnostics `exec` that hits
+its own 60-second bound while the run is still live fails as
+`diagnostic_exec`, with the event.
 
 #### Run
 
@@ -1462,8 +1476,8 @@ Closing these needs a paid EKS run. The gated integration group
 (`STIRRUP_TEST_NITRO_ISOLATED`, see
 [Testing the executor against a real cluster](#testing-the-executor-against-a-real-cluster))
 covers them and, with `STIRRUP_TEST_EVIDENCE_DIR` set, records the
-submitted Pod, the `Create` response, the Ready Pod and the workspace
-size.
+submitted Pod, the `Create` response (or the `Create` error), the Ready
+Pod and the workspace size.
 
 - Guest workspace capacity when no `ephemeral-storage` is declared, which
   is what this runtime always submits (see [Limits](#limits)).
@@ -1965,7 +1979,7 @@ it, the probe uses the same kubeconfig resolution as a run:
 | `executor.network is required for executor.type="k8s"` | No `network` block. | Set `executor.network.mode` to `none` or `allowlist`. |
 | `not in cluster and KUBECONFIG is unset` | No in-cluster config, no kubeconfig. | Set `--k8s-kubeconfig` or `$KUBECONFIG`, or run in-cluster. |
 | `open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory` (in-cluster orchestrator) | The orchestrator Pod's ServiceAccount has `automountServiceAccountToken: false` (the reference SA's default), so no token is projected for the in-cluster REST config. | Set `automountServiceAccountToken: true` on the orchestrator Pod spec. See [Running the orchestrator in-cluster](#running-the-orchestrator-in-cluster). |
-| `RuntimeClass "<name>" was rejected by the cluster` (real run) | The API server named the RuntimeClass in its rejection (the dry-run row above reports a missing class earlier when the credentials can read RuntimeClasses): it is not registered, or the name is invalid. Other admission rejections (a LimitRange, a quota, Pod Security, a webhook) are reported as `create pod: ...` with the API server's message stripped of control characters, scrubbed of credentials and cut to 256 characters. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) for the handlers actually installed, or pick a registered runtime. For `isolated-sandbox` the error carries an EKS hint instead, and `runtimeclass.yaml` does not define that class; see [Troubleshooting on Nitro](#troubleshooting-on-nitro). |
+| `RuntimeClass "<name>" was rejected by the cluster` (real run) | The API server named the RuntimeClass in its rejection (the dry-run row above reports a missing class earlier when the credentials can read RuntimeClasses): it is not registered, or the name is invalid. Other admission rejections (a LimitRange, a quota, Pod Security, a webhook) are reported as `create pod: ...` with the API server's message stripped of control and format characters, scrubbed of credentials and cut to 256 characters. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) for the handlers actually installed, or pick a registered runtime. For `isolated-sandbox` the error carries an EKS hint instead, and `runtimeclass.yaml` does not define that class; see [Troubleshooting on Nitro](#troubleshooting-on-nitro). |
 | `pod <ns>/<pod> not ready within 5m0s: phase Pending; PodScheduled False (Unschedulable: ...): context deadline exceeded` | No node fits the Pod and the autoscaler (if any) did not add one in time, or the RuntimeClass's scheduling matches no node. | Read the `PodScheduled` message in the error. The Pod's Events (`kubectl -n <ns> get events --field-selector involvedObject.name=<pod>`) remain after teardown until the event TTL; where the scale-up decision is recorded depends on the autoscaler. See [Readiness](#readiness). |
 | `0/N nodes available: ... had untolerated taint(s)` (Pod Pending) | The schedulable nodes are tainted (GKE Sandbox pools taint `sandbox.gke.io/runtime=gvisor:NoSchedule`; arch-dedicated pools may add `kubernetes.io/arch=...`) and the Pod tolerates none. | For the Sandbox pool, set `--container-runtime gvisor` so the managed RuntimeClass injects the toleration. For other tainted pools, add a matching `--k8s-node-selector` and ensure a toleration is available (the executor does not inject arbitrary tolerations). |
 | `pod <ns>/<pod> not ready within 5m0s: phase Pending; PodScheduled True; last waiting reason ContainerCreating` | The Pod was scheduled but its sandbox never started, usually because the RuntimeClass handler is not installed on that node. | Read the `FailedCreatePodSandBox` Event: `kubectl -n <ns> get events --field-selector involvedObject.name=<pod>` (Events outlive the Pod until the event TTL). Install the handler, or restrict the RuntimeClass's `scheduling.nodeSelector` to nodes that have it. |
@@ -2006,8 +2020,8 @@ defaulting to the kind-friendly values when a variable is unset:
 | `STIRRUP_TEST_NAMESPACE` | `default` | Sandbox namespace (use `stirrup-sandbox` for the restricted-PSS path). |
 | `STIRRUP_TEST_RUNTIME_CLASS` | *(empty)* | `executor.runtime` value for the generic tests (`gvisor` on GKE Sandbox — a no-RuntimeClass Pod is unschedulable on a fully tainted cluster). Runtime values equal RuntimeClass names except `nitro-isolated`, which the generic tests do not support; use `STIRRUP_TEST_NITRO_ISOLATED`. |
 | `STIRRUP_TEST_RUNTIME_CLASSES` | `,runc,gvisor` | Comma-separated `executor.runtime` values for `TestK8sRuntimeClass_Admitted` (e.g. `gvisor` alone on GKE). |
-| `STIRRUP_TEST_NITRO_ISOLATED` | *(unset → skip)* | Set to run `TestK8sNitroIsolated_EndToEnd` on an EKS cluster with Nitro Sandboxes, pinned to `m5d.xlarge`: the Pod passes the whole-Pod admission check and the runtime diagnostics, then the group runs the generic exec, timeout, process-tree kill, output-cap, file round-trip, writable-workspace and teardown checks, probes for a guest network with `wget` (an image without `wget` fails the probe), and logs the workspace capacity. It skips everywhere else and has not yet run. |
-| `STIRRUP_TEST_EVIDENCE_DIR` | *(unset → nothing written)* | Directory the Nitro group writes its evidence to: `submitted-pod.json`, `create-response.json` (the Pod as admission returned it), `ready-pod.json` and `workspace-df.txt`. |
+| `STIRRUP_TEST_NITRO_ISOLATED` | *(unset → skip)* | Set to run `TestK8sNitroIsolated_EndToEnd` on an EKS cluster with Nitro Sandboxes, pinned to `m5d.xlarge`: the Pod passes the whole-Pod admission check and the runtime diagnostics, then the group runs the generic exec, timeout, process-tree kill, output-cap, file round-trip, writable-workspace and teardown checks, probes for a guest network with `wget` (an image without `wget` fails the probe), and logs the workspace capacity. Once the Pod is constructed, the subtests share a fresh context sized from the sum of their timeouts (including `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT`), and the Pod's lifetime is the readiness ceiling plus that sum; the group logs the budget when it starts. It skips everywhere else and has not yet run. |
+| `STIRRUP_TEST_EVIDENCE_DIR` | *(unset → nothing written)* | Directory the Nitro group writes its evidence to: `submitted-pod.json`, `create-response.json` (the Pod as admission returned it), `ready-pod.json` and `workspace-df.txt`; when `Create` fails, its error text goes to `create-error.txt`. The Pod files are the API objects as submitted and as the cluster returned them, with `apiVersion: v1` and `kind: Pod` set and every environment value replaced by a fixed marker. They hold infrastructure identifiers, so review them before sharing or committing them. |
 | `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT` | `30s` | Command timeout for the output-cap case, as a Go duration. A runtime that throttles exec output needs longer; the `nitro-isolated` probes returned the cap error only with a 90 s timeout (`90s`). |
 | `STIRRUP_TEST_IMAGE` | `busybox:latest` | Sandbox image (amd64/multi-arch for the Sandbox pool; `curlimages/curl:latest` for the allowlist TLS test). |
 | `STIRRUP_TEST_EGRESS_PROXY_URL` | `…default.svc:8080` | Allowlist-mode proxy URL. |
