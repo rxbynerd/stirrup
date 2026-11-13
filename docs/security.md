@@ -786,8 +786,9 @@ documented with its keys in
 [EKS with Nitro Sandboxes](executors/k8s.md#runtime-diagnostics); a
 failure of the [whole-Pod admission check](executors/k8s.md#whole-pod-admission-check)
 for that runtime emits the same failure event with check `admitted_pod`.
-The values the guest and the diagnostics `exec` supply are stripped of
-control characters, scrubbed and cut to 256 characters before they enter
+The values the guest and the diagnostics `exec` supply have every Unicode
+control and format character dropped, are then scrubbed and are cut to
+256 characters before they enter
 the returned error, a log line or the event, and the event scrubs them
 again and cuts each to 256 bytes. The checks are configuration
 diagnostics rather than attestation: a hostile image can fabricate the
