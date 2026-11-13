@@ -475,10 +475,8 @@ func k8sProbeHint(executorType, runtime string, err error) string {
 		roleManifest = "examples/k8s/agent-sandbox/rbac-agent-sandbox.yaml"
 	}
 	runtimeClassHint := "run `kubectl get runtimeclass` and apply examples/k8s/runtimeclass.yaml, or correct executor.runtime"
-	if executorType == "k8s" && runtime == "nitro-isolated" {
-		// The platform installs isolated-sandbox; the repository manifest
-		// defines self-managed classes and would not help.
-		runtimeClassHint = "the isolated-sandbox RuntimeClass is installed by EKS Auto Mode on Kubernetes 1.36 or later; see docs/executors/k8s.md#eks-with-nitro-sandboxes"
+	if hint := executor.K8sRuntimeClassMissingHint(runtime); executorType == "k8s" && hint != "" {
+		runtimeClassHint = hint
 	}
 	hints := []struct {
 		kind executor.K8sProbeKind

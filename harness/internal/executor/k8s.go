@@ -236,7 +236,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 
 	created, err := clientset.CoreV1().Pods(cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
-		return nil, withTeardownErr(classifyPodCreateError(profile.runtimeClassName, err), teardown.reconcileFailedCreate(pod.Labels, err))
+		return nil, withTeardownErr(classifyPodCreateError(profile, err), teardown.reconcileFailedCreate(pod.Labels, err))
 	}
 	teardown.podUID = created.UID
 
@@ -497,16 +497,21 @@ func buildRESTConfig(kubeconfig string) (*rest.Config, error) {
 }
 
 // classifyPodCreateError wraps a Pod-create failure with its message
-// length-capped, adding a RuntimeClass hint only when the response names the
-// requested class (see runtimeClassRejection). The original error stays
+// length-capped, adding a RuntimeClass hint, and the profile's
+// runtimeClassMissingHint for a missing class, only when the response names
+// the profile's class (see runtimeClassRejection). The original error stays
 // reachable through errors.As.
-func classifyPodCreateError(runtimeClass string, err error) error {
-	if runtimeClass != "" {
+func classifyPodCreateError(profile k8sRuntimeProfile, err error) error {
+	if runtimeClass := profile.runtimeClassName; runtimeClass != "" {
 		switch notFound, invalidCause := runtimeClassRejection(runtimeClass, err); {
 		case notFound:
+			hint := ""
+			if profile.runtimeClassMissingHint != "" {
+				hint = "; " + profile.runtimeClassMissingHint
+			}
 			return fmt.Errorf(
-				"create pod: RuntimeClass %q was rejected by the cluster — no RuntimeClass with that name is registered (kubectl get runtimeclass): %w",
-				runtimeClass, boundClusterErr(err),
+				"create pod: RuntimeClass %q was rejected by the cluster — no RuntimeClass with that name is registered (kubectl get runtimeclass)%s: %w",
+				runtimeClass, hint, boundClusterErr(err),
 			)
 		case invalidCause != "":
 			return fmt.Errorf(

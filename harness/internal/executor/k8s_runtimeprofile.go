@@ -20,6 +20,9 @@ import (
 type k8sRuntimeProfile struct {
 	// runtimeClassName is the Pod RuntimeClassName; empty leaves it unset.
 	runtimeClassName string
+	// runtimeClassMissingHint says where the class comes from, for a run or
+	// dry run that finds it missing; empty gives the generic advice.
+	runtimeClassMissingHint string
 	// podAnnotations are set on every sandbox Pod for this runtime.
 	podAnnotations map[string]string
 	// noNetworkAnnotations are added when network.mode is "none".
@@ -58,7 +61,8 @@ var k8sRuntimeProfiles = map[string]k8sRuntimeProfile{
 	"kata-fc":   {runtimeClassName: "kata-fc"},
 	"kata-clh":  {runtimeClassName: "kata-clh"},
 	"nitro-isolated": {
-		runtimeClassName: "isolated-sandbox",
+		runtimeClassName:        "isolated-sandbox",
+		runtimeClassMissingHint: "the isolated-sandbox RuntimeClass is installed by EKS Auto Mode on Kubernetes 1.36 or later; see docs/executors/k8s.md#eks-with-nitro-sandboxes",
 		// The default 2M log throttle also throttles exec stdout, the only
 		// path results leave an offline guest by.
 		podAnnotations:            map[string]string{"sandbox.amazonaws.com/log-bandwidth": "20M"},
@@ -97,6 +101,13 @@ func k8sRuntimeProfileFor(runtime string) (k8sRuntimeProfile, error) {
 			runtime, strings.Join(types.ValidK8sExecutorRuntimeValues(), ", "))
 	}
 	return profile, nil
+}
+
+// K8sRuntimeClassMissingHint is the remediation for a missing RuntimeClass
+// that is specific to a k8s executor.runtime value, or "" when the runtime
+// has none and the generic advice applies.
+func K8sRuntimeClassMissingHint(runtime string) string {
+	return k8sRuntimeProfiles[runtime].runtimeClassMissingHint
 }
 
 // k8sRuntimeDiagnosticError is a failed guest diagnostic. check names the
