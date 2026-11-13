@@ -38,6 +38,8 @@ import (
 //	STIRRUP_TEST_RUNTIME_CLASS    executor.runtime value       (default "")
 //	STIRRUP_TEST_IMAGE            sandbox image                (default "busybox:latest")
 //	STIRRUP_TEST_EGRESS_PROXY_URL allowlist proxy URL          (default the default-ns svc)
+//	STIRRUP_TEST_OUTPUT_CAP_TIMEOUT output-cap command timeout (default 30s)
+//	STIRRUP_TEST_EVIDENCE_DIR     evidence directory for the Nitro group (default none)
 //
 // On a cluster whose only schedulable nodes are tainted for a sandbox
 // runtime, STIRRUP_TEST_RUNTIME_CLASS must name the sandbox runtime
@@ -151,7 +153,6 @@ func TestK8sExecutor_CloseIdempotent(t *testing.T) {
 // sandbox Pod still exists. After Close returns both are gone.
 func TestK8sExecutor_CloseRemovesPolicyAfterPodIsGone(t *testing.T) {
 	must := require.New(t)
-	check := assert.New(t)
 	cfg := testK8sEnv(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
@@ -170,8 +171,18 @@ func TestK8sExecutor_CloseRemovesPolicyAfterPodIsGone(t *testing.T) {
 
 	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
 	must.NoError(err, "build verification clientset")
-	pods := clientset.CoreV1().Pods(cfg.namespace)
-	policies := clientset.NetworkingV1().NetworkPolicies(cfg.namespace)
+	assertCloseRemovesPolicyAfterPodIsGone(t, ctx, clientset, sandbox)
+}
+
+// assertCloseRemovesPolicyAfterPodIsGone closes sandbox while sampling the
+// cluster and fails if the egress NetworkPolicy is ever absent while the
+// Pod still exists, or if no sample sees the Pod terminating gracefully.
+func assertCloseRemovesPolicyAfterPodIsGone(t *testing.T, ctx context.Context, clientset kubernetes.Interface, sandbox *K8sExecutor) {
+	t.Helper()
+	must := require.New(t)
+	check := assert.New(t)
+	pods := clientset.CoreV1().Pods(sandbox.namespace)
+	policies := clientset.NetworkingV1().NetworkPolicies(sandbox.namespace)
 	policyName := networkPolicyName(sandbox.podName)
 
 	admitted, err := pods.Get(ctx, sandbox.podName, metav1.GetOptions{})
@@ -260,11 +271,13 @@ func newTestK8sExecutor(t *testing.T) *K8sExecutor {
 // TestK8sExec_Success exercises a clean exit: echo writes to stdout and the
 // process exits 0.
 func TestK8sExec_Success(t *testing.T) {
+	assertExecSuccess(t, context.Background(), newTestK8sExecutor(t))
+}
+
+func assertExecSuccess(t *testing.T, ctx context.Context, exec podCommandRunner) {
+	t.Helper()
 	must := require.New(t)
 	check := assert.New(t)
-	exec := newTestK8sExecutor(t)
-	ctx := context.Background()
-
 	res, err := exec.Exec(ctx, "echo hello", 10*time.Second)
 	must.NoError(err, "Exec")
 	check.Equal(0, res.ExitCode)
@@ -274,11 +287,13 @@ func TestK8sExec_Success(t *testing.T) {
 // TestK8sExec_NonZeroExit verifies that a command writing to stderr and
 // exiting non-zero surfaces both the exit code and stderr.
 func TestK8sExec_NonZeroExit(t *testing.T) {
+	assertExecNonZeroExit(t, context.Background(), newTestK8sExecutor(t))
+}
+
+func assertExecNonZeroExit(t *testing.T, ctx context.Context, exec podCommandRunner) {
+	t.Helper()
 	must := require.New(t)
 	check := assert.New(t)
-	exec := newTestK8sExecutor(t)
-	ctx := context.Background()
-
 	res, err := exec.Exec(ctx, "echo err 1>&2; exit 7", 10*time.Second)
 	must.NoError(err, "Exec")
 	check.Equal(7, res.ExitCode)
@@ -291,11 +306,13 @@ func TestK8sExec_NonZeroExit(t *testing.T) {
 // at roughly the timeout boundary, not after the full sleep. Also asserts
 // the partial output captured before the deadline is preserved.
 func TestK8sExec_Timeout(t *testing.T) {
+	assertExecTimeout(t, context.Background(), newTestK8sExecutor(t))
+}
+
+func assertExecTimeout(t *testing.T, ctx context.Context, exec podCommandRunner) {
+	t.Helper()
 	must := require.New(t)
 	check := assert.New(t)
-	exec := newTestK8sExecutor(t)
-	ctx := context.Background()
-
 	start := time.Now()
 	result, err := exec.Exec(ctx, "echo partial; sleep 5", 1*time.Second)
 	elapsed := time.Since(start)
@@ -400,13 +417,29 @@ func TestK8sExec_CommandOutputSpill(t *testing.T) {
 // TestK8sExec_OutputCap verifies the 10 MB output cap fires when a command
 // emits more than the limit.
 func TestK8sExec_OutputCap(t *testing.T) {
-	must := require.New(t)
-	exec := newTestK8sExecutor(t)
-	ctx := context.Background()
+	assertExecOutputCap(t, context.Background(), newTestK8sExecutor(t))
+}
 
+// outputCapTimeout is the command timeout the output-cap case allows,
+// STIRRUP_TEST_OUTPUT_CAP_TIMEOUT when set: a runtime that throttles exec
+// output needs longer than the 30-second default to stream 11 MB.
+func outputCapTimeout(t *testing.T) time.Duration {
+	t.Helper()
+	v := os.Getenv("STIRRUP_TEST_OUTPUT_CAP_TIMEOUT")
+	if v == "" {
+		return 30 * time.Second
+	}
+	d, err := time.ParseDuration(v)
+	require.New(t).NoError(err, "STIRRUP_TEST_OUTPUT_CAP_TIMEOUT")
+	return d
+}
+
+func assertExecOutputCap(t *testing.T, ctx context.Context, exec podCommandRunner) {
+	t.Helper()
+	must := require.New(t)
 	// Emit ~11 MB to stdout. `yes` + head produces a deterministic stream;
 	// 11*1024*1024 bytes of "x\n" comfortably exceeds the 10 MB cap.
-	_, err := exec.Exec(ctx, "yes x | head -c 11534336", 30*time.Second)
+	_, err := exec.Exec(ctx, "yes x | head -c 11534336", outputCapTimeout(t))
 	must.ErrorIs(err, errK8sOutputCap)
 }
 
@@ -414,9 +447,13 @@ func TestK8sExec_OutputCap(t *testing.T) {
 // UTF-8 and an embedded NUL byte, confirming the tar-over-exec path is
 // byte-exact.
 func TestK8sFileIO_RoundTrip(t *testing.T) {
-	exec := newTestK8sExecutor(t)
-	ctx := context.Background()
+	assertFileIORoundTrip(t, context.Background(), newTestK8sExecutor(t))
+}
 
+// assertFileIORoundTrip writes and reads back several payloads over the
+// tar-over-exec path.
+func assertFileIORoundTrip(t *testing.T, ctx context.Context, exec *K8sExecutor) {
+	t.Helper()
 	cases := map[string]string{
 		"ascii.txt":    "hello world\n",
 		"utf8.txt":     "héllo — 世界 🌍\n",
@@ -433,6 +470,22 @@ func TestK8sFileIO_RoundTrip(t *testing.T) {
 			must.Equal(content, got)
 		})
 	}
+}
+
+// TestK8sExec_WorkspaceWritableAsSandboxUID verifies the agent runs as the
+// sandbox UID and can create and remove a file in /workspace.
+func TestK8sExec_WorkspaceWritableAsSandboxUID(t *testing.T) {
+	assertWorkspaceWritableAsSandboxUID(t, context.Background(), newTestK8sExecutor(t))
+}
+
+func assertWorkspaceWritableAsSandboxUID(t *testing.T, ctx context.Context, exec podCommandRunner) {
+	t.Helper()
+	must := require.New(t)
+	check := assert.New(t)
+	res, err := exec.Exec(ctx, "id -u && : > /workspace/.stirrup-write-probe && rm /workspace/.stirrup-write-probe", 30*time.Second)
+	must.NoError(err, "Exec")
+	check.Equal(0, res.ExitCode, "stderr %q", res.Stderr)
+	check.Equal(fmt.Sprintf("%d\n", k8sRunAsUserUID), res.Stdout)
 }
 
 // TestK8sReadFile_Missing verifies a missing path maps to fs.ErrNotExist so
@@ -1039,34 +1092,7 @@ func TestK8sExecutor_SandboxGarbageCollectedWithHarnessPod(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout+2*time.Minute)
 	defer cancel()
 
-	// The stand-in satisfies the restricted Pod Security Standard so the
-	// test runs in a namespace that enforces it.
-	owner, err := clientset.CoreV1().Pods(cfg.namespace).Create(ctx, &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{GenerateName: "stirrup-owner-", Namespace: cfg.namespace},
-		Spec: corev1.PodSpec{
-			RestartPolicy:                corev1.RestartPolicyNever,
-			RuntimeClassName:             optionalRuntimeClassName(k8sRuntimeProfiles[cfg.runtimeClass].runtimeClassName),
-			AutomountServiceAccountToken: ptr.To(false),
-			SecurityContext: &corev1.PodSecurityContext{
-				RunAsNonRoot:   ptr.To(true),
-				RunAsUser:      ptr.To(k8sRunAsUserUID),
-				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
-			},
-			Containers: []corev1.Container{{
-				Name:    "owner",
-				Image:   cfg.image,
-				Command: []string{"/bin/sh", "-c", "sleep 600"},
-				SecurityContext: &corev1.SecurityContext{
-					AllowPrivilegeEscalation: ptr.To(false),
-					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-				},
-			}},
-		},
-	}, metav1.CreateOptions{})
-	must.NoError(err, "create stand-in harness pod")
-	t.Cleanup(func() {
-		_ = clientset.CoreV1().Pods(cfg.namespace).Delete(context.Background(), owner.Name, metav1.DeleteOptions{GracePeriodSeconds: ptr.To(int64(0))})
-	})
+	owner := createStandInOwnerPod(t, ctx, clientset, cfg.namespace, cfg.image, k8sRuntimeProfiles[cfg.runtimeClass].runtimeClassName)
 
 	sandbox, err := NewK8sExecutor(ctx, K8sExecutorConfig{
 		Image:      cfg.image,
@@ -1093,4 +1119,40 @@ func TestK8sExecutor_SandboxGarbageCollectedWithHarnessPod(t *testing.T) {
 		}
 		time.Sleep(time.Second)
 	}
+}
+
+// createStandInOwnerPod creates a bare Pod to stand in for the harness pod
+// as a sandbox's owner, and deletes it on cleanup. It satisfies the
+// restricted Pod Security Standard so the test runs in a namespace that
+// enforces it; it only needs to exist, not to run.
+func createStandInOwnerPod(t *testing.T, ctx context.Context, clientset kubernetes.Interface, namespace, image, runtimeClassName string) *corev1.Pod {
+	t.Helper()
+	must := require.New(t)
+	owner, err := clientset.CoreV1().Pods(namespace).Create(ctx, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{GenerateName: "stirrup-owner-", Namespace: namespace},
+		Spec: corev1.PodSpec{
+			RestartPolicy:                corev1.RestartPolicyNever,
+			RuntimeClassName:             optionalRuntimeClassName(runtimeClassName),
+			AutomountServiceAccountToken: ptr.To(false),
+			SecurityContext: &corev1.PodSecurityContext{
+				RunAsNonRoot:   ptr.To(true),
+				RunAsUser:      ptr.To(k8sRunAsUserUID),
+				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+			},
+			Containers: []corev1.Container{{
+				Name:    "owner",
+				Image:   image,
+				Command: []string{"/bin/sh", "-c", "sleep 600"},
+				SecurityContext: &corev1.SecurityContext{
+					AllowPrivilegeEscalation: ptr.To(false),
+					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+				},
+			}},
+		},
+	}, metav1.CreateOptions{})
+	must.NoError(err, "create stand-in harness pod")
+	t.Cleanup(func() {
+		_ = clientset.CoreV1().Pods(namespace).Delete(context.Background(), owner.Name, metav1.DeleteOptions{GracePeriodSeconds: ptr.To(int64(0))})
+	})
+	return owner
 }

@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
 	"k8s.io/utils/ptr"
@@ -106,7 +107,7 @@ func newLoggedFakeK8sExecutor(ctx context.Context, cs *fake.Clientset, cfg K8sEx
 
 // newFakeK8sExecutorWithExec is newFakeK8sExecutor with pods/exec served by
 // execFn.
-func newFakeK8sExecutorWithExec(ctx context.Context, cs *fake.Clientset, cfg K8sExecutorConfig, execFn podExecFunc) (*K8sExecutor, error) {
+func newFakeK8sExecutorWithExec(ctx context.Context, cs kubernetes.Interface, cfg K8sExecutorConfig, execFn podExecFunc) (*K8sExecutor, error) {
 	logger, _ := testLogger()
 	profile, proxyEnv, err := prepareK8sExecutor(cfg)
 	if err != nil {
