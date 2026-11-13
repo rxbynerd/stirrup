@@ -209,7 +209,7 @@ reaches one of these states:
 - the Pod is being deleted, or is not found;
 - the Pod's UID, its `runtimeClassName` or a policy-selected label
   changed, or, for `nitro-isolated`, anything the whole-Pod admission
-  check compares (see [Admission check](#admission-check));
+  check compares (see [Whole-Pod admission check](#whole-pod-admission-check));
 - the API server answers `Forbidden` or `Unauthorized`.
 
 `ErrImagePull` and `ImagePullBackOff` are retried within the same
@@ -317,20 +317,22 @@ as a set that may gain entries but not lose any.
   `hostNetwork`, `hostPID`, `hostIPC`, `hostUsers` and the
   RuntimeClass.
 
-The admitted Pod must also carry the marks the EKS `isolated-sandbox`
-RuntimeClass sets at admission: `eks.amazonaws.com/nitro-sandbox` as a
+The admitted Pod must also carry the two marks of the EKS
+`isolated-sandbox` RuntimeClass: `eks.amazonaws.com/nitro-sandbox` as a
 key of `spec.overhead` (its amount is not compared) and
 `spec.nodeSelector["eks.amazonaws.com/nitro-sandbox"]` equal to `"true"`.
-*Measured:* both were on the Pods read back on the tested recipe. A
-cluster whose `isolated-sandbox` class is not the one EKS installs, such
-as a self-managed class of that name or one that points at `runc`, lacks
-them and fails here, before the [runtime diagnostics](#runtime-diagnostics)
-run, with mismatches such as
-`spec.overhead[eks.amazonaws.com/nitro-sandbox]: expected present, observed absent`
-and
-`spec.nodeSelector[eks.amazonaws.com/nitro-sandbox]: expected "true", observed absent`.
-The RuntimeClass object itself is not read; the reference Role cannot
-read RuntimeClasses.
+Upstream Kubernetes sets both at admission
+([Pod Overhead](https://kubernetes.io/docs/concepts/scheduling-eviction/pod-overhead/),
+[RuntimeClass scheduling](https://kubernetes.io/docs/concepts/containers/runtime-class/#scheduling));
+that an EKS `Create` response already carries them is unverified.
+*Measured:* both were on the Pods read back after Ready on the tested
+recipe. A cluster whose `isolated-sandbox` class is not the one EKS
+installs, such as a self-managed class of that name or one that points
+at `runc`, lacks them and fails here, before the
+[runtime diagnostics](#runtime-diagnostics) run (the error is shown
+under [Troubleshooting on Nitro](#troubleshooting-on-nitro)). The
+RuntimeClass object itself is not read; the reference Role cannot read
+RuntimeClasses.
 
 In the metadata:
 
@@ -379,17 +381,19 @@ What the check leaves open:
   file from the host at that path, wherever it points),
   `imagePullSecrets` and `priorityClassName` are platform-owned or
   subset fields, so a webhook that sets them is not detected. The
-  required node-selector mark is what bounds where the Pod can land.
-- **Nothing is compared after readiness.** Any writer with `pods/patch`
-  in the namespace can change `spec.containers[*].image` afterwards: the
-  kubelet restarts the container, the `/workspace` `emptyDir` persists,
-  and the harness keeps running commands in the new image. Labels and
-  the `network-isolated` annotation can also be changed afterwards
+  required node-selector mark is what the scheduler matches on.
+- **Nothing is compared after readiness.** On a `runc` Pod, any writer
+  with `pods/patch` in the namespace can change
+  `spec.containers[*].image` afterwards: the kubelet restarts the
+  container, the `/workspace` `emptyDir` persists, and the harness keeps
+  running commands in the new image; an ephemeral container can also be
+  added through its subresource. Whether a Nitro Sandbox honours such an
+  image patch or ephemeral container is unverified; an ephemeral
+  container added before the Pod is Ready is seen by the check. Labels
+  and the `network-isolated` annotation can also be changed afterwards
   (AWS documentation says the annotation is read once, at Pod creation,
-  so a later change has no effect), and an ephemeral container can be
-  added through its subresource; one added before the Pod is Ready is
-  seen. Each of these needs write access to the sandbox namespace, which
-  the threat model treats as semi-trusted.
+  so a later change has no effect). Each of these needs write access to
+  the sandbox namespace, which the threat model treats as semi-trusted.
 - **Fields the read-backs did not exercise.** The classification of
   `schedulingGates`, `readinessGates`, `affinity`,
   `topologySpreadConstraints` and the container `securityContext`
@@ -400,20 +404,7 @@ What the check leaves open:
   no `Create` response was captured, so whether a field is filled in at
   creation or only at scheduling is unverified on EKS.
 - **`kind` is not evidence about EKS.** A `kind` run shows only how the
-  check meets upstream API defaulting. On `kind` (Kubernetes 1.31), a
-  RuntimeClass named `isolated-sandbox` that points at `runc` and carries
-  neither the overhead nor the node-selector mark fails at the whole-Pod
-  admission check with
-  `spec.overhead[eks.amazonaws.com/nitro-sandbox]: expected present, observed absent; spec.nodeSelector[eks.amazonaws.com/nitro-sandbox]: expected "true", observed absent`,
-  before the runtime diagnostics run. When that class also carries both
-  marks (and the node carries the label and advertises the extended
-  resource), the `Create` response on `kind` already holds the overhead
-  and the merged selector, the Pod passes the check at both stages, and
-  the run fails at the runtime diagnostics with
-  `dmi_product_name: DMI product name "kind" does not end in ".enclave"`.
-  A LimitRange that defaults `ephemeral-storage` fails the check on
-  `spec.containers[agent].resources`, while a `runc` run in the same
-  namespace still starts.
+  check meets upstream API defaulting, not what EKS admission does.
 
 ### Diagnosing a slow or failed start
 
@@ -816,10 +807,12 @@ only, so the `k8s` values are valid but not offered by completion.
 | `pids` | **Logged and ignored.** Per-Pod PID limits are a kubelet setting (`--pod-max-pids`), not a container resource field. |
 
 A nil or all-zero `resources` block leaves the Pod's requirements empty
-so it inherits namespace defaults. `nitro-isolated` is the exception: its
-guest VM is sized from the CPU and memory requests at boot, so both are
-required, and `diskMb` is rejected because an `ephemeral-storage` limit
-is not an enforced quota inside the guest.
+so it inherits namespace defaults. `nitro-isolated` is the exception:
+the AWS sample says its guest VM is sized from the requests at boot, so
+CPU and memory are both required, and `diskMb` is rejected because an
+`ephemeral-storage` limit was not observed to bound writes inside the
+guest (one 128 MiB write succeeded against a 64 MiB limit). See
+[What the runtime accepts](#what-the-runtime-accepts).
 
 ## Deployment recipes
 
@@ -1062,17 +1055,19 @@ the Pod network. *Measured* on the tested recipe below, `exec` and binary
 `tar` I/O worked in a guest whose only network interfaces were `lo` and
 `dummy0`, with no routes.
 
-**Status.** This support has not run on EKS. Statements marked
-*measured* come from a spike on 2026-11-11 that ran hand-made Pods on the
-tested recipe below and called the executor's exec code directly; it did
-not exercise the executor constructor, its validation, the whole-Pod
-admission check or the runtime diagnostics in the form described here.
-The measured figures are recorded in the adoption plan's
-[Tested recipe (2026-11-11)](../nitro-sandboxes-adoption-plan.md#tested-recipe-2026-11-11);
-the raw capture is no longer kept in the repository. The remaining
-statements describe the implemented design or are marked as AWS
-documentation. This status changes with the live-validation pull
-request, which runs the gated integration group on EKS;
+#### Status
+
+This support has not run on EKS. Statements marked *measured* come from
+**the 2026-11-11 EKS run**, which ran hand-made Pods on the
+[tested recipe](#tested-recipe) and called the executor's exec code
+directly. That run did not exercise the executor constructor, its
+validation, the whole-Pod admission check or the runtime diagnostics in
+the form described here. The measured figures are recorded in the
+adoption plan's
+[Tested recipe (2026-11-11)](../nitro-sandboxes-adoption-plan.md#tested-recipe-2026-11-11).
+The remaining statements describe the implemented design or are marked
+as AWS documentation. This status holds until the gated integration
+group has run on EKS;
 [Open live-validation items](#open-live-validation-items) lists what that
 run must close.
 
@@ -1083,14 +1078,16 @@ run must close.
    AWS documentation says standard node groups need a custom AMI
    ([isolated setup](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-isolated-setup.html));
    they are untested here.
-2. A node pool able to launch a supported instance family, set up as in
-   AWS's [isolated setup](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-isolated-setup.html)
-   page; the supported instance types are listed on the
+2. A node that can run the tested instance type. AWS documents no
+   additional setup on Auto Mode: Auto Mode provisions a compatible node
+   ([isolated setup](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-isolated-setup.html));
+   the supported instance types are listed on the
    [EC2 Nitro Sandboxes](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html)
-   page. The one tested instance type is `m5d.xlarge` (see
-   [Tested recipe](#tested-recipe)). The repository has no NodePool
-   manifest from the spike, because the raw evidence was removed from the
-   tree, and this document gives none that has not been run.
+   page. The 2026-11-11 EKS run used a dedicated NodePool that could
+   launch `m5d.xlarge` (see [Tested recipe](#tested-recipe)); whether a
+   built-in Auto Mode pool can launch it is unverified. If the Pod stays
+   Pending because no node matches its node selector, create a NodePool
+   that allows `m5d.xlarge`. The repository ships no NodePool manifest.
 3. The `isolated-sandbox` RuntimeClass, which EKS Auto Mode installs.
    Do not apply [`examples/k8s/runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml),
    which defines no such class.
@@ -1124,8 +1121,8 @@ carries the RunConfig side of this recipe. Its `executor.k8sNodeSelector`
 pins the Pod to the tested node with `kubernetes.io/arch: amd64` and
 `node.kubernetes.io/instance-type: m5d.xlarge`. `m5d.xlarge` is the one
 tested instance type; widening the selector needs its own evidence,
-because the DMI diagnostic has only been seen on `m5d`. On the spike the
-node came from a dedicated Auto Mode NodePool (the Pod's `Nominated`
+because the DMI diagnostic has only been seen on `m5d`. On the
+2026-11-11 EKS run the node came from a dedicated Auto Mode NodePool (the Pod's `Nominated`
 Event named one of that pool's NodeClaims) and the Pods' node selector
 carried only the architecture, so the instance type was chosen at the
 NodePool level. Selecting it with a Pod node selector, as the example
@@ -1141,9 +1138,9 @@ reason.
 | Setting | Rule | Why |
 |---|---|---|
 | `executor.type` | `k8s` only | `k8s-sandbox` stays gVisor-only. |
-| `executor.network.mode` | `none` only | `allowlist` depends on NetworkPolicy enforcement, which EKS Auto Mode defaults do not provide (see [Enforcement caveat](#enforcement-caveat--networkpolicy-may-be-accepted-but-not-enforced)). |
-| `executor.resources.cpus`, `memoryMb` | both positive; fractional CPU accepted | The guest VM is sized from the requests at boot. With no requests a guest boots small: *measured* `MemTotal` was 132460 kB (about 130 MiB), and the [AWS sample](https://github.com/aws-samples/sample-eks-nitro-sandbox) reports about one vCPU and 130 MiB. A build in such a guest is likely to fail with out-of-memory kills (not measured). 1 CPU and 1024 MiB is a starting point, not a measured minimum. |
-| `executor.resources.diskMb` | unset | *Measured:* a 128 MiB write succeeded against a 64 MiB `ephemeral-storage` limit with no eviction; the workspace was XFS mounted `noquota`. A limit would read as a quota it is not. |
+| `executor.network.mode` | `none` only | `allowlist` depends on NetworkPolicy enforcement; AWS documents that Auto Mode needs its network policy controller enabled first (see [Enforcement caveat](#enforcement-caveat--networkpolicy-may-be-accepted-but-not-enforced)). |
+| `executor.resources.cpus`, `memoryMb` | both positive; fractional CPU accepted | The guest VM is sized from the requests at boot (AWS sample, [`SKILL.md`](https://github.com/aws-samples/sample-eks-nitro-sandbox/blob/main/.agents/skills/nitro-sandbox-pods/SKILL.md)). With no requests or limits a guest booted small: *measured* `MemTotal` 132460 kB (about 130 MiB); the AWS sample's pods got about one vCPU and 130 MiB in its run. A build in such a guest is likely to fail with out-of-memory kills (not measured). 1 CPU and 1024 MiB is a starting point, not a measured minimum. |
+| `executor.resources.diskMb` | unset | An `ephemeral-storage` limit was not observed to bound writes inside the guest: *measured*, a 128 MiB write succeeded against a 64 MiB limit with no eviction, and the workspace was XFS mounted `noquota`. |
 | `executor.sandboxIdentity`, `executor.gitProxy` | unset (one error for both) | The runtime runs offline: no network service is reachable from the guest (*measured*, see [Network mode `none` on this runtime](#network-mode-none-on-this-runtime)), so there is nothing to present the token to. |
 
 Two RuntimeClass names are refused with a reason after the usual
@@ -1153,14 +1150,16 @@ Two RuntimeClass names are refused with a reason after the usual
   `nitro-isolated`, which selects it.
 - `confidential-sandbox` is not supported. That mode protects the
   workload from the node operator, which is not this harness's threat,
-  and its default policy denies `exec`, the executor's only channel into
-  the Pod.
+  and AWS documentation says its default policy denies `exec`, the
+  executor's only channel into the Pod
+  ([confidential setup](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-confidential-setup.html)).
 
 #### Limits
 
 - **Disk.** The guest workspace size when no `ephemeral-storage` is
   declared, which is what this runtime always submits, has not been
-  measured. The spike measured only guests with a declaration: about
+  measured. The 2026-11-11 EKS run measured only guests with a
+  declaration: about
   385 MiB at a 64 MiB declaration and about 909 MiB at 1 GiB. A task may
   run out of disk.
 - **Memory.** AWS documentation gives a minimum of 256 MiB per sandbox
@@ -1194,13 +1193,14 @@ On top of the shared hardened spec, a `nitro-isolated` Pod carries:
   guest with no network interface other than `lo` and `dummy0`, and no
   routes (see [Network mode `none` on this runtime](#network-mode-none-on-this-runtime)).
   The deny-all NetworkPolicy for mode `none` is still installed. It is a
-  second layer only where the cluster enforces NetworkPolicy, which EKS
-  Auto Mode defaults do not (see
+  second layer only where the cluster enforces NetworkPolicy; AWS
+  documents that Auto Mode needs its network policy controller enabled
+  first (see
   [Enforcement caveat](#enforcement-caveat--networkpolicy-may-be-accepted-but-not-enforced)).
 - `sandbox.amazonaws.com/log-bandwidth: "20M"`. The default 2 Mbit/s log
   throttle also throttles `exec` stdout, which carries command output,
-  file reads and the workspace export, and is the only way results
-  leave an offline guest. *Measured:* an 11 MiB output took 44 s at the
+  file reads and the workspace export, and is the only channel the
+  executor reads results from. *Measured:* an 11 MiB output took 44 s at the
   default and 4.48 s at `20M`, against 3.39 s on an ordinary Pod, and a
   30-second command at the default returned a timeout instead of the
   output-cap error. `20M` is the only non-default value exercised. It is
@@ -1241,7 +1241,9 @@ and tears the Pod down when admission changes the Pod. Each of these
 fails every run by design:
 
 - a Pod Identity association or IRSA role on the sandbox service account,
-  whose webhook injects a token volume and environment variables;
+  whose webhook AWS documents as injecting a token volume and
+  environment variables
+  ([metadata and credentials](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-metadata-credentials.html));
 - a policy engine that rewrites image references;
 - a LimitRange that defaults `ephemeral-storage` or other resources;
 - any sidecar injector;
@@ -1281,14 +1283,17 @@ the wait costs the run.
 After the Pod is Ready and the whole-Pod admission check has passed, and before
 the executor is returned to the run, the executor reads three files
 inside the guest in one `exec`, bounded by the 60-second file I/O
-timeout, using only shell builtins (`read`, `printf`, `[`):
+timeout, using only commands that are builtins in common POSIX shells
+(`read`, `printf`, `[`):
 
 1. `/sys/class/dmi/id/product_name` must end in `.enclave`
    (*measured:* `m5d.enclave` on `m5d.xlarge`; `m5d.xlarge` on an
    ordinary Pod on the same node).
 2. `/proc/net/dev` may list no interface other than `lo` and `dummy0`.
-   `/proc/net` follows the network namespace of the reading process,
-   which `/sys/class/net` does not.
+   On Linux, `/proc/net` follows the network namespace of the reading
+   process, which `/sys/class/net` does not
+   ([`network_namespaces(7)`](https://man7.org/linux/man-pages/man7/network_namespaces.7.html));
+   this is general Linux behaviour, not exercised on a Nitro guest.
 3. `/proc/net/route` must have no route entries.
 
 A missing or unreadable file, malformed output or a failed `exec` fails
@@ -1305,16 +1310,19 @@ What the diagnostics do not prove:
 - They do not look for vsock listeners, and they do not show that the
   cluster enforces NetworkPolicy.
 - `/proc/net/route` lists IPv4 routes only; IPv6 routes are not read.
-  The interface check is what rules out a non-loopback device.
+  The interface check rules out any device other than `lo` and `dummy0`;
+  an address or an IPv6 route on those two is not read.
 - The DMI string has been seen on `m5d` only. A family that reports
   another string fails every run until the check is updated, and so
   does a guest kernel that adds an interface (for example a fallback
   tunnel device) until the allow-list is updated.
 
-The diagnostics have not run on a Nitro guest in this form; the spike
-read the same files with `cat` over `kubectl exec`. The exact shell text
-has run under BusyBox `ash` and Debian `dash` on a `kind` cluster, where
-the DMI check failed as it should on a Pod that is not a Nitro guest.
+The runtime diagnostics have not run on a Nitro guest in this form (see
+[Status](#status)); the 2026-11-11 EKS run read the same files with
+`cat` over `kubectl exec`. The script is pinned by a unit test that runs
+it under the host shell and by a gated test that runs it on a non-Nitro
+Pod (see
+[Testing the executor against a real cluster](#testing-the-executor-against-a-real-cluster)).
 
 Security events, scrubbed like every other
 [security event](../security.md#runtime-diagnostics-on-kubernetes):
@@ -1442,7 +1450,8 @@ ends, as described in [Sandbox lifecycle](#sandbox-lifecycle) and
 [Cleaning up retained objects](#cleaning-up-retained-objects). Nodes are
 provisioned and removed by Auto Mode, not by the harness. The delay
 before Auto Mode removes an idle node after the last sandbox Pod is gone
-was not measured. The modelled cost of the spike is recorded in the
+was not measured. The modelled cost of the 2026-11-11 EKS run is
+recorded in the
 plan's [Tested recipe (2026-11-11)](../nitro-sandboxes-adoption-plan.md#tested-recipe-2026-11-11).
 
 #### Troubleshooting on Nitro
@@ -1460,14 +1469,14 @@ not the Pod.
 | `admitted pod <ns>/<pod> does not match the submitted pod: spec.overhead[eks.amazonaws.com/nitro-sandbox]: expected present, observed absent` (or `spec.nodeSelector[eks.amazonaws.com/nitro-sandbox]: expected "true", observed absent`) | The `isolated-sandbox` RuntimeClass is not the one EKS installs, for example a self-managed class of that name. | Use the EKS Auto Mode class; see [Whole-Pod admission check](#whole-pod-admission-check). |
 | `pod <ns>/<pod> not ready within 5m0s: phase Pending; PodScheduled False (...)` | Auto Mode is still provisioning a node, or no node it can launch matches `kubernetes.io/arch` and `node.kubernetes.io/instance-type` in `executor.k8sNodeSelector`. | Read the `PodScheduled` message in the error and the Events. Keep the selector on the tested `amd64` `m5d.xlarge`, and make sure the node pool can launch it. |
 | As above, with a node pool configured for an instance type or AMI that Nitro Sandboxes do not support | AWS documentation says the Pod stays Pending when Auto Mode cannot provision a capable node: FIPS AMIs, GPU or Neuron AMIs, multi-NUMA or unvalidated instance types, and the temporarily excluded `r5a`, `r5ad` and `m5ad` ([limitations](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-limitations.html)); `m5d.large` and `m5d.metal` are not supported ([EC2 Nitro Sandboxes](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html)). | Use the tested `m5d.xlarge`. |
-| `admitted pod <ns>/<pod> does not match the submitted pod: spec.volumes: expected [{"name":"workspace","emptyDir":{}}], observed [{"name":"workspace","emptyDir":{}},{"name":"eks-pod-identity-token",...}]` (`aws-iam-token` for IRSA) | The sandbox service account has a Pod Identity association or an IRSA role, whose webhook injected a token volume. | Set `executor.k8sServiceAccount` to a service account with no association, or use another namespace; see [Service account](#service-account). |
+| `admitted pod <ns>/<pod> does not match the submitted pod: spec.volumes: expected [{"name":"workspace","emptyDir":{}}], observed [{"name":"workspace","emptyDir":{}},{"name":"<token volume>",...}]` | The sandbox service account has a Pod Identity association or an IRSA role, whose webhook AWS documents as injecting a token volume ([metadata and credentials](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-metadata-credentials.html)). | Set `executor.k8sServiceAccount` to a service account with no association, or use another namespace; see [Service account](#service-account). |
 | `admitted pod <ns>/<pod> does not match the submitted pod: spec.containers[agent].resources: ...` with an added `ephemeral-storage` | A LimitRange in the sandbox namespace defaulted resources. | Remove the LimitRange defaults from the sandbox namespace. |
 | Another `admitted pod ... does not match` or `observed pod ... no longer matches` mismatch | A webhook, policy engine or mutating policy changed the Pod. | Remove the mutation for the sandbox namespace; see [Cluster conditions that fail every run](#cluster-conditions-that-fail-every-run). |
 | `runtime diagnostics for executor.runtime "nitro-isolated" failed: dmi_product_name: DMI product name "..." does not end in ".enclave", ...` | The Pod is not running in a Nitro Sandbox, or the instance family reports another DMI string. | Compare the name in the error with the tested recipe; a family other than `m5d` needs its own evidence. |
 | `... failed: network_interfaces: ...` or `... failed: route_table: ...` | The guest lists an interface other than `lo` and `dummy0`, or has a route: the `network-isolated` annotation was not honoured, or a guest kernel added a device. | The error names the extra interfaces or the first route. A device a newer guest kernel adds fails every run until the allow-list is updated. |
-| `... failed: diagnostic_exec: guest file read exited <n>: ...` or `guest file read failed: ...`; `... failed: diagnostic_output: unexpected line ...` | The diagnostics `exec` failed, or the image's `/bin/sh` does not run the script (it uses `read -r`, `printf` and `[`). | Use an image whose `/bin/sh` is a POSIX shell; BusyBox `ash` and Debian `dash` ran the script on `kind`. |
+| `... failed: diagnostic_exec: guest file read exited <n>: ...` or `guest file read failed: ...`; `... failed: diagnostic_output: unexpected line ...` | The runtime diagnostics `exec` failed, or the image's `/bin/sh` does not run the script (it uses `read -r`, `printf` and `[`; a shell without a `printf` builtin or command exits 127). | Use an image whose `/bin/sh` is a POSIX shell with those commands. |
 | `runtime diagnostics for executor.runtime "nitro-isolated" interrupted: ...` | The run's own deadline or a cancellation ended construction during the diagnostics. | In `stirrup job` raise `timeout`, which also covers sandbox startup. |
-| A command returns `command timed out after <timeout>: context deadline exceeded` where `output exceeded 10 MB cap` was expected | Output is throttled by `log-bandwidth`, and the timeout ended the command before the cap was reached. | Give commands with large output a longer timeout; see [Pod shape](#pod-shape) for the measured rates. |
+| A command returns `command timed out after <timeout>: context deadline exceeded` where `output exceeded 10 MB cap` was expected | Output is throttled harder than the `20M` the executor submits: an admission policy retuned `log-bandwidth` lower, or the annotation was removed after readiness and the platform default `2M` applies (at `2M` an 11 MiB output took 44 s). | Remove the policy that lowers `log-bandwidth`, or give commands with large output a longer timeout; see [Pod shape](#pod-shape) for the measured rates. |
 | `tear down pod <ns>/<pod> (run ID "<id>"): ...; retained egress NetworkPolicy <ns>/<pod>-egress` | Pod termination was not confirmed within the teardown bound. | Follow [Cleaning up retained objects](#cleaning-up-retained-objects). |
 
 #### Open live-validation items
@@ -1484,7 +1493,8 @@ Pod and the workspace size.
 - The executor end to end on the tested recipe, including mode `none`
   confinement and teardown.
 - Command timeout and kill behaviour, and the output-cap error, at
-  `log-bandwidth: 20M`. Under the default throttle the spike logged
+  `log-bandwidth: 20M`. Under the default throttle the 2026-11-11 EKS
+  run logged
   `stirrup-kill: ... can't open /tmp/.stirrup-exec-<id>.pid` when killing
   a timed-out command, and that path was not re-run at `20M`.
 - The runtime diagnostics in their implemented form, and the DMI string
@@ -1741,7 +1751,8 @@ cannot tell the difference: it installs the policy either way.
   ([Auto Mode network policy](https://docs.aws.amazon.com/eks/latest/userguide/auto-net-pol.html)).
   That the API server accepts the objects without enforcing them while
   the controller is off is inferred from that page, not stated in it.
-  Enforcement can also start late: *measured* on 2026-11-11 with the
+  Enforcement can also start late: *measured* on the 2026-11-11 EKS run
+  with the
   controller enabled and a `DefaultAllow` NodeClass, three requests made
   at Pod startup escaped a policy that was installed before the Pod; a
   `DefaultDeny` node blocked the ten startup requests sampled. On these
@@ -2022,7 +2033,7 @@ defaulting to the kind-friendly values when a variable is unset:
 | `STIRRUP_TEST_RUNTIME_CLASSES` | `,runc,gvisor` | Comma-separated `executor.runtime` values for `TestK8sRuntimeClass_Admitted` (e.g. `gvisor` alone on GKE). |
 | `STIRRUP_TEST_NITRO_ISOLATED` | *(unset → skip)* | Set to run `TestK8sNitroIsolated_EndToEnd` on an EKS cluster with Nitro Sandboxes, pinned to `m5d.xlarge`: the Pod passes the whole-Pod admission check and the runtime diagnostics, then the group runs the generic exec, timeout, process-tree kill, output-cap, file round-trip, writable-workspace and teardown checks, probes for a guest network with `wget` (an image without `wget` fails the probe), and logs the workspace capacity. Once the Pod is constructed, the subtests share a fresh context sized from the sum of their timeouts (including `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT`), and the Pod's lifetime is the readiness ceiling plus that sum; the group logs the budget when it starts. It skips everywhere else and has not yet run. |
 | `STIRRUP_TEST_EVIDENCE_DIR` | *(unset → nothing written)* | Directory the Nitro group writes its evidence to: `submitted-pod.json`, `create-response.json` (the Pod as admission returned it), `ready-pod.json` and `workspace-df.txt`; when `Create` fails, its error text goes to `create-error.txt`. The Pod files are the API objects as submitted and as the cluster returned them, with `apiVersion: v1` and `kind: Pod` set and every environment value replaced by a fixed marker. They hold infrastructure identifiers, so review them before sharing or committing them. |
-| `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT` | `30s` | Command timeout for the output-cap case, as a Go duration. A runtime that throttles exec output needs longer; the `nitro-isolated` probes returned the cap error only with a 90 s timeout (`90s`). |
+| `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT` | `30s` | Command timeout for the output-cap case, as a Go duration. A runtime that throttles exec output may need longer. At the platform default `log-bandwidth` of `2M` the `nitro-isolated` probes returned the cap error only with a `90s` timeout (an 11 MiB output took 44 s); the executor submits `20M`, where 11 MiB took 4.48 s, so the default `30s` is expected to be enough (unverified on EKS through the executor). |
 | `STIRRUP_TEST_IMAGE` | `busybox:latest` | Sandbox image (amd64/multi-arch for the Sandbox pool; `curlimages/curl:latest` for the allowlist TLS test). |
 | `STIRRUP_TEST_EGRESS_PROXY_URL` | `…default.svc:8080` | Allowlist-mode proxy URL. |
 | `STIRRUP_TEST_ENFORCE_EGRESS` | *(unset → skip)* | Set to run the enforcement tests (`*_Enforced`); skipped otherwise so kindnet never produces a false negative. |
