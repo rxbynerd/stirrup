@@ -127,8 +127,9 @@ The pieces and their lifecycle:
   so the sandbox itself has no Kubernetes API access regardless of the
   ServiceAccount named. `enableServiceLinks` is `false`, so the
   namespace's Services are not listed in the sandbox environment as
-  `<SERVICE>_SERVICE_HOST` and `_PORT` variables. `restartPolicy` is `Never` (one-shot), the
-  container is named `agent`, and the entrypoint is `/bin/sh -c "sleep
+  `<SERVICE>_SERVICE_HOST` and `_PORT` variables. `restartPolicy` is
+  `Never` (one-shot), the container is named `agent`, and the
+  entrypoint is `/bin/sh -c "sleep
   infinity"` — all real work runs through subsequent `exec` calls, not
   the entrypoint. The working directory `/workspace` is an `emptyDir` the
   executor mounts, with pod `securityContext.fsGroup: 65532`, so the
