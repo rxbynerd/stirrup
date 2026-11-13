@@ -2807,7 +2807,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateK8sExecutor(config.Executor, &errs)
 	validateNoneExecutor(config.Executor, &errs)
 	validateVcsBackend(config.Executor.VcsBackend, &errs)
-	validateResourceLimits(config.Executor.Resources, &errs)
+	errs = append(errs, ResourceLimitErrors(config.Executor.Resources)...)
 	validateSandboxIdentity(config, &errs)
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
 	validateEditStrategyFuzzyThreshold(config.EditStrategy, &errs)
@@ -6302,10 +6302,13 @@ func validateExecutorRuntime(cfg ExecutorConfig, errs *[]string) {
 // executor.runtime value rules out, one message per violated rule, or nil.
 // ValidateRunConfig and the k8s executor constructor both call it, so a
 // caller that bypasses validation meets the same rules. identityConfigured
-// reports whether executor.sandboxIdentity or executor.gitProxy is set. A
-// nil network, an unknown network mode and a non-finite cpus value are not
-// reported here: the shared validation reports each once for every runtime,
-// and the constructor rejects each before any cluster call.
+// reports whether executor.sandboxIdentity or executor.gitProxy is set.
+//
+// A nil network and an unknown network mode are not reported here:
+// ValidateRunConfig reports each once for the k8s executor family, and the
+// k8s constructor rejects each before any cluster call. A non-finite or
+// negative resource value is not reported here either: ResourceLimitErrors
+// reports it, and both ValidateRunConfig and the k8s constructor call that.
 //
 // Only "nitro-isolated" has requirements. Its guest VM is sized from the
 // CPU and memory requests at boot, the first supported shape is offline
@@ -6326,17 +6329,17 @@ func K8sRuntimeRequirementErrors(runtime string, network *NetworkConfig, resourc
 	if resources != nil {
 		r = *resources
 	}
-	if NonFiniteCPUsError(r.CPUs) == "" && r.CPUs <= 0 {
+	if r.CPUs == 0 {
 		errs = append(errs, fmt.Sprintf(
 			`executor.resources.cpus must be positive for executor.runtime="nitro-isolated" (got %v); the guest VM is sized from it at boot`,
 			r.CPUs))
 	}
-	if r.MemoryMB <= 0 {
+	if r.MemoryMB == 0 {
 		errs = append(errs, fmt.Sprintf(
 			`executor.resources.memoryMb must be positive for executor.runtime="nitro-isolated" (got %d); the guest VM is sized from it at boot`,
 			r.MemoryMB))
 	}
-	if r.DiskMB != 0 {
+	if r.DiskMB > 0 {
 		errs = append(errs, fmt.Sprintf(
 			`executor.resources.diskMb must be unset for executor.runtime="nitro-isolated" (got %d); an ephemeral-storage limit is not an enforced quota inside the guest`,
 			r.DiskMB))
@@ -6570,42 +6573,46 @@ func warnGitProxyAllowlistGap(config *RunConfig) {
 	)
 }
 
-// NonFiniteCPUsError returns the message for a cpus value that is NaN or an
+// nonFiniteCPUsError returns the message for a cpus value that is NaN or an
 // infinity, or "" for a finite one. The proto field is a double, so
 // stirrup job can carry either.
-func NonFiniteCPUsError(cpus float64) string {
+func nonFiniteCPUsError(cpus float64) string {
 	if !math.IsNaN(cpus) && !math.IsInf(cpus, 0) {
 		return ""
 	}
 	return fmt.Sprintf("executor.resources.cpus must be a finite number (got %v)", cpus)
 }
 
-// validateResourceLimits rejects non-finite cpus and negative resource
-// bounds. A negative value silently maps to "no limit" in both the
-// container and k8s executors (the mapping helpers guard on > 0), so an
-// operator who typed cpus:-2 would believe they had capped the workload
-// while in fact the Pod or container runs unbounded. Shared across executor
-// types so the same floor applies wherever Resources is honoured. A nil
-// block is valid (the executor inherits platform defaults).
-func validateResourceLimits(r *ResourceLimits, errs *[]string) {
+// ResourceLimitErrors returns one message per resource bound that no
+// executor accepts: a non-finite cpus value and any negative value. A
+// negative value silently maps to "no limit" in both the container and k8s
+// executors (the mapping helpers guard on > 0), so an operator who typed
+// cpus:-2 would believe they had capped the workload while in fact the Pod
+// or container runs unbounded. ValidateRunConfig applies it to every
+// executor type and the k8s constructor applies it for callers that bypass
+// validation. A nil block is valid (the executor inherits platform
+// defaults).
+func ResourceLimitErrors(r *ResourceLimits) []string {
 	if r == nil {
-		return
+		return nil
 	}
-	switch msg := NonFiniteCPUsError(r.CPUs); {
+	var errs []string
+	switch msg := nonFiniteCPUsError(r.CPUs); {
 	case msg != "":
-		*errs = append(*errs, msg)
+		errs = append(errs, msg)
 	case r.CPUs < 0:
-		*errs = append(*errs, fmt.Sprintf("executor.resources.cpus must not be negative (got %v)", r.CPUs))
+		errs = append(errs, fmt.Sprintf("executor.resources.cpus must not be negative (got %v)", r.CPUs))
 	}
 	if r.MemoryMB < 0 {
-		*errs = append(*errs, fmt.Sprintf("executor.resources.memoryMb must not be negative (got %d)", r.MemoryMB))
+		errs = append(errs, fmt.Sprintf("executor.resources.memoryMb must not be negative (got %d)", r.MemoryMB))
 	}
 	if r.DiskMB < 0 {
-		*errs = append(*errs, fmt.Sprintf("executor.resources.diskMb must not be negative (got %d)", r.DiskMB))
+		errs = append(errs, fmt.Sprintf("executor.resources.diskMb must not be negative (got %d)", r.DiskMB))
 	}
 	if r.PIDs < 0 {
-		*errs = append(*errs, fmt.Sprintf("executor.resources.pids must not be negative (got %d)", r.PIDs))
+		errs = append(errs, fmt.Sprintf("executor.resources.pids must not be negative (got %d)", r.PIDs))
 	}
+	return errs
 }
 
 // ExportRequired reports whether a failed workspace export fails the

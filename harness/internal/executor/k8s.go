@@ -182,14 +182,11 @@ func prepareK8sExecutor(cfg K8sExecutorConfig) (k8sRuntimeProfile, []corev1.EnvV
 	if err != nil {
 		return k8sRuntimeProfile{}, nil, err
 	}
-	if cfg.Resources != nil {
-		if msg := types.NonFiniteCPUsError(cfg.Resources.CPUs); msg != "" {
-			return k8sRuntimeProfile{}, nil, errors.New("k8s executor: " + msg)
-		}
-	}
 	// ExtraEnv carries only the sandbox identity and git-proxy environment.
 	identity := cfg.SandboxIdentityToken || len(cfg.ExtraEnv) > 0
-	if errs := types.K8sRuntimeRequirementErrors(cfg.Runtime, cfg.Network, cfg.Resources, identity); len(errs) > 0 {
+	errs := types.ResourceLimitErrors(cfg.Resources)
+	errs = append(errs, types.K8sRuntimeRequirementErrors(cfg.Runtime, cfg.Network, cfg.Resources, identity)...)
+	if len(errs) > 0 {
 		return k8sRuntimeProfile{}, nil, fmt.Errorf("k8s executor: %s", strings.Join(errs, "; "))
 	}
 	// Validate the allowlist→URL requirement before creating any cluster
