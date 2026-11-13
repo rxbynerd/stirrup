@@ -1308,8 +1308,9 @@ hint about reachability and credentials. The reviews run one after another
 and share the `--dry-run-timeout` budget (30 s by default).
 
 A dry run starts no sandbox, so it does not exercise image pull,
-RuntimeClass admission and scheduling, readiness, NetworkPolicy
-enforcement, or the tools inside the image (`/bin/sh`, `tar`, `git`). It
+RuntimeClass admission and scheduling, the [admission check and readiness
+wait](#sandbox-lifecycle), teardown, NetworkPolicy enforcement, or the
+tools inside the image (`/bin/sh`, `tar`, `git`). It
 does not check that `executor.k8sServiceAccount` exists, that
 `executor.k8sNodeSelector` matches a schedulable node, or admission
 controls such as Pod Security, quota and webhooks. The egress proxy URL for
