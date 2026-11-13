@@ -344,8 +344,8 @@ unchanged. See the [configuration reference in
 The one difference is the runtime field. The `k8s-sandbox` executor is
 **gVisor-only**: leave `--container-runtime` / `executor.runtime` empty,
 or set it to `gvisor`. Any other value is rejected by validation
-(`ValidateRunConfig`); a non-empty, non-`gvisor` runtime that somehow
-reaches the executor is overridden to `gvisor` with a warning. A run that
+(`ValidateRunConfig`); a non-empty, non-`gvisor` runtime that reaches the
+constructor is rejected before any cluster call. A run that
 needs `runc` or a Kata backend must use the `k8s` executor.
 
 ```sh

@@ -1280,7 +1280,7 @@ registered `RuntimeClass` for `k8s`. The closed `k8s` set is:
 Note the runtime name is `gvisor` (the conventional RuntimeClass name),
 not the OCI runtime name `runsc` used by the `container` executor.
 `nitro-isolated` is the one value whose RuntimeClass has another name;
-it also carries extra requirements and guest diagnostics described in
+it also carries extra requirements and runtime diagnostics described in
 [EKS with Nitro Sandboxes](executors/k8s.md#eks-with-nitro-sandboxes).
 `ValidateRunConfig` rejects values outside the set, and an unregistered
 or impermissible RuntimeClass surfaces a friendly Pod-create error

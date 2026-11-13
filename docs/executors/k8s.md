@@ -18,7 +18,13 @@ with the [sandbox lifecycle](#sandbox-lifecycle) in
 [`k8s_readiness.go`](../../harness/internal/executor/k8s_readiness.go)
 (readiness wait),
 [`k8s_admission.go`](../../harness/internal/executor/k8s_admission.go)
-(admission check) and
+(admission check),
+[`k8s_admission_strict.go`](../../harness/internal/executor/k8s_admission_strict.go)
+(whole-Pod admission check),
+[`k8s_runtimeprofile.go`](../../harness/internal/executor/k8s_runtimeprofile.go)
+(per-runtime Pod settings) and
+[`k8s_runtimediagnostics.go`](../../harness/internal/executor/k8s_runtimediagnostics.go)
+(runtime diagnostics), and
 [`k8s_teardown.go`](../../harness/internal/executor/k8s_teardown.go)
 (teardown and create-error reconciliation, shared with the
 `k8s-sandbox` executor, whose constructor rolls back through `Close`)
@@ -170,8 +176,8 @@ them in sync. A run with a run ID also labels the Pod and its policy
 A normal run goes like this. Construction installs the egress policy,
 creates the Pod, compares what admission returned with what was
 submitted, waits up to 5 minutes for the Pod to become Ready, and, for a
-runtime with guest diagnostics (`nitro-isolated`), checks the guest
-before the run starts.
+runtime with [runtime diagnostics](#runtime-diagnostics)
+(`nitro-isolated`), checks the guest before the run starts.
 `Close` deletes the Pod with a 1-second grace period, reads the Pod
 until it is gone, and then deletes the policy; measured on kind 1.31
 this takes about 5 seconds. When `Close` returns no error, nothing is
@@ -200,8 +206,8 @@ reaches one of these states:
   is bound to);
 - the Pod is being deleted, or is not found;
 - the Pod's UID, its `runtimeClassName` or a policy-selected label
-  changed, or, for `nitro-isolated`, any field the whole-Pod check
-  compares (see [Admission check](#admission-check));
+  changed, or, for `nitro-isolated`, anything the whole-Pod admission
+  check compares (see [Admission check](#admission-check));
 - the API server answers `Forbidden` or `Unauthorized`.
 
 `ErrImagePull` and `ImagePullBackOff` are retried within the same
@@ -259,8 +265,8 @@ For every runtime except `nitro-isolated`, these are not compared: the
 container set, image, command, security context, volumes, environment,
 service account, `hostNetwork`, `automountServiceAccountToken`,
 annotations, and the NetworkPolicy object itself. A webhook that changes
-those is not detected. `nitro-isolated` adds a whole-Pod comparison at
-both stages, described in
+those is not detected. `nitro-isolated` adds the whole-Pod admission
+check at both stages, described in
 [Admission prerequisites](#admission-prerequisites); the NetworkPolicy
 object is not compared for any runtime. Added
 labels are allowed, and because NetworkPolicies are additive, a label
@@ -653,7 +659,8 @@ only, so the `k8s` values are valid but not offered by completion.
   other value is rejected. `isolated-sandbox` and `confidential-sandbox`
   are rejected with a reason appended to the error.
 - `executor.resources`, when set, must not carry negative values — a
-  negative bound would silently map to "no limit".
+  negative bound would silently map to "no limit" — and `cpus` must be a
+  finite number (`NaN` and infinities are rejected).
 - `executor.runtime: nitro-isolated` adds the requirements listed in
   [What the runtime accepts](#what-the-runtime-accepts): network mode
   `none`, positive `cpus` and `memoryMb`, no `diskMb`, and no
@@ -995,8 +1002,10 @@ On top of the shared hardened spec, a `nitro-isolated` Pod carries:
   default and 4.48 s at `20M`, against 3.39 s on an ordinary Pod, and a
   30-second command at the default returned a timeout instead of the
   output-cap error. `20M` is the only non-default value exercised. It is
-  a fixed value, not an operator setting, and the admission check does
-  not verify it, so a cluster mutating admission policy may retune it.
+  a fixed value, not an operator setting. A cluster mutating admission
+  policy may give it another value, but the whole-Pod admission check
+  fails a Pod from which it was removed, because removal brings back the
+  2 Mbit/s default.
 
 AWS documentation says these annotations are read once, at Pod creation
 ([resource isolation](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-resource-isolation.html)).
@@ -1061,9 +1070,10 @@ unchanged; added labels and other annotations are allowed.
 
 A mismatch fails the run, emits `sandbox_runtime_diagnostic_failed` with
 `check: admitted_pod`, and tears the Pod down as in
-[Teardown](#teardown). The error names the first differing field with
-expected and observed values, scrubbed and cut to 256 characters; a
-container list is shown by container names, and an environment
+[Teardown](#teardown). The error lists every UID, RuntimeClass,
+metadata, annotation and platform-mark mismatch, together with the first
+differing spec field, each with expected and observed values, scrubbed and
+cut to 256 characters; a container list is shown by container names, and an environment
 difference names the variable and says whether its value or its source
 changed, never the value. As for every runtime, the check runs after the
 Pod is created and stops once it is Ready: it cannot stop a mutated Pod
@@ -1161,16 +1171,39 @@ Security events, scrubbed like every other
 - `sandbox_runtime_diagnostic_passed` (info, after every diagnostic
   passes) — `{runtime, observed}`.
 - `sandbox_runtime_diagnostic_failed` (error, when a diagnostic or the
-  admission check fails) — `{runtime, observed, check, reason}`, where
-  `check` is `dmi_product_name`, `network_interfaces`, `route_table`,
-  `diagnostic_exec` (the `exec` failed or exited non-zero),
-  `diagnostic_output` (the output was malformed or too large) or
-  `admitted_pod`.
+  whole-Pod admission check fails) — `{runtime, observed, check,
+  reason}`, where `check` is `dmi_product_name`, `network_interfaces`,
+  `route_table`, `diagnostic_exec` (the `exec` failed or exited
+  non-zero), `diagnostic_output` (the output was malformed or too large,
+  or the DMI file had more than one non-empty line) or `admitted_pod`.
 
-`observed` holds what the guest reported: `dmiProductName`, `interfaces`
-(comma-separated, in file order) and `routeEntries` (a count). Each value
-comes from the image, so it is scrubbed and cut to 256 bytes before it is
-emitted, and the event name says *diagnostic* rather than *verified*.
+What `observed` holds depends on how far the checks got:
+
+- When the guest files were read (the passed event, and a failure in
+  `dmi_product_name`, `network_interfaces`, `route_table`, or
+  `diagnostic_output` for a multi-line DMI file): `dmiProductName`,
+  `interfaces` (comma-separated, in file order) and `routeEntries` (a
+  count), each present when its check could parse its file. All three
+  checks run before the first failure is reported, so every value that
+  was read is present. A multi-line DMI file leaves `dmiProductName` out.
+- `diagnostic_exec`, and `diagnostic_output` raised by the `exec` or its
+  framing: an empty object.
+- `admitted_pod`: only `field`, the field of the first mismatch the error
+  lists, with the whole mismatch text in `reason`.
+
+Every value the guest or the `exec` supplies, in the returned error, a log
+line or `observed`, first has control characters stripped, is scrubbed of
+credentials and is cut to 256 characters with an ellipsis appended. The
+security event then scrubs each `observed` value and the `reason` again
+and cuts each to 256 bytes on a character boundary. The event name says
+*diagnostic* rather than *verified*.
+
+When the diagnostics end because the run's own context was cancelled or
+its deadline passed, construction fails with `runtime diagnostics for
+executor.runtime "nitro-isolated" interrupted: <context error>`, the Pod is
+torn down, and no event is emitted. A diagnostics `exec` that hits its own
+60-second bound while the run is still live fails as `diagnostic_exec`,
+with the event.
 
 #### Run
 
@@ -1716,6 +1749,9 @@ it, the probe uses the same kubeconfig resolution as a run:
 The executor's own unit tests run with `just test`. A separate
 **integration suite** in
 [`harness/internal/executor/k8s_test.go`](../../harness/internal/executor/k8s_test.go),
+[`k8s_nitro_integration_test.go`](../../harness/internal/executor/k8s_nitro_integration_test.go)
+and
+[`k8s_runtimeprofile_integration_test.go`](../../harness/internal/executor/k8s_runtimeprofile_integration_test.go),
 gated by the `integration_k8s` build tag and `STIRRUP_TEST_KUBECONFIG`,
 exercises the create→exec→file-I/O→delete lifecycle against a *live*
 cluster. A stock `kind` cluster proves manifest shape only; a real
