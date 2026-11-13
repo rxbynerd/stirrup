@@ -6303,8 +6303,9 @@ func validateExecutorRuntime(cfg ExecutorConfig, errs *[]string) {
 // ValidateRunConfig and the k8s executor constructor both call it, so a
 // caller that bypasses validation meets the same rules. sandboxIdentity
 // reports whether executor.sandboxIdentity or executor.gitProxy is set. A
-// non-finite cpus value is not reported here: NonFiniteCPUsError covers it
-// for every executor.
+// nil network, an unknown network mode and a non-finite cpus value are not
+// reported here: the shared validation reports each once for every runtime,
+// and the constructor rejects each before any cluster call.
 //
 // Only "nitro-isolated" has requirements. Its guest VM is sized from the
 // CPU and memory requests at boot, the first supported shape is offline
@@ -6315,10 +6316,8 @@ func K8sRuntimeRequirementErrors(runtime string, network *NetworkConfig, resourc
 		return nil
 	}
 	var errs []string
-	switch {
-	case network == nil:
-		errs = append(errs, `executor.network.mode must be "none" for executor.runtime="nitro-isolated" (executor.network is unset)`)
-	case network.Mode != "none":
+	// "allowlist" is the one valid mode this runtime does not support.
+	if network != nil && network.Mode == "allowlist" {
 		errs = append(errs, fmt.Sprintf(
 			`executor.network.mode must be "none" for executor.runtime="nitro-isolated" (got %q); networked Nitro sandboxes are not supported`,
 			network.Mode))
@@ -6327,7 +6326,6 @@ func K8sRuntimeRequirementErrors(runtime string, network *NetworkConfig, resourc
 	if resources != nil {
 		r = *resources
 	}
-	// A non-finite value is validateResourceLimits's to report.
 	if NonFiniteCPUsError(r.CPUs) == "" && r.CPUs <= 0 {
 		errs = append(errs, fmt.Sprintf(
 			`executor.resources.cpus must be positive for executor.runtime="nitro-isolated" (got %v); the guest VM is sized from it at boot`,
