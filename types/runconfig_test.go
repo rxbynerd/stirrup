@@ -2127,11 +2127,6 @@ func TestValidateRunConfig_NitroIsolatedRequirements(t *testing.T) {
 			wantContains: []string{`executor.resources.cpus must be positive`},
 		},
 		{
-			name:         "negative cpu rejected",
-			mutate:       func(c *RunConfig) { c.Executor.Resources.CPUs = -1 },
-			wantContains: []string{`executor.resources.cpus must be positive`},
-		},
-		{
 			name:         "zero memory rejected",
 			mutate:       func(c *RunConfig) { c.Executor.Resources.MemoryMB = 0 },
 			wantContains: []string{`executor.resources.memoryMb must be positive`},
@@ -2212,6 +2207,30 @@ func TestValidateRunConfig_NitroIsolatedNetworkModeReportedOnce(t *testing.T) {
 	}
 }
 
+// TestValidateRunConfig_NitroIsolatedNegativeLimitsReportedOnce pins one
+// message per negative value: the shared rule reports it, the runtime rule
+// does not.
+func TestValidateRunConfig_NitroIsolatedNegativeLimitsReportedOnce(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(r *ResourceLimits)
+		want   string
+	}{
+		{name: "cpus", mutate: func(r *ResourceLimits) { r.CPUs = -1 }, want: "executor.resources.cpus must not be negative (got -1)"},
+		{name: "memoryMb", mutate: func(r *ResourceLimits) { r.MemoryMB = -1 }, want: "executor.resources.memoryMb must not be negative (got -1)"},
+		{name: "diskMb", mutate: func(r *ResourceLimits) { r.DiskMB = -1 }, want: "executor.resources.diskMb must not be negative (got -1)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			c := nitroIsolatedValidConfig()
+			tc.mutate(c.Executor.Resources)
+
+			must.EqualError(ValidateRunConfig(c), "RunConfig validation failed: "+tc.want)
+		})
+	}
+}
+
 func TestValidateRunConfig_NonFiniteCPUsReportedOnce(t *testing.T) {
 	configs := map[string]func() *RunConfig{
 		"k8s nitro-isolated": nitroIsolatedValidConfig,
@@ -2279,10 +2298,11 @@ func TestK8sRuntimeRequirementErrors_NitroIsolated(t *testing.T) {
 			must.Empty(K8sRuntimeRequirementErrors("nitro-isolated", &NetworkConfig{Mode: "none"}, &ResourceLimits{CPUs: cpus, MemoryMB: 512}, false), "cpus %v", cpus)
 		}
 	})
-	t.Run("negative disk rejected", func(t *testing.T) {
+	t.Run("negative values left to the shared rule", func(t *testing.T) {
 		must := require.New(t)
-		errs := K8sRuntimeRequirementErrors("nitro-isolated", &NetworkConfig{Mode: "none"}, &ResourceLimits{CPUs: 1, MemoryMB: 512, DiskMB: -1}, false)
-		must.Equal([]string{`executor.resources.diskMb must be unset for executor.runtime="nitro-isolated" (got -1); an ephemeral-storage limit is not an enforced quota inside the guest`}, errs)
+		for _, r := range []ResourceLimits{{CPUs: -1, MemoryMB: 512}, {CPUs: 1, MemoryMB: -1}, {CPUs: 1, MemoryMB: 512, DiskMB: -1}} {
+			must.Empty(K8sRuntimeRequirementErrors("nitro-isolated", &NetworkConfig{Mode: "none"}, &r, false), "%+v", r)
+		}
 	})
 	t.Run("every violation reported", func(t *testing.T) {
 		must := require.New(t)

@@ -174,6 +174,21 @@ func TestNewK8sExecutor_RejectsUnsupportedConfigBeforeAnyClusterCall(t *testing.
 			wantErr: `unsupported network mode "bogus"`,
 		},
 		{
+			name:    "nitro-isolated with negative cpus",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources.CPUs = -1 },
+			wantErr: `k8s executor: executor.resources.cpus must not be negative (got -1)`,
+		},
+		{
+			name:    "nitro-isolated with negative memory",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources.MemoryMB = -1 },
+			wantErr: `k8s executor: executor.resources.memoryMb must not be negative (got -1)`,
+		},
+		{
+			name:    "nitro-isolated with negative disk",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources.DiskMB = -1 },
+			wantErr: `k8s executor: executor.resources.diskMb must not be negative (got -1)`,
+		},
+		{
 			name:    "nitro-isolated with infinite cpus",
 			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources.CPUs = math.Inf(1) },
 			wantErr: `executor.resources.cpus must be a finite number (got +Inf)`,
@@ -223,6 +238,31 @@ func TestNewK8sExecutor_MissingNitroRuntimeClassNamesTheClassAndEKS(t *testing.T
 	must.ErrorContains(err, `RuntimeClass "isolated-sandbox" was rejected by the cluster`)
 	must.ErrorContains(err, K8sRuntimeClassMissingHint("nitro-isolated"))
 	must.False(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(createdPodName(t, cs))), "policy left behind")
+}
+
+func TestNewK8sExecutor_NegativeLimitReportedOnce(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(r *types.ResourceLimits)
+		want   string
+	}{
+		{name: "cpus", mutate: func(r *types.ResourceLimits) { r.CPUs = -1 }, want: "k8s executor: executor.resources.cpus must not be negative (got -1)"},
+		{name: "memoryMb", mutate: func(r *types.ResourceLimits) { r.MemoryMB = -1 }, want: "k8s executor: executor.resources.memoryMb must not be negative (got -1)"},
+		{name: "diskMb", mutate: func(r *types.ResourceLimits) { r.DiskMB = -1 }, want: "k8s executor: executor.resources.diskMb must not be negative (got -1)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cfg := nitroCfg()
+			tc.mutate(cfg.Resources)
+			cs := fake.NewClientset()
+
+			_, err := newFakeK8sExecutor(context.Background(), cs, cfg)
+
+			must.EqualError(err, tc.want)
+			must.Empty(cs.Actions())
+		})
+	}
 }
 
 // The public constructor applies the same checks before it builds a client,
