@@ -355,6 +355,9 @@ func TestPodAdmission_StrictSyntheticSandboxAnnotationRules(t *testing.T) {
 		{name: "submitted throttle key removed", mutate: func(p *corev1.Pod) { delete(p.Annotations, "sandbox.amazonaws.com/log-bandwidth") }, wantField: "metadata.annotations[sandbox.amazonaws.com/log-bandwidth]: expected present with any value, observed absent"},
 		{name: "unknown sandbox key added", mutate: func(p *corev1.Pod) { p.Annotations["sandbox.amazonaws.com/policy"] = "permissive" }, wantField: `metadata.annotations[sandbox.amazonaws.com/policy]: expected absent, observed "permissive"`},
 		{name: "no-network annotation changed", mutate: func(p *corev1.Pod) { p.Annotations["sandbox.amazonaws.com/network-isolated"] = "false" }, wantField: `metadata.annotations[sandbox.amazonaws.com/network-isolated]: expected "true", observed "false"`},
+		{name: "capitalised prefix added", mutate: func(p *corev1.Pod) { p.Annotations["Sandbox.amazonaws.com/network-isolated"] = "false" }, wantField: `metadata.annotations[Sandbox.amazonaws.com/network-isolated]: expected absent, observed "false"`},
+		{name: "upper-case prefix added", mutate: func(p *corev1.Pod) { p.Annotations["SANDBOX.AMAZONAWS.COM/network-isolated"] = "false" }, wantField: `metadata.annotations[SANDBOX.AMAZONAWS.COM/network-isolated]: expected absent, observed "false"`},
+		{name: "case variant of a throttle key added", mutate: func(p *corev1.Pod) { p.Annotations["sandbox.amazonaws.com/Log-Bandwidth"] = "1M" }, wantField: `metadata.annotations[sandbox.amazonaws.com/Log-Bandwidth]: expected absent, observed "1M"`},
 	}
 	profile := k8sRuntimeProfiles["nitro-isolated"]
 	for _, tc := range cases {
