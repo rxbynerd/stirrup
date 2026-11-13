@@ -5151,10 +5151,15 @@ type ExecutorConfig struct {
 	// engine OCI runtime name (closed set: "", "runc", "runsc" (gVisor),
 	// "kata", "kata-qemu", "kata-fc", "kata-clh") and the harness omits the
 	// field on the create-container request when empty. For "k8s" this is
-	// the Pod RuntimeClassName (closed set: "", "runc", "gvisor",
-	// "kata-qemu", "kata-fc", "kata-clh"). The two sets differ because they
-	// name different things. ValidateRunConfig rejects every other value
-	// per executor type.
+	// a runtime value mapped to the Pod RuntimeClassName (closed set: "",
+	// "runc", "gvisor", "kata-qemu", "kata-fc", "kata-clh",
+	// "nitro-isolated"); every value except "nitro-isolated" is also the
+	// RuntimeClass name, and "nitro-isolated" selects AWS's
+	// "isolated-sandbox" class on EKS with the requirements in
+	// docs/executors/k8s.md#eks-with-nitro-sandboxes. For "k8s-sandbox" only
+	// "" and "gvisor" are accepted. The sets differ because they name
+	// different things. ValidateRunConfig rejects every other value per
+	// executor type.
 	Runtime string `protobuf:"bytes,8,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	// For "k8s": the Kubernetes namespace for the sandbox Pod. Required when
 	// type is "k8s".
