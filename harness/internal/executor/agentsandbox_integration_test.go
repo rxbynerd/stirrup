@@ -59,7 +59,7 @@ func TestAgentSandbox_Lifecycle(t *testing.T) {
 	cfg := testAgentSandboxEnv(t)
 	namespace := cfg.namespace
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
 	defer cancel()
 
 	exec, err := NewAgentSandboxExecutor(ctx, K8sExecutorConfig{
@@ -152,7 +152,7 @@ func TestAgentSandbox_CommandOutputSpill(t *testing.T) {
 	must := require.New(t)
 	cfg := testAgentSandboxEnv(t)
 
-	provisionCtx, cancelProvision := context.WithTimeout(context.Background(), 120*time.Second)
+	provisionCtx, cancelProvision := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
 	defer cancelProvision()
 
 	exec, err := NewAgentSandboxExecutor(provisionCtx, K8sExecutorConfig{

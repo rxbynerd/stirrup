@@ -67,6 +67,10 @@ func testK8sEnv(t *testing.T) testK8sConfig {
 	}
 }
 
+// k8sIntegrationTimeout bounds one test's executor construction plus its
+// work, so a Pod waiting for an autoscaled node still fits.
+const k8sIntegrationTimeout = k8sReadyTimeout + time.Minute
+
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -83,7 +87,7 @@ func TestK8sExecutor_Lifecycle(t *testing.T) {
 	cfg := testK8sEnv(t)
 	namespace := cfg.namespace
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
@@ -124,7 +128,7 @@ func TestK8sExecutor_CloseIdempotent(t *testing.T) {
 	must := require.New(t)
 	cfg := testK8sEnv(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
@@ -138,6 +142,72 @@ func TestK8sExecutor_CloseIdempotent(t *testing.T) {
 
 	must.NoError(exec.Close(), "first Close")
 	must.NoError(exec.Close(), "second Close should be nil")
+}
+
+// TestK8sExecutor_CloseRemovesPolicyAfterPodIsGone samples the cluster while
+// Close runs and fails if the egress NetworkPolicy is ever absent while the
+// sandbox Pod still exists. After Close returns both are gone.
+func TestK8sExecutor_CloseRemovesPolicyAfterPodIsGone(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cfg := testK8sEnv(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
+	defer cancel()
+
+	sandbox, err := NewK8sExecutor(ctx, K8sExecutorConfig{
+		Image:            cfg.image,
+		Namespace:        cfg.namespace,
+		Kubeconfig:       cfg.kubeconfig,
+		RuntimeClassName: cfg.runtimeClass,
+		Network:          &types.NetworkConfig{Mode: "none"},
+		Lifecycle:        Lifecycle{RunID: "teardown-order-test"},
+	})
+	must.NoError(err, "NewK8sExecutor")
+	t.Cleanup(func() { _ = sandbox.Close() })
+
+	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
+	must.NoError(err, "build verification clientset")
+	pods := clientset.CoreV1().Pods(cfg.namespace)
+	policies := clientset.NetworkingV1().NetworkPolicies(cfg.namespace)
+	policyName := networkPolicyName(sandbox.podName)
+
+	// Each sample reads the policy before the Pod, so a sample that finds the
+	// policy gone and the Pod present proves the Pod outlived the policy.
+	var violations []string
+	samples := 0
+	stop := make(chan struct{})
+	sampled := make(chan struct{})
+	go func() {
+		defer close(sampled)
+		for {
+			_, policyErr := policies.Get(ctx, policyName, metav1.GetOptions{})
+			pod, podErr := pods.Get(ctx, sandbox.podName, metav1.GetOptions{})
+			samples++
+			if apierrors.IsNotFound(policyErr) && podErr == nil && pod.UID == sandbox.podUID {
+				violations = append(violations, fmt.Sprintf("policy absent while pod present (deletionTimestamp=%v)", pod.DeletionTimestamp))
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}()
+
+	start := time.Now()
+	closeErr := sandbox.Close()
+	elapsed := time.Since(start)
+	close(stop)
+	<-sampled
+	must.NoError(closeErr, "Close")
+	t.Logf("Close took %s over %d samples", elapsed.Round(time.Millisecond), samples)
+
+	check.Empty(violations, "egress policy was removed before the sandbox pod was gone")
+	_, err = pods.Get(ctx, sandbox.podName, metav1.GetOptions{})
+	check.True(apierrors.IsNotFound(err), "pod still present after Close returned: %v", err)
+	_, err = policies.Get(ctx, policyName, metav1.GetOptions{})
+	check.True(apierrors.IsNotFound(err), "policy still present after Close returned: %v", err)
 }
 
 func kubeClientFromConfig(t *testing.T, kubeconfig string) (kubernetes.Interface, error) {
@@ -158,7 +228,7 @@ func newTestK8sExecutor(t *testing.T) *K8sExecutor {
 	must := require.New(t)
 	cfg := testK8sEnv(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
@@ -466,7 +536,7 @@ func TestK8sRuntimeClass_Admitted(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			must := require.New(t)
-			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
 			defer cancel()
 
 			exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
@@ -538,7 +608,7 @@ func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
 	check := assert.New(t)
 	cfg := testK8sEnv(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
@@ -594,7 +664,7 @@ func TestK8sEgress_AllowlistInstallsPolicyAndInjectsProxy(t *testing.T) {
 	must := require.New(t)
 	cfg := testK8sEnv(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
 	defer cancel()
 
 	proxyURL := cfg.proxyURL
@@ -680,7 +750,7 @@ func TestK8sEgress_NoneEnforced(t *testing.T) {
 		t.Skip("STIRRUP_TEST_ENFORCE_EGRESS not set; skipping egress-enforcement test (requires a NetworkPolicy-enforcing CNI)")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
@@ -730,7 +800,7 @@ func TestK8sEgress_AllowlistEnforced(t *testing.T) {
 		t.Skip("STIRRUP_TEST_ENFORCE_EGRESS not set; skipping egress-enforcement test (requires a NetworkPolicy-enforcing CNI)")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
 	defer cancel()
 
 	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
@@ -825,8 +895,9 @@ const (
 	k8sOrphanHelperEnv = "STIRRUP_TEST_K8S_ORPHAN_HELPER"
 	k8sOrphanReadyTag  = "ORPHAN_READY "
 	// k8sOrphanLifetime is the sandbox lifetime the orphan test gives the
-	// helper process.
-	k8sOrphanLifetime = 20 * time.Second
+	// helper process. The Pod's active deadline counts from when the kubelet
+	// accepts it, so the lifetime also covers image pull and runtime boot.
+	k8sOrphanLifetime = 90 * time.Second
 )
 
 // TestK8sExecutor_OrphanHelperProcess is the body of the child process the
@@ -894,12 +965,12 @@ func TestK8sExecutor_OrphanBoundedAfterHarnessKill(t *testing.T) {
 	}()
 	select {
 	case podName = <-ready:
-	case <-time.After(2 * time.Minute):
+	case <-time.After(k8sIntegrationTimeout):
 		must.FailNow("helper did not report a Pod name")
 	}
 
 	const runID = "orphan-test"
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), k8sOrphanLifetime+2*time.Minute)
 	defer cancel()
 	pod, err := clientset.CoreV1().Pods(cfg.namespace).Get(ctx, podName, metav1.GetOptions{})
 	must.NoError(err, "get sandbox pod")
@@ -951,18 +1022,30 @@ func TestK8sExecutor_SandboxGarbageCollectedWithHarnessPod(t *testing.T) {
 	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
 	must.NoError(err, "build verification clientset")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout+2*time.Minute)
 	defer cancel()
 
+	// The stand-in satisfies the restricted Pod Security Standard so the
+	// test runs in a namespace that enforces it.
 	owner, err := clientset.CoreV1().Pods(cfg.namespace).Create(ctx, &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{GenerateName: "stirrup-owner-", Namespace: cfg.namespace},
 		Spec: corev1.PodSpec{
-			RestartPolicy:    corev1.RestartPolicyNever,
-			RuntimeClassName: optionalRuntimeClassName(cfg.runtimeClass),
+			RestartPolicy:                corev1.RestartPolicyNever,
+			RuntimeClassName:             optionalRuntimeClassName(cfg.runtimeClass),
+			AutomountServiceAccountToken: ptr.To(false),
+			SecurityContext: &corev1.PodSecurityContext{
+				RunAsNonRoot:   ptr.To(true),
+				RunAsUser:      ptr.To(k8sRunAsUserUID),
+				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+			},
 			Containers: []corev1.Container{{
 				Name:    "owner",
 				Image:   cfg.image,
 				Command: []string{"/bin/sh", "-c", "sleep 600"},
+				SecurityContext: &corev1.SecurityContext{
+					AllowPrivilegeEscalation: ptr.To(false),
+					Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+				},
 			}},
 		},
 	}, metav1.CreateOptions{})
