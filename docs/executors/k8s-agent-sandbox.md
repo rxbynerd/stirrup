@@ -93,16 +93,21 @@ The provisioning sequence
    the hardened Pod spec inside `spec.podTemplate.spec`. The executor
    polls the Sandbox's status until a `Ready` condition reports `True`
    (the controller sets it only once the backing Pod is Ready). The
-   readiness window is wider than a raw Pod's — it spans the controller's
-   watch and materialise — so transient get errors during the reconcile
-   flurry are retried; only an RBAC denial fails fast.
+   wait shares the `k8s` executor's 5-minute ceiling (see
+   [Readiness](k8s.md#readiness)), still capped by the caller's context.
+   It spans the controller's watch and materialise, so transient get
+   errors during the reconcile flurry are retried; only an RBAC denial
+   fails fast.
 4. **Resolve the backing Pod and bind.** The Pod name is read from the
    Sandbox status; on the cold-create path it equals the Sandbox name.
    Command execution and file I/O then ride the shared `pods/exec` core.
 
-On any construction failure, the partially created objects (the
-`NetworkPolicy` and/or the Sandbox) are deleted best-effort before the
-error is returned.
+On a construction failure before any Sandbox can exist (including a
+definitive rejection of the Sandbox create), the `NetworkPolicy` is
+deleted. A later failure, or a Sandbox create whose outcome is unknown
+(a timeout, a connection error, a server error), tears down through
+`Close`, so the policy is removed only once the Sandbox is confirmed
+gone (see [the TTL GC backstop](#the-controller-owned-ttl-gc-backstop)).
 
 ### Cold-create only
 

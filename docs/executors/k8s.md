@@ -21,6 +21,7 @@ those files.
 
 - [When to use it](#when-to-use-it)
 - [Architecture](#architecture)
+- [Sandbox lifecycle](#sandbox-lifecycle)
 - [Configuration reference](#configuration-reference)
 - [Deployment recipes](#deployment-recipes)
 - [RuntimeClass selection per run](#runtimeclass-selection-per-run)
@@ -140,7 +141,181 @@ The label contract knits these together: every sandbox Pod carries
 `stirrup-sandbox: "true"` and `stirrup.dev/pod: <pod-name>`, and the
 allowlist policy selects the proxy by `app=stirrup-egress-proxy` on TCP
 8080. These labels are fixed in `k8s_netpol.go`; the manifests must keep
-them in sync.
+them in sync. A run with a run ID also labels the Pod and its policy
+`stirrup.dev/run-id: <run-id>`.
+
+## Sandbox lifecycle
+
+Construction installs the policy, creates the Pod, checks what admission
+did to it, and waits for it to become Ready. `Close` removes the Pod and
+then the policy. Every failure after the Pod create uses the same
+teardown as `Close`.
+
+### Readiness
+
+The executor polls the Pod once a second until it is `Running` with the
+`agent` container Ready. The wait ends after **5 minutes**, or sooner
+when the caller's context ends. The ceiling allows for a first sandbox
+Pod that waits for a cluster autoscaler to provision a node. The same
+ceiling applies to the [`k8s-sandbox`](k8s-agent-sandbox.md) executor.
+
+The wait fails at once, without using the remaining time, when the Pod
+reaches a state it cannot recover from:
+
+- phase `Failed` (for example `DeadlineExceeded` or `Evicted`);
+- phase `Succeeded` before the Pod became Ready;
+- the `agent` container terminated;
+- the `agent` container waiting with reason `InvalidImageName` (the
+  image reference cannot be parsed) or `ErrImageNeverPull`
+  (`imagePullPolicy: Never` and the image is absent from the node the Pod
+  is bound to);
+- the Pod is being deleted, or is no longer found;
+- the Pod's UID or policy-selected labels changed (see
+  [Admission check](#admission-check));
+- the API server answers `Forbidden` or `Unauthorized`.
+
+`ErrImagePull` and `ImagePullBackOff` are retried within the same
+deadline, because a registry outage can clear on its own. Other API
+errors from the poll (timeouts, throttling, a restarting API server) are
+also retried until the deadline.
+
+When the wait times out, the error reports the Pod's phase, its
+`PodScheduled` condition (status, reason and message), the last waiting
+reason of the `agent` container, and the last API error, if any. Each
+cluster-supplied string is stripped of control characters and capped at
+256 characters. For example:
+
+```
+pod stirrup-sandbox/stirrup-0123456789ab: pod not ready within 5m0s: phase Pending;
+PodScheduled False (Unschedulable: 0/3 nodes are available: 3 Insufficient cpu.);
+context deadline exceeded
+```
+
+The executor does not read Events, so the reference Role needs no
+`events` permission. A cluster autoscaler publishes its reason for not
+adding a node as an Event on the Pod (`NotTriggerScaleUp`,
+`FailedScaling`); read it with `kubectl -n <namespace> describe pod
+<pod>` or `kubectl -n <namespace> get events
+--field-selector involvedObject.name=<pod>` while the Pod exists, or in
+the autoscaler's own logs after teardown.
+
+Two costs of the wait need planning:
+
+- **It counts against the run's deadline.** In `stirrup job` the run's
+  `timeout` starts at task assignment and covers component
+  construction, so time spent waiting for a node is time the agent does
+  not get.
+- **It consumes sandbox identity token lifetime.** The token is
+  exchanged before the sandbox is created. See
+  [Sandbox identity token exposure](#sandbox-identity-token-exposure)
+  for what the harness does when the token nears expiry during startup.
+
+### Admission check
+
+The Pod that `Create` returns is the Pod after every mutating admission
+webhook and admission plugin has run. The executor compares it with the
+Pod it submitted, and repeats the comparison on every readiness poll:
+
+- the UID must be the one `Create` returned;
+- a requested `executor.runtime` must still be the Pod's
+  `runtimeClassName`. When no runtime was requested, a class the cluster
+  assigns is accepted and logged at info level;
+- the `stirrup.dev/pod` label (which the egress policy selects on) and
+  the `stirrup-sandbox` marker must be unchanged.
+
+A mismatch fails construction, tears the Pod down, and names each
+expected and observed value. Ordinary API defaulting and added labels or
+annotations are not mismatches.
+
+The check runs **after** the Pod is created, so it cannot stop a Pod with
+a rewritten spec from starting. It prevents the run from using such a
+Pod; it does not undo whatever that Pod did before the check. Keeping
+the Pod contract intact at admission is the cluster operator's
+responsibility.
+
+### Teardown
+
+`Close` (and every construction failure after the Pod create) follows
+one contract, designed so that the egress policy is never removed from a
+sandbox that may still be running:
+
+1. Delete the Pod with a **1-second grace period** and a **UID
+   precondition**, so a retry cannot delete a different Pod that reuses
+   the name. With a non-zero grace period the API object stays, marked
+   terminating, until the kubelet reports the containers stopped. A
+   zero grace period would remove the object before the kubelet confirms
+   anything. One second is enough because the `sleep infinity`
+   entrypoint ignores `SIGTERM` and holds no state; a longer grace only
+   delays teardown.
+2. Wait until the Pod's termination is established: the Pod is
+   `NotFound`, or its name now belongs to a different UID. Transient API
+   errors are retried.
+3. Only then delete the egress `NetworkPolicy`.
+
+Steps 1 and 2 share a 30-second bound, and step 3 has its own 30-second
+API bound. Both run on a context independent of the run's, so a
+cancelled or timed-out run still cleans up. On a `kind` cluster a
+teardown takes about 5 seconds.
+
+If the delete fails, or termination is not established within the
+bound, the executor **retains the policy**. It does not force-delete the
+Pod. It logs a warning naming the namespace, Pod, policy and run ID, and
+`Close` returns an error naming the retained objects. A retained policy
+fails closed: it keeps confining a Pod that is still running, and it is
+inert once the Pod is gone. The policy carries no owner reference to the
+Pod, because garbage collection would remove it as soon as the Pod
+object disappears, including after a force delete that does not wait
+for the workload to stop.
+
+A `Close` error does not change a run's outcome: the agentic loop joins
+it into its own `Close` error, which `stirrup job` and `stirrup harness`
+discard once the run's result is decided (the shutdown watchdog prints
+it). The executor's warning in the log is the record of a retained
+policy.
+
+A Pod create that fails with a definitive rejection (for example
+`Invalid`, `Forbidden`, or an exceeded quota) leaves no Pod, so the
+policy is removed. A create whose outcome is unknown (a timeout, a
+connection error, a server error, a throttled request, or `AlreadyExists`
+under the run's own random name) is reconciled by looking the Pod up
+under its preselected name. A Pod that carries every label the run
+submitted is torn down as above. A Pod under that name without those
+labels is not deleted, because it cannot be proved to be the run's own,
+and the policy is retained. No Pod means the policy is removed. A create
+request that the API server completes after that lookup leaves an idle
+`sleep infinity` Pod with no policy and no harness driving it; it ends
+at its `activeDeadlineSeconds` (set whenever the run has a `timeout`),
+or with the harness Pod when that owns it.
+
+A harness killed during teardown (for example by `SIGKILL` at the end of
+its termination grace period) can leave a terminating Pod and its policy
+behind. See [Cleaning up retained objects](#cleaning-up-retained-objects).
+
+### Cleaning up retained objects
+
+Retained policies and leftover Pods carry the run-ID label. Operators
+own their cleanup:
+
+```sh
+NS=stirrup-sandbox
+RUN=<run-id>
+# The Pod and its policy for one run:
+kubectl -n "$NS" get pods,networkpolicies -l stirrup.dev/run-id="$RUN"
+# Every sandbox Pod still present, with any deletion in progress:
+kubectl -n "$NS" get pods -l stirrup-sandbox=true \
+  -o custom-columns=NAME:.metadata.name,RUN:.metadata.labels.stirrup\\.dev/run-id,PHASE:.status.phase,DELETING:.metadata.deletionTimestamp,NODE:.spec.nodeName
+# Every sandbox egress policy:
+kubectl -n "$NS" get networkpolicies -l stirrup-sandbox=true
+```
+
+Each policy is named `<pod-name>-egress` and selects
+`stirrup.dev/pod=<pod-name>`. A policy is safe to delete once
+`kubectl -n "$NS" get pod <pod-name>` returns `NotFound`. A Pod that
+stays terminating usually sits on an unreachable node; its workload may
+still be running, so keep its policy until the node is recovered or
+removed and the Pod object is gone. Force-deleting such a Pod
+(`--grace-period=0 --force`) removes only the API object, not the
+workload, and is not a reason to delete the policy.
 
 ## Configuration reference
 
@@ -492,16 +667,25 @@ cancellation so an in-flight artifact upload can survive it, but the
 harness still observes SIGTERM directly on that detached context
 (`AgenticLoop.Shutdown`) and cuts a `postRun` hook short promptly rather
 than letting it run for its full configured budget (up to 1830s). A
-background watchdog additionally bounds executor teardown — deleting
-the sandbox Pod and its egress `NetworkPolicy` — to 5 seconds after
-SIGTERM even if `Run()` has not yet returned, so cleanup completes well
-inside the default 30-second grace window regardless of what an
-in-flight `postRun` hook is doing. Set `terminationGracePeriodSeconds`
-explicitly on the orchestrator Pod spec when running with long `postRun`
-hooks, sized for the run's own `timeout` plus normal shutdown overhead —
-the default 30 seconds is ample headroom over the harness's own 5-second
-proactive-teardown bound, but a cluster with a tighter eviction/
-preemption grace period should account for it.
+background watchdog additionally starts executor teardown 5 seconds
+after SIGTERM even if `Run()` has not yet returned, regardless of what
+an in-flight `postRun` hook is doing. [Teardown](#teardown) then waits
+for the kubelet to confirm the sandbox Pod stopped before it removes the
+egress `NetworkPolicy`: about 5 seconds normally, at most 30 seconds for
+the Pod plus 30 for the policy delete. A normal teardown therefore ends
+about 10 seconds after SIGTERM, inside the default 30-second grace
+window. A slow kubelet or API server can push teardown past the window;
+SIGKILL then leaves the policy (and possibly a terminating Pod) behind,
+which fails closed and is cleaned up as described in
+[Cleaning up retained objects](#cleaning-up-retained-objects). A
+SIGTERM that arrives while the sandbox is still starting ends the
+readiness wait at once, and the same teardown follows. Set
+`terminationGracePeriodSeconds` explicitly on the orchestrator Pod spec
+when running with long `postRun` hooks, sized for the run's own
+`timeout` plus normal shutdown overhead; 70 seconds or more also covers
+the worst-case teardown (5 seconds before it starts, 30 for the Pod, 30
+for the policy delete). A cluster with a tighter eviction or preemption
+grace period should account for the same budget.
 
 Provider auth is **orthogonal to sandbox egress**. The orchestrator's
 provider call (to Anthropic / Vertex / an OpenAI-compatible endpoint) is
@@ -714,6 +898,15 @@ relative to a `Secret`-backed credential:
   paths above goes stale after that. Without `expires_at` the one
   issued token must span the run's whole wall-clock budget, and the
   exposure window widens with it.
+- **Sandbox startup consumes its lifetime.** The token is exchanged
+  before the Pod is created, and [readiness](#readiness) can take up to
+  5 minutes. Before writing the token file (and so before any lifecycle
+  hook), the harness checks the token against the same refresh point
+  the refresher uses (80% of the lifetime it was issued with). A token
+  past that point, or expired, is re-exchanged and the fresh token is
+  delivered; the refresher then schedules from the fresh token's
+  expiry. A failed re-exchange fails construction and tears the sandbox
+  down. The Pod's environment variable still carries the first token.
 
 Operators running `sandboxIdentity`-configured jobs should scope
 `pods`/`get` and `pods`/`list` in the affected namespace as tightly as
@@ -733,7 +926,7 @@ something the current implementation provides.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `RuntimeClass "<name>" was rejected by the cluster` | The named RuntimeClass is not registered or not permitted. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) for the handlers actually installed, or pick a registered runtime. |
+| `RuntimeClass "<name>" was rejected by the cluster` | The API server named the RuntimeClass in its rejection: it is not registered, or the name is invalid. Other admission rejections (a LimitRange, a quota, Pod Security, a webhook) are reported as `create pod: ...` with the API server's message unchanged apart from a length cap. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) for the handlers actually installed, or pick a registered runtime. |
 | `executor.k8sNamespace is required for executor.type="k8s"` | `--k8s-namespace` / `executor.k8sNamespace` unset. | Set the namespace. |
 | `executor.k8sEgressProxyUrl is required when ... "allowlist"` | `network.mode: allowlist` without a proxy URL. | Set `--k8s-egress-proxy-url`, or use `network.mode: none`. |
 | `executor.k8sEgressProxyUrl is only valid when ... "allowlist"` | A proxy URL set while `network.mode` is `none`. | Remove the URL, or switch to `allowlist`. |
@@ -742,7 +935,13 @@ something the current implementation provides.
 | Pod scheduling fails / pending forever | RuntimeClass `nodeSelector` matches no node, or the handler is missing. | Label the node for the runtime; confirm the handler is installed. |
 | `0/N nodes available: ... had untolerated taint(s)` (Pod Pending) | The schedulable nodes are tainted (GKE Sandbox pools taint `sandbox.gke.io/runtime=gvisor:NoSchedule`; arch-dedicated pools may add `kubernetes.io/arch=...`) and the Pod tolerates none. | For the Sandbox pool, set `--container-runtime gvisor` so the managed RuntimeClass injects the toleration. For other tainted pools, add a matching `--k8s-node-selector` and ensure a toleration is available (the executor does not inject arbitrary tolerations). |
 | Egress not actually confined on `kind` | kindnet does not enforce NetworkPolicy. | Use a NetworkPolicy-enforcing CNI (Cilium, Calico) for real confinement. |
-| `pod ... not ready` after the readiness timeout (default 60 s, or the caller context deadline if shorter) | Image lacks `/bin/sh`, or the runtime cannot start the Pod. | Use an image shipping `/bin/sh`, `tar`, `ls`, `mkdir`, `readlink`; check `kubectl describe pod`. |
+| `pod ... pod not ready within 5m0s: phase Pending; PodScheduled False (Unschedulable: ...)` | No node fits the Pod and the autoscaler (if any) did not add one in time, or the RuntimeClass's scheduling matches no node. | Read the `PodScheduled` message in the error; `kubectl describe pod` (while it exists) or the autoscaler's logs give the scale-up reason. See [Readiness](#readiness). |
+| `pod ... pod not ready ...: last waiting reason ImagePullBackOff (...)` | The image cannot be pulled (wrong name, missing credentials, registry unreachable). | Check the image reference and pull secret; the waiting message carries the registry's answer. |
+| `pod ... pod not ready ...: before the run context ended` | The run's own deadline or a cancellation ended the wait first. | In `stirrup job` raise `timeout`, which also covers sandbox startup. |
+| `pod ... pod not ready: agent container terminated (exit code 127, ...)` or `agent container cannot start: InvalidImageName` | The image lacks `/bin/sh`, or the image reference cannot be parsed. | Use an image shipping `/bin/sh`, `tar`, `ls`, `mkdir`, `readlink`; fix the image reference. |
+| `pod ... pod not ready: pod phase Failed (...)` | The Pod failed before it was Ready (eviction, `DeadlineExceeded`, a runtime error). | Read the reason in the error; check node pressure and the RuntimeClass handler. |
+| `admitted pod ... does not match the submitted pod: spec.runtimeClassName: expected ..., observed ...` (or a `metadata.labels[...]` entry) | An admission webhook or policy rewrote the RuntimeClass or a policy-selected label. | Exclude the sandbox namespace from that webhook, or make it preserve the fields. See [Admission check](#admission-check). |
+| `tear down pod ... retained egress NetworkPolicy ...` (warning or `Close` error) | Pod termination was not confirmed within the teardown bound, or the delete failed. | Follow [Cleaning up retained objects](#cleaning-up-retained-objects). |
 | Exec/file I/O fails with API errors | The orchestrator lacks `pods/exec` create. | Apply [`rbac.yaml`](../../examples/k8s/rbac.yaml) (or grant the verb). |
 | `open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory` (in-cluster orchestrator) | The orchestrator Pod's ServiceAccount has `automountServiceAccountToken: false` (the reference SA's default), so no token is projected for the in-cluster REST config. | Set `automountServiceAccountToken: true` on the orchestrator Pod spec. See [Running the orchestrator in-cluster](#running-the-orchestrator-in-cluster). |
 
@@ -781,9 +980,19 @@ STIRRUP_TEST_NAMESPACE=stirrup-sandbox \
 STIRRUP_TEST_RUNTIME_CLASS=gvisor STIRRUP_TEST_RUNTIME_CLASSES=gvisor \
 STIRRUP_TEST_ENFORCE_EGRESS=1 \
 STIRRUP_TEST_EGRESS_PROXY_URL=http://stirrup-egress-proxy.stirrup-sandbox.svc:8080 \
-  go test -tags integration_k8s -count=1 -v -run TestK8s \
+  go test -tags integration_k8s -count=1 -timeout 30m -v -run TestK8s \
   ./harness/internal/executor/
 ```
+
+Each test allows the 5-minute readiness ceiling plus a minute, so the
+suite runs against a cluster that provisions nodes on demand. The orphan
+test alone takes about two minutes because it waits for a 90-second
+sandbox lifetime to expire; a full run on `kind` takes about six. The
+example passes `-timeout 30m` because `go test`'s default of ten minutes
+is tight on a slower cluster, and a `go test` timeout panics without
+running cleanup and leaves Pods behind.
+`TestK8sExecutor_CloseRemovesPolicyAfterPodIsGone` checks the
+[teardown](#teardown) order against the live API server.
 
 The allowlist enforcement test (`TestK8sEgress_AllowlistEnforced`)
 additionally needs a real egress proxy deployed and a TLS-capable image

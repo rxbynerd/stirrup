@@ -248,7 +248,7 @@ Five limits bound a `stirrup job` session; whichever fires first wins.
 | `RunConfig.timeout` | One run. The primary run's budget starts at task assignment and includes component construction; each follow-up run receives a fresh budget of the same length when its `user_response` is taken up. | The run ends with `done{stop_reason:"timeout"}`. The follow-up window still opens afterwards. |
 | `followUpGrace` / `STIRRUP_FOLLOWUP_GRACE` | Idle time between runs, restarted after every run is finalised. A run in progress never consumes it. | The stream closes and the process exits with the primary run's exit code. |
 | `cancel` ControlEvent | The session. | An active run ends with `done{stop_reason:"cancelled"}`; queued `user_response` input is discarded (each reported by a `warning`); no follow-up window opens. With no run active — between a run's `done` and the next run, or inside the grace window — the stream closes without another `done`. One `cancel` always stops the harness. |
-| SIGTERM / SIGINT | The process. | The active run or grace window is interrupted; result emission and export still run under their own bounded contexts, and the shutdown watchdog closes the loop within 5 s. |
+| SIGTERM / SIGINT | The process. | The active run or grace window is interrupted; result emission and export still run under their own bounded contexts, and the shutdown watchdog starts closing the loop 5 s after the signal (executor teardown, which for `k8s` waits for the sandbox Pod to stop, comes on top). |
 | `Job.spec.activeDeadlineSeconds` | The Pod. | The only session-wide hard cap for `stirrup job`. No `RunConfig` field bounds the number or total duration of follow-ups, so size it for `timeout` × the expected number of runs plus the grace windows between them. (`stirrup harness`, which has no orchestrator behind it, bounds its own session at 10 × (`timeout` + `followUpGrace`) after the primary run.) |
 
 Exit status reports the assigned task: the process exits 0 when the
@@ -390,7 +390,9 @@ credential helper reads (see [`configuration.md`'s "Token file and
 refresh"](configuration.md#token-file-and-refresh)). A control plane
 must therefore be prepared to answer up to eight requests per stream,
 each minted for the same run identity; the initial token's
-environment-variable copy is never updated, only the file. Leaving
+environment-variable copy is never updated, only the file. A token
+that reaches its refresh point while the sandbox is still starting is
+replaced by a second request before the file is first written. Leaving
 `expires_at` unset disables refresh, in which case `exp` must cover
 the run's configured wall-clock budget plus slack, since nothing
 inside the sandbox can recover from an expired token.
