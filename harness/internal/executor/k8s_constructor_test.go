@@ -107,6 +107,10 @@ func TestNewK8sExecutor_BindsAdmittedReadyPod(t *testing.T) {
 	must.NoError(exec.Close())
 	requireTornDown(t, cs)
 	requireRemovedAfterRelease(t, lingering)
+
+	deletes := len(podDeletes(cs))
+	must.NoError(exec.Close(), "second Close")
+	must.Len(podDeletes(cs), deletes, "a second Close issued another delete")
 }
 
 func TestDefaultK8sTiming_WaitsFiveMinutesForReadiness(t *testing.T) {

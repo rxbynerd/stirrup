@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -125,6 +126,11 @@ type K8sExecutor struct {
 	networkPolicyName string
 	runID             string
 	timing            k8sTiming
+
+	// closeMu serialises Close; closed records a completed teardown so later
+	// calls return without touching the cluster.
+	closeMu sync.Mutex
+	closed  bool
 }
 
 // NewK8sExecutor builds a kubernetes clientset, installs the egress
@@ -366,10 +372,16 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraE
 // Close deletes the sandbox Pod gracefully under a UID precondition, waits
 // until its termination is established, and only then deletes the egress
 // NetworkPolicy. It uses its own bounded context, so cleanup proceeds even if
-// the caller's context is cancelled, and is idempotent. When termination
-// cannot be established the policy is retained and the error names it.
+// the caller's context is cancelled. When termination cannot be established
+// the policy is retained and the error names it; a later Close retries, and
+// one after a successful teardown does nothing.
 func (e *K8sExecutor) Close() error {
-	return podTeardown{
+	e.closeMu.Lock()
+	defer e.closeMu.Unlock()
+	if e.closed {
+		return nil
+	}
+	err := podTeardown{
 		clientset:  e.clientset,
 		namespace:  e.namespace,
 		podName:    e.podName,
@@ -379,6 +391,8 @@ func (e *K8sExecutor) Close() error {
 		logger:     e.logger,
 		timing:     e.timing,
 	}.run()
+	e.closed = err == nil
+	return err
 }
 
 // buildRESTConfig resolves an in-cluster config when possible, falling back

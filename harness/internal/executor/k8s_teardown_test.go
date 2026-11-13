@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
@@ -62,36 +64,98 @@ func TestPodTeardown_DeletesGracefullyWithUIDPrecondition(t *testing.T) {
 
 func TestPodTeardown_RetainsPolicy(t *testing.T) {
 	policyName := networkPolicyName(testK8sPodName)
+	statusError := func(code int32) error {
+		return &apierrors.StatusError{ErrStatus: metav1.Status{Status: metav1.StatusFailure, Code: code}}
+	}
 
 	cases := []struct {
 		name    string
-		arrange func(cs *fake.Clientset)
-		wantErr string
+		arrange func(t *testing.T, cs *fake.Clientset)
+		wantErr []string
+		// wantDeletes is the exact number of Pod deletes; zero skips the check.
+		wantDeletes int
+		// wantReads is the exact number of Pod reads; zero skips the check.
+		wantReads int
+		// failsFast cases run under a long bound they must not wait out.
+		failsFast bool
 	}{
 		{
-			name:    "delete forbidden",
-			arrange: func(cs *fake.Clientset) { failVerb(cs, "delete", "pods", errForbiddenPods) },
-			wantErr: "denied by RBAC",
+			name:        "delete forbidden",
+			arrange:     func(_ *testing.T, cs *fake.Clientset) { failVerb(cs, "delete", "pods", errForbiddenPods) },
+			wantErr:     []string{"delete pod", "denied by RBAC"},
+			wantDeletes: 1,
+			failsFast:   true,
+		},
+		{
+			name: "delete unauthorized",
+			arrange: func(_ *testing.T, cs *fake.Clientset) {
+				failVerb(cs, "delete", "pods", apierrors.NewUnauthorized("token expired"))
+			},
+			wantErr:     []string{"delete pod", "token expired"},
+			wantDeletes: 1,
+			failsFast:   true,
 		},
 		{
 			name: "delete keeps failing",
-			arrange: func(cs *fake.Clientset) {
+			arrange: func(_ *testing.T, cs *fake.Clientset) {
 				failVerb(cs, "delete", "pods", errors.New("connection refused"))
 			},
-			wantErr: "connection refused",
+			wantErr: []string{"connection refused", "within the 100ms teardown bound"},
 		},
 		{
-			name:    "termination not confirmed",
-			arrange: ignorePodDeletes,
-			wantErr: "pod termination not confirmed",
+			name:        "termination not confirmed",
+			arrange:     func(_ *testing.T, cs *fake.Clientset) { ignorePodDeletes(cs) },
+			wantErr:     []string{"pod termination not confirmed within the 100ms teardown bound"},
+			wantDeletes: 1,
 		},
 		{
 			name: "termination polls fail",
-			arrange: func(cs *fake.Clientset) {
+			arrange: func(_ *testing.T, cs *fake.Clientset) {
 				ignorePodDeletes(cs)
 				failVerb(cs, "get", "pods", apierrors.NewServiceUnavailable("apiserver overloaded"))
 			},
-			wantErr: "apiserver overloaded",
+			wantErr:     []string{"pod termination not confirmed within the 100ms teardown bound", "apiserver overloaded"},
+			wantDeletes: 1,
+		},
+		{
+			name: "termination read forbidden",
+			arrange: func(_ *testing.T, cs *fake.Clientset) {
+				ignorePodDeletes(cs)
+				failVerb(cs, "get", "pods", errForbiddenPods)
+			},
+			wantErr:     []string{"confirm pod termination", "denied by RBAC"},
+			wantDeletes: 1,
+			wantReads:   1,
+			failsFast:   true,
+		},
+		{
+			// apimachinery reads any 409 with an unknown reason as Conflict.
+			name: "delete answers 409 while the pod remains",
+			arrange: func(_ *testing.T, cs *fake.Clientset) {
+				failVerb(cs, "delete", "pods", statusError(409))
+			},
+			wantErr:     []string{"pod termination not confirmed"},
+			wantDeletes: 1,
+		},
+		{
+			name: "delete answers 404 while the pod remains",
+			arrange: func(_ *testing.T, cs *fake.Clientset) {
+				failVerb(cs, "delete", "pods", statusError(404))
+			},
+			wantErr:     []string{"pod termination not confirmed"},
+			wantDeletes: 1,
+		},
+		{
+			name: "pod held terminating by a finalizer",
+			arrange: func(t *testing.T, cs *fake.Clientset) {
+				pod := readyPod("uid-1")
+				pod.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+				pod.Finalizers = []string{"test.stirrup.dev/hold"}
+				require.New(t).NoError(cs.Tracker().Update(podsResource, pod, testK8sNamespace))
+				ignorePodDeletes(cs)
+			},
+			wantErr:     []string{"pod termination not confirmed"},
+			wantDeletes: 1,
 		},
 	}
 
@@ -100,22 +164,72 @@ func TestPodTeardown_RetainsPolicy(t *testing.T) {
 			must := require.New(t)
 			check := assert.New(t)
 			cs := fake.NewClientset(readyPod("uid-1"), testPolicy())
-			tc.arrange(cs)
+			tc.arrange(t, cs)
 			logger, logs := testLogger()
+			td := testTeardown(cs, "uid-1", logger)
+			if tc.failsFast {
+				// A long bound shows that the call does not wait it out.
+				td.timing.teardownTimeout = 10 * time.Second
+			}
 
-			err := testTeardown(cs, "uid-1", logger).run()
+			start := time.Now()
+			err := td.run()
+			elapsed := time.Since(start)
 
 			must.Error(err)
-			must.ErrorContains(err, tc.wantErr)
+			for _, want := range tc.wantErr {
+				must.ErrorContains(err, want)
+			}
 			must.ErrorContains(err, "retained egress NetworkPolicy "+testK8sNamespace+"/"+policyName)
 			must.ErrorContains(err, testK8sRunID)
+			check.Less(elapsed, 5*time.Second)
 			check.True(trackerHas(t, cs, networkPoliciesResource, policyName), "policy removed despite unconfirmed termination")
 			check.Zero(countVerb(cs, "delete", "networkpolicies"), "policy delete attempted")
+			if tc.wantDeletes > 0 {
+				check.Len(podDeletes(cs), tc.wantDeletes)
+			}
+			if tc.wantReads > 0 {
+				check.Equal(tc.wantReads, countVerb(cs, "get", "pods"))
+			}
+			for _, d := range podDeletes(cs) {
+				check.NotNil(d.GracePeriodSeconds)
+				if d.GracePeriodSeconds != nil {
+					check.Positive(*d.GracePeriodSeconds, "an unconfirmed termination escalated to a zero-grace delete")
+				}
+			}
 			for _, want := range []string{"level=WARN", "namespace=" + testK8sNamespace, "pod=" + testK8sPodName, "networkpolicy=" + policyName, "runID=" + testK8sRunID} {
 				check.Contains(logs.String(), want)
 			}
 		})
 	}
+}
+
+func TestK8sExecutor_CloseRetriesAfterRetaining(t *testing.T) {
+	must := require.New(t)
+	cs := fake.NewClientset(readyPod("uid-1"), testPolicy())
+	holding := true
+	cs.PrependReactor("delete", "pods", func(clienttesting.Action) (bool, runtime.Object, error) {
+		return holding, nil, nil
+	})
+	logger, _ := testLogger()
+	exec := &K8sExecutor{
+		podExecCore:       podExecCore{clientset: cs, namespace: testK8sNamespace, podName: testK8sPodName, logger: logger},
+		podUID:            "uid-1",
+		networkPolicyName: networkPolicyName(testK8sPodName),
+		runID:             testK8sRunID,
+		timing:            fastK8sTiming,
+	}
+
+	must.ErrorContains(exec.Close(), "retained egress NetworkPolicy")
+	must.True(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(testK8sPodName)))
+
+	holding = false
+	must.NoError(exec.Close(), "a later Close after the pod went away")
+	must.False(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(testK8sPodName)))
+
+	deletes := countVerb(cs, "delete", "pods")
+	must.NoError(exec.Close())
+	must.Equal(deletes, countVerb(cs, "delete", "pods"), "a Close after a completed teardown touched the cluster")
 }
 
 func TestPodTeardown_RetriesTransientDeleteFailure(t *testing.T) {

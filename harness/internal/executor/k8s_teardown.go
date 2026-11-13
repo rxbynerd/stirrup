@@ -101,29 +101,31 @@ func (t podTeardown) terminatePod(ctx context.Context) error {
 	for {
 		err := t.clientset.CoreV1().Pods(t.namespace).Delete(ctx, t.podName, opts)
 		switch {
-		case err == nil:
+		case err == nil, apierrors.IsNotFound(err), apierrors.IsConflict(err):
+			// NotFound and Conflict (the UID precondition failing) suggest the
+			// Pod is gone, but a webhook or proxy can answer either while it
+			// runs, so only a read establishes termination.
 			return t.waitForTermination(ctx)
-		case apierrors.IsNotFound(err), apierrors.IsConflict(err):
-			// Conflict is the UID precondition failing: the name now belongs
-			// to another Pod, so this one is gone.
-			return nil
 		case apierrors.IsForbidden(err), apierrors.IsUnauthorized(err):
 			return fmt.Errorf("delete pod: %w", boundClusterErr(err))
 		}
 		lastErr = err
 		if !sleepCtx(ctx, t.timing.pollPeriod) {
-			return fmt.Errorf("delete pod: %w (gave up after %s)", boundClusterErr(lastErr), t.timing.teardownTimeout)
+			return fmt.Errorf("delete pod: %w (gave up within the %s teardown bound)", boundClusterErr(lastErr), t.timing.teardownTimeout)
 		}
 	}
 }
 
 // waitForTermination polls until the Pod is NotFound or its name carries a
-// different UID. Poll errors are retried until ctx ends.
+// different UID. Forbidden and Unauthorized stop at once; other poll errors
+// are retried until ctx ends.
 func (t podTeardown) waitForTermination(ctx context.Context) error {
 	var lastErr error
 	for {
 		pod, err := t.getPod(ctx)
 		switch {
+		case apierrors.IsForbidden(err), apierrors.IsUnauthorized(err):
+			return fmt.Errorf("confirm pod termination: %w", boundClusterErr(err))
 		case err != nil:
 			lastErr = err
 		case pod == nil:
@@ -135,9 +137,9 @@ func (t podTeardown) waitForTermination(ctx context.Context) error {
 		}
 		if !sleepCtx(ctx, t.timing.pollPeriod) {
 			if lastErr != nil {
-				return fmt.Errorf("pod termination not confirmed within %s: %w", t.timing.teardownTimeout, boundClusterErr(lastErr))
+				return fmt.Errorf("pod termination not confirmed within the %s teardown bound: %w", t.timing.teardownTimeout, boundClusterErr(lastErr))
 			}
-			return fmt.Errorf("pod termination not confirmed within %s", t.timing.teardownTimeout)
+			return fmt.Errorf("pod termination not confirmed within the %s teardown bound", t.timing.teardownTimeout)
 		}
 	}
 }
