@@ -1332,8 +1332,8 @@ Minimum environment, for roughly half a day:
 - A long-lived placeholder Pod with `runtimeClassName:
   isolated-sandbox`, so a capable node exists before the suite starts.
   *Corrected 2026-11-13:* no placeholder is needed for the candidate. With
-  the 5-minute readiness ceiling and the wait for exec to reach a Pod on a
-  new node, 8 of 8 Nitro cold starts passed (see
+  the 5-minute readiness ceiling and the `k8s` executor's wait for exec to
+  reach a Pod on a new node, 8 of 8 Nitro cold starts passed (see
   [Defects found](#defects-found)). A placeholder keeps a sandbox node warm
   only if it is itself a sandbox Pod, because Auto Mode runs sandbox Pods on
   separate nodes from ordinary Pods (see [Node pools](#node-pools)).
