@@ -125,9 +125,10 @@ The pieces and their lifecycle:
   (the distroless "nonroot" UID), and `seccompProfile.type:
   RuntimeDefault`. `automountServiceAccountToken` is **always** `false`,
   so the sandbox itself has no Kubernetes API access regardless of the
-  ServiceAccount named. `enableServiceLinks` is `false`, so the
-  namespace's Services are not listed in the sandbox environment as
-  `<SERVICE>_SERVICE_HOST` and `_PORT` variables. `restartPolicy` is
+  ServiceAccount named. For the `k8s` executor, `enableServiceLinks` is
+  `false`, so the namespace's Services are not listed in the sandbox
+  environment as `<SERVICE>_SERVICE_HOST` and `_PORT` variables; the
+  [`k8s-sandbox`](k8s-agent-sandbox.md) Pod does not set it. `restartPolicy` is
   `Never` (one-shot), the container is named `agent`, and the
   entrypoint is `/bin/sh -c "sleep
   infinity"` — all real work runs through subsequent `exec` calls, not
