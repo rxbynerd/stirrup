@@ -544,9 +544,46 @@ var comparedFieldExceptions = map[string]string{
 	"container.Name":       "firstContainersMismatch reports a renamed container as a containers mismatch",
 }
 
-// TestPodAdmission_StrictComparesEveryComparedField changes each field the
-// tables classify as compared, one at a time, and requires both admission
-// stages to name it, so reclassifying a field breaks a test.
+// wantUncomparedFields lists, independently of the classification tables,
+// the fields the whole-Pod admission check must not compare, with the rule
+// each follows. Every other PodSpec and Container field must be compared, so
+// reclassifying a field in either direction breaks a test.
+var wantUncomparedFields = map[string]admissionFieldRule{
+	"pod.DNSPolicy":                      fieldPlatformOwned,
+	"pod.DeprecatedServiceAccount":       fieldPlatformOwned,
+	"pod.NodeName":                       fieldPlatformOwned,
+	"pod.ImagePullSecrets":               fieldPlatformOwned,
+	"pod.SchedulerName":                  fieldPlatformOwned,
+	"pod.PriorityClassName":              fieldPlatformOwned,
+	"pod.Priority":                       fieldPlatformOwned,
+	"pod.PreemptionPolicy":               fieldPlatformOwned,
+	"pod.Overhead":                       fieldPlatformOwned,
+	"pod.NodeSelector":                   fieldSubmittedSubset,
+	"pod.Tolerations":                    fieldSubmittedSubset,
+	"container.TerminationMessagePath":   fieldPlatformOwned,
+	"container.TerminationMessagePolicy": fieldPlatformOwned,
+	"container.ImagePullPolicy":          fieldPlatformOwned,
+}
+
+func TestStrictAdmissionFields_UncomparedFieldsAreTheReasonedSet(t *testing.T) {
+	must := require.New(t)
+	got := map[string]admissionFieldRule{}
+	for name, field := range strictPodSpecFields {
+		if field.rule != fieldCompared {
+			got["pod."+name] = field.rule
+		}
+	}
+	for name, field := range strictContainerFields {
+		if field.rule != fieldCompared {
+			got["container."+name] = field.rule
+		}
+	}
+	must.Equal(wantUncomparedFields, got)
+}
+
+// TestPodAdmission_StrictComparesEveryComparedField changes each field that
+// is not in wantUncomparedFields, one at a time, and requires both
+// admission stages to name it.
 func TestPodAdmission_StrictComparesEveryComparedField(t *testing.T) {
 	profile := k8sRuntimeProfiles["nitro-isolated"]
 	type fieldCase struct {
@@ -554,11 +591,11 @@ func TestPodAdmission_StrictComparesEveryComparedField(t *testing.T) {
 		change    func(t *testing.T, pod *corev1.Pod)
 	}
 	var cases []fieldCase
-	for name, field := range strictPodSpecFields {
-		if field.rule != fieldCompared {
+	for _, f := range reflect.VisibleFields(reflect.TypeOf(corev1.PodSpec{})) {
+		name := f.Name
+		if _, ok := wantUncomparedFields["pod."+name]; ok {
 			continue
 		}
-		f, _ := reflect.TypeOf(corev1.PodSpec{}).FieldByName(name)
 		cases = append(cases, fieldCase{key: "pod." + name, path: "spec." + jsonFieldName(f) + ":", change: func(t *testing.T, pod *corev1.Pod) {
 			if change, ok := explicitPodSpecChanges[name]; ok {
 				change(&pod.Spec)
@@ -567,11 +604,11 @@ func TestPodAdmission_StrictComparesEveryComparedField(t *testing.T) {
 			require.New(t).True(mutateForAdmission(reflect.ValueOf(&pod.Spec).Elem().FieldByName(name)), "no change for PodSpec.%s; add one to explicitPodSpecChanges", name)
 		}})
 	}
-	for name, field := range strictContainerFields {
-		if field.rule != fieldCompared {
+	for _, f := range reflect.VisibleFields(reflect.TypeOf(corev1.Container{})) {
+		name := f.Name
+		if _, ok := wantUncomparedFields["container."+name]; ok {
 			continue
 		}
-		f, _ := reflect.TypeOf(corev1.Container{}).FieldByName(name)
 		cases = append(cases, fieldCase{key: "container." + name, path: "spec.containers[agent]." + jsonFieldName(f) + ":", change: func(t *testing.T, pod *corev1.Pod) {
 			if change, ok := explicitContainerChanges[name]; ok {
 				change(&pod.Spec.Containers[0])
@@ -611,22 +648,23 @@ func TestPodAdmission_StrictComparesEveryComparedField(t *testing.T) {
 }
 
 // TestPodAdmission_StrictIgnoresPlatformOwnedFields is the converse: a
-// change to each platform-owned field passes both stages.
+// change to each field wantUncomparedFields lists as platform-owned passes
+// both stages.
 func TestPodAdmission_StrictIgnoresPlatformOwnedFields(t *testing.T) {
 	profile := k8sRuntimeProfiles["nitro-isolated"]
 	for _, table := range []struct {
 		kind   string
-		fields map[string]admissionField
 		target func(pod *corev1.Pod) reflect.Value
 	}{
-		{kind: "pod", fields: strictPodSpecFields, target: func(pod *corev1.Pod) reflect.Value { return reflect.ValueOf(&pod.Spec).Elem() }},
-		{kind: "container", fields: strictContainerFields, target: func(pod *corev1.Pod) reflect.Value { return reflect.ValueOf(&pod.Spec.Containers[0]).Elem() }},
+		{kind: "pod", target: func(pod *corev1.Pod) reflect.Value { return reflect.ValueOf(&pod.Spec).Elem() }},
+		{kind: "container", target: func(pod *corev1.Pod) reflect.Value { return reflect.ValueOf(&pod.Spec.Containers[0]).Elem() }},
 	} {
-		for name, field := range table.fields {
-			if field.rule != fieldPlatformOwned {
+		for key, rule := range wantUncomparedFields {
+			name, ok := strings.CutPrefix(key, table.kind+".")
+			if !ok || rule != fieldPlatformOwned {
 				continue
 			}
-			t.Run(table.kind+"."+name, func(t *testing.T) {
+			t.Run(key, func(t *testing.T) {
 				must := require.New(t)
 				submitted := buildSandboxPod(nitroFixtureCfg(), profile, testK8sPodName, nil)
 				admitted := decodeAdmittedNitroPod(t)
