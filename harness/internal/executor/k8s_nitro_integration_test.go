@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/utils/ptr"
@@ -206,4 +208,120 @@ func newRecordedK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, record *
 	return newK8sExecutorWithClient(ctx, cfg, func(c kubernetes.Interface) kubernetes.Interface {
 		return recordingClientset{Interface: c, record: record}
 	})
+}
+
+// TestK8sNitroIsolated_Soak holds one nitro-isolated sandbox open for the
+// duration in STIRRUP_TEST_NITRO_SOAK (for example 75m) and uses it
+// throughout: a short command every 30 seconds, a file round trip every
+// three minutes, and one command that streams a line a second for
+// STIRRUP_TEST_NITRO_SOAK_STREAM (default 22m, under the executor's
+// 30-minute command limit). It then checks the sandbox is the same Pod on
+// the same node and that Close removes it. Gated like
+// TestK8sNitroIsolated_EndToEnd; run it with a -test.timeout above the soak.
+func TestK8sNitroIsolated_Soak(t *testing.T) {
+	cfg := testK8sEnv(t)
+	if os.Getenv("STIRRUP_TEST_NITRO_ISOLATED") == "" || os.Getenv("STIRRUP_TEST_NITRO_SOAK") == "" {
+		t.Skip("STIRRUP_TEST_NITRO_ISOLATED and STIRRUP_TEST_NITRO_SOAK not both set; this test holds a Nitro sandbox open on EKS")
+	}
+	must := require.New(t)
+	check := assert.New(t)
+	soak, err := time.ParseDuration(os.Getenv("STIRRUP_TEST_NITRO_SOAK"))
+	must.NoError(err, "STIRRUP_TEST_NITRO_SOAK")
+	stream, err := time.ParseDuration(envOr("STIRRUP_TEST_NITRO_SOAK_STREAM", "22m"))
+	must.NoError(err, "STIRRUP_TEST_NITRO_SOAK_STREAM")
+	stream = min(stream, soak, maxTimeout-2*time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout+soak+k8sCloseTimeout)
+	defer cancel()
+	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
+	must.NoError(err, "build verification clientset")
+
+	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
+		Image:        cfg.image,
+		Namespace:    cfg.namespace,
+		Kubeconfig:   cfg.kubeconfig,
+		NodeSelector: nitroNodeSelector(),
+		Runtime:      "nitro-isolated",
+		Resources:    &types.ResourceLimits{CPUs: 1, MemoryMB: 1024},
+		Network:      &types.NetworkConfig{Mode: "none"},
+		Lifecycle:    Lifecycle{RunID: "nitro-soak", MaxLifetime: k8sIntegrationTimeout + soak + k8sCloseTimeout},
+	})
+	must.NoError(err, "NewK8sExecutor")
+	t.Cleanup(func() { _ = exec.Close() })
+
+	pods := clientset.CoreV1().Pods(cfg.namespace)
+	started, err := pods.Get(ctx, exec.podName, metav1.GetOptions{})
+	must.NoError(err)
+	t.Logf("soak %s, stream %s: pod %s uid %s on node %s", soak, stream, started.Name, started.UID, started.Spec.NodeName)
+
+	type streamOutcome struct {
+		res     *ExecResult
+		err     error
+		elapsed time.Duration
+	}
+	ticks := int(stream / time.Second)
+	streamed := make(chan streamOutcome, 1)
+	go func() {
+		begin := time.Now()
+		res, err := exec.Exec(ctx, fmt.Sprintf("i=0; while [ $i -lt %d ]; do echo tick $i; i=$((i+1)); sleep 1; done", ticks), stream+2*time.Minute)
+		streamed <- streamOutcome{res: res, err: err, elapsed: time.Since(begin)}
+	}()
+
+	const commandEvery, fileEvery = 30 * time.Second, 6
+	deadline := time.Now().Add(soak)
+	ticker := time.NewTicker(commandEvery)
+	defer ticker.Stop()
+	var commands, commandFailures, files, fileFailures int
+	var slowest time.Duration
+	for n := 1; time.Now().Before(deadline); n++ {
+		begin := time.Now()
+		res, err := exec.Exec(ctx, fmt.Sprintf("echo soak-%d", n), nitroProbeTimeout)
+		took := time.Since(begin)
+		slowest = max(slowest, took)
+		commands++
+		if err != nil || res.ExitCode != 0 || strings.TrimSpace(res.Stdout) != fmt.Sprintf("soak-%d", n) {
+			commandFailures++
+			t.Logf("command %d at %s failed after %s: err=%v result=%+v", n, time.Now().UTC().Format(time.RFC3339), took, err, res)
+		}
+		if n%fileEvery == 0 {
+			files++
+			name, content := "soak/round-trip.bin", fmt.Sprintf("round %d\x00%s", n, strings.Repeat("x", 4096))
+			got, err := "", exec.WriteFile(ctx, name, content)
+			if err == nil {
+				got, err = exec.ReadFile(ctx, name)
+			}
+			if err != nil || got != content {
+				fileFailures++
+				t.Logf("file round trip %d at %s failed: err=%v, read %d bytes", n, time.Now().UTC().Format(time.RFC3339), err, len(got))
+			}
+		}
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			must.NoError(ctx.Err(), "the soak's context ended early")
+		}
+	}
+	t.Logf("commands %d (failed %d, slowest %s); file round trips %d (failed %d)", commands, commandFailures, slowest, files, fileFailures)
+	check.Zero(commandFailures, "commands that failed during the soak")
+	check.Zero(fileFailures, "file round trips that failed during the soak")
+
+	outcome := <-streamed
+	t.Logf("stream ran %s: err=%v", outcome.elapsed, outcome.err)
+	if check.NoError(outcome.err, "the streaming command") {
+		lines := strings.Split(strings.TrimSpace(outcome.res.Stdout), "\n")
+		check.Equal(0, outcome.res.ExitCode, "stderr %q", outcome.res.Stderr)
+		check.Len(lines, ticks, "every streamed line arrived")
+		check.Equal(fmt.Sprintf("tick %d", ticks-1), lines[len(lines)-1])
+	}
+
+	ended, err := pods.Get(ctx, exec.podName, metav1.GetOptions{})
+	must.NoError(err, "the sandbox pod is still present after the soak")
+	check.Equal(started.UID, ended.UID, "the sandbox is the same pod")
+	check.Equal(started.Spec.NodeName, ended.Spec.NodeName, "the sandbox stayed on its node")
+	check.Equal(corev1.PodRunning, ended.Status.Phase)
+	for _, status := range ended.Status.ContainerStatuses {
+		check.Zero(status.RestartCount, "container %s restarted", status.Name)
+	}
+
+	assertCloseRemovesPolicyAfterPodIsGone(t, ctx, clientset, exec)
 }
