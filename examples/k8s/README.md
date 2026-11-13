@@ -36,7 +36,9 @@ kubectl apply -f examples/k8s/runtimeclass.yaml   # registered handlers only
 ```
 
 Register only the RuntimeClasses whose handlers are actually installed on the
-nodes — a RuntimeClass whose handler is missing makes Pod scheduling fail. The
+nodes — a RuntimeClass whose handler is missing on a node still lets the Pod
+schedule there, but its sandbox never starts and the Pod stays
+`ContainerCreating` until the readiness wait ends. The
 egress-proxy objects are applied separately and only when running in network
 mode `allowlist`; see [`egress-proxy/README.md`](egress-proxy/README.md).
 
