@@ -282,6 +282,40 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 	}
 }
 
+func TestRunK8sRuntimeDiagnostics_DMIProductNameIsOneLineEndingInEnclave(t *testing.T) {
+	cases := []struct {
+		name      string
+		content   string
+		wantCheck string
+	}{
+		{name: "enclave name", content: "m5d.enclave"},
+		{name: "enclave name with a newline", content: "m5d.enclave\n"},
+		{name: "enclave name with trailing blank lines", content: "m5d.enclave\n\n  \n"},
+		{name: "enclave suffix not at the end", content: "m5d.enclave.evil\n", wantCheck: "dmi_product_name"},
+		{name: "enclave without the dot", content: "enclave\n", wantCheck: "dmi_product_name"},
+		{name: "enclave name on a second line", content: "x\nfoo.enclave\n", wantCheck: "diagnostic_output"},
+		{name: "empty file", content: "", wantCheck: "dmi_product_name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			dump := guestDump(text(tc.content), text(procNetDevHeader+procNetDevLo+procNetDevDummy0), text(procNetRouteHeader))
+			core, security, _ := fakeDiagnosticsCore(t, dump, nil)
+
+			err := runK8sRuntimeDiagnostics(context.Background(), "nitro-isolated", k8sRuntimeProfiles["nitro-isolated"], core)
+
+			must.Len(security.runtimeDiagnostics, 1)
+			if tc.wantCheck == "" {
+				must.NoError(err)
+				must.True(security.runtimeDiagnostics[0].passed)
+				return
+			}
+			must.ErrorContains(err, "failed: "+tc.wantCheck+": ")
+			must.Equal(tc.wantCheck, security.runtimeDiagnostics[0].check)
+		})
+	}
+}
+
 func TestRunK8sRuntimeDiagnostics_ProfileWithoutDiagnosticsRunsNothing(t *testing.T) {
 	must := require.New(t)
 	core, security, calls := fakeDiagnosticsCore(t, "", nil)
