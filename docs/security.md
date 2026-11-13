@@ -784,7 +784,7 @@ checks today. Their outcome is the `sandbox_runtime_diagnostic_passed`
 (info) or `sandbox_runtime_diagnostic_failed` (error) security event,
 documented with its keys in
 [EKS with Nitro Sandboxes](executors/k8s.md#runtime-diagnostics); a
-failure of the [whole-Pod admission check](executors/k8s.md#admission-check)
+failure of the [whole-Pod admission check](executors/k8s.md#whole-pod-admission-check)
 for that runtime emits the same failure event with check `admitted_pod`.
 The values the guest and the diagnostics `exec` supply are stripped of
 control characters, scrubbed and cut to 256 characters before they enter

@@ -244,7 +244,8 @@ permanently broken image there waits the full five minutes.
 The Pod that `Create` returns is the Pod after every mutating admission
 webhook and admission plugin has run. The executor compares it with the
 Pod it submitted; then, on every readiness poll, it compares the Pod it
-observes with that `Create` response. Exactly these are compared:
+observes with that `Create` response. For every runtime, exactly these
+are compared:
 
 - the UID: `Create` must return one, and every later observation must
   carry the same one;
@@ -259,16 +260,18 @@ A Pod whose RuntimeClass, UID or policy-selected labels were rewritten
 fails construction; the error names each expected and observed value
 and the Pod is torn down. A UID mismatch during the wait means the Pod
 was deleted and another created under its name. Ordinary API defaulting
-and added labels or annotations are not mismatches.
+and added labels are not mismatches. Added annotations are not
+mismatches either, except where a runtime requires annotations to keep
+their value: for `nitro-isolated`, any `sandbox.amazonaws.com/` key other
+than the throttle keys described [below](#whole-pod-admission-check).
 
 For every runtime except `nitro-isolated`, these are not compared: the
 container set, image, command, security context, volumes, environment,
 service account, `hostNetwork`, `automountServiceAccountToken`,
 annotations, and the NetworkPolicy object itself. A webhook that changes
-those is not detected. `nitro-isolated` adds the whole-Pod admission
-check at both stages, described in
-[Admission prerequisites](#admission-prerequisites); the NetworkPolicy
-object is not compared for any runtime. Added
+those is not detected. `nitro-isolated` adds the
+[whole-Pod admission check](#whole-pod-admission-check) at both stages;
+the NetworkPolicy object is not compared for any runtime. Added
 labels are allowed, and because NetworkPolicies are additive, a label
 added at admission can place the Pod under another policy in the
 namespace that allows more egress. Controlling which policies exist in
@@ -279,6 +282,127 @@ seen. It also runs **after** the Pod is created, so it cannot stop a Pod
 with a rewritten spec from starting, and it does not undo whatever that
 Pod did before the check. Keeping the Pod contract intact at admission
 is the cluster operator's responsibility.
+
+#### Whole-Pod admission check
+
+`executor.runtime: nitro-isolated` compares the whole Pod at both
+stages: the `Create` response against the submitted Pod, and each Pod
+seen during the readiness wait against the `Create` response. Every
+field of the Pod spec and the container spec is classified in one table
+([`k8s_admission_strict.go`](../../harness/internal/executor/k8s_admission_strict.go))
+as compared, where the value must be semantically equal (so `1Gi`
+matches a submitted `1024Mi`), as owned by the platform and ignored, or
+as a set that may gain entries but not lose any.
+
+- **Owned by the platform, not compared:** `nodeName`, `overhead`
+  (except the required mark below), `schedulerName`, `priority`,
+  `priorityClassName`, `preemptionPolicy`, `dnsPolicy`, the deprecated
+  `serviceAccount`, `imagePullSecrets` (copied from the service account
+  by the ServiceAccount admission plugin), and the container's
+  `terminationMessagePath`, `terminationMessagePolicy` and
+  `imagePullPolicy`.
+- **May gain entries:** `nodeSelector` (the RuntimeClass merges its own)
+  and `tolerations` (the default not-ready and unreachable tolerations).
+- **Compared:** everything else, including exactly the submitted
+  containers (no sidecar), empty `initContainers` and
+  `ephemeralContainers`, image, command, arguments, environment,
+  `envFrom`, volumes and mounts, the Pod and container security
+  contexts, resources, the service account and
+  `automountServiceAccountToken`, `terminationGracePeriodSeconds`,
+  `activeDeadlineSeconds`, `enableServiceLinks` (submitted as `false`),
+  `hostNetwork`, `hostPID`, `hostIPC`, `hostUsers` and the
+  RuntimeClass.
+
+The admitted Pod must also carry the marks the EKS `isolated-sandbox`
+RuntimeClass sets at admission: `eks.amazonaws.com/nitro-sandbox` as a
+key of `spec.overhead` (its amount is not compared) and
+`spec.nodeSelector["eks.amazonaws.com/nitro-sandbox"]` equal to `"true"`.
+*Measured:* both were on the Pods read back on the tested recipe. A
+cluster whose `isolated-sandbox` class is not the one EKS installs, such
+as a self-managed class of that name or one that points at `runc`, lacks
+them and fails here, before the [runtime diagnostics](#runtime-diagnostics)
+run, with mismatches such as
+`spec.overhead[eks.amazonaws.com/nitro-sandbox]: expected present, observed absent`
+and
+`spec.nodeSelector[eks.amazonaws.com/nitro-sandbox]: expected "true", observed absent`.
+The RuntimeClass object itself is not read; the reference Role cannot
+read RuntimeClasses.
+
+In the metadata:
+
+- every submitted label must be kept and the owner references must be
+  unchanged; added labels are allowed;
+- every annotation under `sandbox.amazonaws.com/` must keep its submitted
+  presence and value, so `network-isolated` must keep `"true"` and an
+  added key such as `sandbox.amazonaws.com/policy` fails the run;
+- the exception is the eleven throttle keys AWS documentation lists
+  ([resource isolation](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-resource-isolation.html)):
+  `log-bandwidth`, `ingress-bandwidth`, `egress-bandwidth`,
+  `ingress-packets-per-second`, `egress-packets-per-second`,
+  `dns-packets-per-second`, `overlay-disk-bandwidth`,
+  `overlay-disk-iops`, `rootfs-disk-bandwidth`, `rootfs-disk-iops` and
+  `conntrack-limit`, each under the same prefix. Admission may add one
+  or change its value, so an operator's mutating policy can retune them;
+  a submitted one must not be removed
+  (`expected present with any value, observed absent`). The list comes
+  from AWS documentation, not from measurement; on the tested recipe the
+  platform kept the submitted annotations unchanged and added none;
+- annotations outside the prefix are not compared.
+
+A mismatch fails the run, emits `sandbox_runtime_diagnostic_failed` with
+`check: admitted_pod`, and tears the Pod down as in
+[Teardown](#teardown). The error lists every UID, RuntimeClass,
+metadata, annotation and platform-mark mismatch, together with the first
+differing spec field, each with expected and observed values, scrubbed
+and cut to 256 characters. A container list is shown by container names,
+and an environment difference names the variable and says whether its
+value or its source changed, never the value. A passing check emits no
+event; the `sandbox_runtime_diagnostic_passed` event after the runtime
+diagnostics implies it. A create error, such as a quota rejection or a
+missing RuntimeClass, is an ordinary create failure and emits no event.
+
+What the check leaves open:
+
+- **Fields that are not compared.** `schedulerName`, `nodeName`, added
+  tolerations, `terminationMessagePath` (the kubelet mounts a writable
+  file from the host at that path, wherever it points),
+  `imagePullSecrets` and `priorityClassName` are platform-owned or
+  subset fields, so a webhook that sets them is not detected. The
+  required node-selector mark is what bounds where the Pod can land.
+- **Nothing is compared after readiness.** Any writer with `pods/patch`
+  in the namespace can change `spec.containers[*].image` afterwards: the
+  kubelet restarts the container, the `/workspace` `emptyDir` persists,
+  and the harness keeps running commands in the new image. Labels and
+  the `network-isolated` annotation can also be changed afterwards
+  (AWS documentation says the annotation is read once, at Pod creation,
+  so a later change has no effect), and an ephemeral container can be
+  added through its subresource; one added before the Pod is Ready is
+  seen. Each of these needs write access to the sandbox namespace, which
+  the threat model treats as semi-trusted.
+- **Fields the read-backs did not exercise.** The classification of
+  `schedulingGates`, `readinessGates`, `affinity`,
+  `topologySpreadConstraints` and the container `securityContext`
+  defaults of newer API versions rests on upstream behaviour: none was
+  set on the Pods read back on the tested recipe, and these are the
+  fields most likely to be written at create time by the platform or a
+  webhook. The passing test fixture is modelled on those read-back Pods;
+  no `Create` response was captured, so whether a field is filled in at
+  creation or only at scheduling is unverified on EKS.
+- **`kind` is not evidence about EKS.** A `kind` run shows only how the
+  check meets upstream API defaulting. On `kind` (Kubernetes 1.31), a
+  RuntimeClass named `isolated-sandbox` that points at `runc` and carries
+  neither the overhead nor the node-selector mark fails at the whole-Pod
+  admission check with
+  `spec.overhead[eks.amazonaws.com/nitro-sandbox]: expected present, observed absent; spec.nodeSelector[eks.amazonaws.com/nitro-sandbox]: expected "true", observed absent`,
+  before the runtime diagnostics run. When that class also carries both
+  marks (and the node carries the label and advertises the extended
+  resource), the `Create` response on `kind` already holds the overhead
+  and the merged selector, the Pod passes the check at both stages, and
+  the run fails at the runtime diagnostics with
+  `dmi_product_name: DMI product name "kind" does not end in ".enclave"`.
+  A LimitRange that defaults `ephemeral-storage` fails the check on
+  `spec.containers[agent].resources`, while a `runc` run in the same
+  namespace still starts.
 
 ### Diagnosing a slow or failed start
 
@@ -930,11 +1054,47 @@ the Pod network. *Measured* on the tested recipe below, `exec` and binary
 **Status.** This support has not run on EKS. Statements marked
 *measured* come from a spike on 2026-11-11 that ran hand-made Pods on the
 tested recipe below and called the executor's exec code directly; it did
-not exercise the executor constructor, its validation, the admission
-check or the diagnostics in the form described here. The remaining
-statements describe the implemented design or quote AWS documentation.
-[Open live-validation items](#open-live-validation-items) lists what is
-still unverified.
+not exercise the executor constructor, its validation, the whole-Pod
+admission check or the runtime diagnostics in the form described here.
+The measured figures are recorded in the adoption plan's
+[Tested recipe (2026-11-11)](../nitro-sandboxes-adoption-plan.md#tested-recipe-2026-11-11);
+the raw capture is no longer kept in the repository. The remaining
+statements describe the implemented design or are marked as AWS
+documentation. This status changes with the live-validation pull
+request, which runs the gated integration group on EKS;
+[Open live-validation items](#open-live-validation-items) lists what that
+run must close.
+
+#### Prerequisites
+
+1. An EKS Auto Mode cluster on Kubernetes 1.36 or later (AWS
+   documentation: [Nitro Sandboxes](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html)).
+   AWS documentation says standard node groups need a custom AMI
+   ([isolated setup](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-isolated-setup.html));
+   they are untested here.
+2. A node pool able to launch a supported instance family, set up as in
+   AWS's [isolated setup](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-isolated-setup.html)
+   page; the supported instance types are listed on the
+   [EC2 Nitro Sandboxes](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html)
+   page. The one tested instance type is `m5d.xlarge` (see
+   [Tested recipe](#tested-recipe)). The repository has no NodePool
+   manifest from the spike, because the raw evidence was removed from the
+   tree, and this document gives none that has not been run.
+3. The `isolated-sandbox` RuntimeClass, which EKS Auto Mode installs.
+   Do not apply [`examples/k8s/runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml),
+   which defines no such class.
+4. A sandbox namespace, from
+   [`examples/k8s/namespace.yaml`](../../examples/k8s/namespace.yaml).
+5. RBAC from [`examples/k8s/rbac.yaml`](../../examples/k8s/rbac.yaml).
+   It binds the `stirrup-orchestrator` Role only to the
+   `stirrup-orchestrator` ServiceAccount, so an orchestrator outside the
+   cluster needs the identity in its kubeconfig granted the same verbs by
+   the operator's own means; the repository ships no manifest for that.
+6. A sandbox service account with no Pod Identity association and no
+   IRSA role (see [Service account](#service-account)).
+7. No mutating policy on the sandbox namespace beyond retuning the
+   throttle annotations the [whole-Pod admission check](#whole-pod-admission-check)
+   allows (see [Cluster conditions that fail every run](#cluster-conditions-that-fail-every-run)).
 
 #### Tested recipe
 
@@ -942,16 +1102,23 @@ still unverified.
 |---|---|
 | Cluster | EKS Auto Mode, Kubernetes 1.36, platform `eks.17`, IPv4, us-east-1 |
 | Instance | `m5d.xlarge`, amd64, on-demand |
-| AMI | `ami-09ef60d209279212e` (`eks-auto-standard-1.36-x86_64-20261031`) |
-| Node software | Bottlerocket 2026.10.31, kubelet `v1.36.4-eks-cfb47f5`, kernel 6.18.56, containerd `2.2.9+bottlerocket`; guest kernel 6.18.54 |
+| AMI | `ami-09ef60d209279212e` (`eks-auto-standard-1.36-x86_64-20261031`); informational, Auto Mode chooses the AMI |
+| Node software | Bottlerocket 2026.10.31, kubelet `v1.36.4-eks-cfb47f5`, kernel 6.18.56, containerd `2.2.9+bottlerocket`; guest kernel 6.18.54; informational, comes with the AMI |
 | Sandbox image | `public.ecr.aws/docker/library/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4` (BusyBox 1.37.0-glibc) |
 | Pod shape | 1 CPU and 1 GiB, requests equal to limits; UID 65532; all capabilities dropped; `RuntimeDefault` seccomp; no service-account token |
 
 Other instance families, arm64, IPv6 and other regions are untested.
-Pin the Auto Mode NodePool to the tested instance family and keep
-`kubernetes.io/arch: amd64` in `executor.k8sNodeSelector`.
 [`examples/runconfig/k8s-eks-nitro.json`](../../examples/runconfig/k8s-eks-nitro.json)
-carries the RunConfig side of this recipe.
+carries the RunConfig side of this recipe. Its `executor.k8sNodeSelector`
+pins the Pod to the tested node with `kubernetes.io/arch: amd64` and
+`node.kubernetes.io/instance-type: m5d.xlarge`. `m5d.xlarge` is the one
+tested instance type; widening the selector needs its own evidence,
+because the DMI diagnostic has only been seen on `m5d`. On the spike the
+node came from a dedicated Auto Mode NodePool (the Pod's `Nominated`
+Event named one of that pool's NodeClaims) and the Pods' node selector
+carried only the architecture, so the instance type was chosen at the
+NodePool level. Selecting it with a Pod node selector, as the example
+does, is standard Kubernetes scheduling but was not the form exercised.
 
 #### What the runtime accepts
 
@@ -977,6 +1144,30 @@ Two RuntimeClass names are refused with a reason after the usual
   workload from the node operator, which is not this harness's threat,
   and its default policy denies `exec`, the executor's only channel into
   the Pod.
+
+#### Limits
+
+- **Disk.** The guest workspace size when no `ephemeral-storage` is
+  declared, which is what this runtime always submits, has not been
+  measured. The spike measured only guests with a declaration: about
+  385 MiB at a 64 MiB declaration and about 909 MiB at 1 GiB. A task may
+  run out of disk.
+- **Memory.** AWS documentation gives a minimum of 256 MiB per sandbox
+  ([EC2 Nitro Sandboxes](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html)).
+  It was not measured, and validation does not enforce it.
+- **CPU.** The tested recipe ran 1 CPU and 1 GiB on `m5d.xlarge`. AWS
+  documentation advises requesting CPU in multiples of two on SMT
+  instance types
+  ([EC2 Nitro Sandboxes](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html));
+  `m5d.xlarge` is an SMT type, so the tested 1 CPU does not follow that
+  guidance.
+- **Deadline.** `activeDeadlineSeconds` counts from Pod start and so
+  includes VM boot (*measured:* a 120 s deadline stopped the container
+  about 121 s after start).
+- **Run timeout.** The example's `timeout: 300` equals the 5-minute
+  readiness ceiling. In `stirrup job` the timeout also covers sandbox
+  startup, so a cold node and VM boot leave less of it to the agent (see
+  [Diagnosing a slow or failed start](#diagnosing-a-slow-or-failed-start)).
 
 #### Pod shape
 
@@ -1032,74 +1223,23 @@ the [security model](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing
 page describes the same access as any root process on the parent
 instance. The node and its operator are trusted in this model.
 
-#### Admission prerequisites
+#### Cluster conditions that fail every run
 
-On top of the [admission check](#admission-check) every runtime gets,
-`nitro-isolated` compares the whole Pod at both stages: the `Create`
-response against the submitted Pod, and each Pod seen during the
-readiness wait against the `Create` response. Every field of the Pod
-spec and the container spec is classified in one table
-([`k8s_admission_strict.go`](../../harness/internal/executor/k8s_admission_strict.go))
-as compared, where the value must be semantically equal (so `1Gi`
-matches a submitted `1024Mi`), as owned by the platform and ignored, or
-as a set that may gain entries but not lose any.
-
-- **Owned by the platform:** `nodeName`, `overhead`, `schedulerName`,
-  `priority`, `priorityClassName`, `preemptionPolicy`, `dnsPolicy`,
-  the deprecated `serviceAccount`,
-  `imagePullSecrets` (copied from the service account by the
-  ServiceAccount admission plugin), and the container's
-  `terminationMessagePath`, `terminationMessagePolicy` and
-  `imagePullPolicy`.
-- **May gain entries:** `nodeSelector` (the RuntimeClass merges its own)
-  and `tolerations` (the default not-ready and unreachable tolerations).
-- **Compared:** everything else, including exactly the submitted
-  containers (no sidecar), empty `initContainers` and
-  `ephemeralContainers`, image, command, arguments, environment,
-  `envFrom`, volumes and mounts, the Pod and container security
-  contexts, resources, the service account and
-  `automountServiceAccountToken`, `terminationGracePeriodSeconds`,
-  `activeDeadlineSeconds`, `enableServiceLinks` (submitted as `false`),
-  `hostNetwork`, `hostPID`, `hostIPC`, `hostUsers` and the
-  RuntimeClass.
-
-In the metadata, the `network-isolated` annotation must keep its value,
-every submitted label must be kept, and the owner references must be
-unchanged; added labels and other annotations are allowed.
-`log-bandwidth` is set but not verified.
-
-A mismatch fails the run, emits `sandbox_runtime_diagnostic_failed` with
-`check: admitted_pod`, and tears the Pod down as in
-[Teardown](#teardown). The error lists every UID, RuntimeClass,
-metadata, annotation and platform-mark mismatch, together with the first
-differing spec field, each with expected and observed values, scrubbed and
-cut to 256 characters; a container list is shown by container names, and an environment
-difference names the variable and says whether its value or its source
-changed, never the value. As for every runtime, the check runs after the
-Pod is created and stops once it is Ready: it cannot stop a mutated Pod
-from starting, and an ephemeral container, which can only be added after
-creation, is seen only if it is added before the Pod is Ready.
-
-Each of these fails every run by design:
+The [whole-Pod admission check](#whole-pod-admission-check) fails the run
+and tears the Pod down when admission changes the Pod. Each of these
+fails every run by design:
 
 - a Pod Identity association or IRSA role on the sandbox service account,
   whose webhook injects a token volume and environment variables;
 - a policy engine that rewrites image references;
 - a LimitRange that defaults `ephemeral-storage` or other resources;
-- any sidecar injector.
-
-The classification is a judgement for fields the 2026-11-11 read-backs
-did not exercise. The passing test fixture is modelled on Pods read back
-from EKS after they were Ready; no `Create` response was captured there,
-so whether a field is filled in at creation or only at scheduling is
-unverified on EKS. A `kind` run shows only how the check meets upstream
-API defaulting; it is not evidence about EKS or its webhooks. On `kind`, a
-RuntimeClass named `isolated-sandbox` that points at `runc` and carries
-neither the overhead nor the node-selector mark fails at the whole-Pod
-admission check, naming
-`spec.overhead[eks.amazonaws.com/nitro-sandbox]` and
-`spec.nodeSelector[eks.amazonaws.com/nitro-sandbox]`, before the runtime
-diagnostics run.
+- any sidecar injector;
+- a mutating policy that adds, removes or changes a
+  `sandbox.amazonaws.com/` annotation other than the allowed throttle
+  keys, or removes `log-bandwidth`;
+- an `isolated-sandbox` RuntimeClass that is not the one EKS installs,
+  so the admitted Pod lacks the `eks.amazonaws.com/nitro-sandbox`
+  overhead or node selector.
 
 #### Service account
 
@@ -1112,8 +1252,8 @@ credentials into Pods whose service account has an association
 ([metadata and credentials](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-metadata-credentials.html)).
 *Measured:* with `network-isolated` the Pod Identity address was
 unreachable from the guest, but that sample does not cover a Pod with an
-association; the admission check rejects the injected volume and
-environment regardless.
+association; the whole-Pod admission check rejects the injected volume
+and environment regardless.
 
 #### Readiness on a cold node
 
@@ -1127,7 +1267,7 @@ the wait costs the run.
 
 #### Runtime diagnostics
 
-After the Pod is Ready and the admission check has passed, and before
+After the Pod is Ready and the whole-Pod admission check has passed, and before
 the executor is returned to the run, the executor reads three files
 inside the guest in one `exec`, bounded by the 60-second file I/O
 timeout, using only shell builtins (`read`, `printf`, `[`):
@@ -1207,45 +1347,141 @@ with the event.
 
 #### Run
 
-```sh
-kubectl apply -f examples/k8s/namespace.yaml
-kubectl apply -f examples/k8s/rbac.yaml
-# skip runtimeclass.yaml: Auto Mode provides isolated-sandbox
+1. Apply the standing objects and confirm the platform's RuntimeClass:
 
-stirrup harness \
-  --config examples/runconfig/k8s-eks-nitro.json \
-  --k8s-kubeconfig ~/.kube/config \
-  --prompt "..."
+   ```sh
+   kubectl apply -f examples/k8s/namespace.yaml
+   kubectl apply -f examples/k8s/rbac.yaml
+   # skip runtimeclass.yaml: Auto Mode provides isolated-sandbox
+   kubectl get runtimeclass isolated-sandbox
+   ```
+
+2. Optionally, dry-run the config (see [Dry-run preflight](#dry-run-preflight)):
+
+   ```sh
+   stirrup harness --config examples/runconfig/k8s-eks-nitro.json \
+     --k8s-kubeconfig ~/.kube/config --dry-run
+   ```
+
+   With the reference Role the RuntimeClass read is refused, so the step
+   detail reads `RuntimeClass "isolated-sandbox" not checked (the
+   credentials may not read runtimeclasses)` and the EKS hint does not
+   fire; the `kubectl get runtimeclass` command in step 1 is the check
+   for that. A dry run starts no sandbox, so it exercises neither the
+   whole-Pod admission check nor the runtime diagnostics.
+
+3. Run:
+
+   ```sh
+   stirrup harness \
+     --config examples/runconfig/k8s-eks-nitro.json \
+     --k8s-kubeconfig ~/.kube/config \
+     --prompt "..."
+   ```
+
+#### What a successful start looks like
+
+The harness logs `k8s executor waiting for sandbox pod readiness` at info
+level with the namespace, Pod name and timeout, then `k8s executor still
+waiting for sandbox pod readiness` every 30 seconds until the Pod is
+Ready (see [Readiness on a cold node](#readiness-on-a-cold-node) for
+measured start times). A passing whole-Pod admission check emits nothing.
+When the runtime diagnostics pass, the harness writes a
+`sandbox_runtime_diagnostic_passed` security event. Assembled from the
+event format and the values measured on the tested recipe, it reads (one
+line in the output, wrapped here):
+
+```json
+{"timestamp":"<RFC 3339 time>","level":"info","runId":"k8s-eks-nitro-example",
+ "event":"sandbox_runtime_diagnostic_passed","data":{"observed":{"dmiProductName":"m5d.enclave",
+ "interfaces":"lo,dummy0","routeEntries":"0"},"runtime":"nitro-isolated"}}
 ```
 
-A `--dry-run` reads the `isolated-sandbox` RuntimeClass when the
-credentials can read RuntimeClasses; it does not start a sandbox, so it
-does not exercise any of the checks above.
+The gated integration group asserts these three values; the event itself
+has not yet been emitted on EKS. Security events are JSON lines on the
+harness's stderr, plus an OTel counter tagged with the event name when
+metrics are exported. They do not reach the `HarnessEvent` stream or the
+`RunResult`, so under `stirrup job` a control plane sees only the terminal
+`error` event when construction fails, and nothing about the diagnostics
+when it succeeds.
+
+#### Getting results out of an offline guest
+
+Everything between the harness and the guest travels over `pods/exec`:
+command output on the exec stream, and file reads and writes as `tar`
+over exec (see [Architecture](#architecture)). The
+[result sink](../configuration.md#result-sinks), the trace emitter and
+the [workspace export](../configuration.md#workspace-export) run in the
+orchestrator, not in the guest. The workspace export reads the files
+over the same exec stream, so the `log-bandwidth` setting in
+[Pod shape](#pod-shape) bounds how fast results leave. An offline run cannot clone or push (the example sets
+`gitStrategy: none`), cannot install packages from the network, and
+cannot use `gitProxy` or `sandboxIdentity`, which validation rejects.
+
+#### Cost and cleanup
+
+Each run creates one Pod and one NetworkPolicy and removes both when it
+ends, as described in [Sandbox lifecycle](#sandbox-lifecycle) and
+[Teardown](#teardown); objects a failed teardown retains are removed by
+[Cleaning up retained objects](#cleaning-up-retained-objects). Nodes are
+provisioned and removed by Auto Mode, not by the harness. The delay
+before Auto Mode removes an idle node after the last sandbox Pod is gone
+was not measured. The modelled cost of the spike is recorded in the
+plan's [Tested recipe (2026-11-11)](../nitro-sandboxes-adoption-plan.md#tested-recipe-2026-11-11).
 
 #### Troubleshooting on Nitro
 
+A failed run has already torn its Pod down, so these rows read the error
+text and the Pod's Events
+(`kubectl -n <ns> get events --field-selector involvedObject.name=<pod>`,
+kept until the event TTL; see
+[Diagnosing a slow or failed start](#diagnosing-a-slow-or-failed-start)),
+not the Pod.
+
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `RuntimeClass "isolated-sandbox" does not exist` (dry run) or `was rejected by the cluster` (run) | The cluster is not EKS Auto Mode on Kubernetes 1.36 or later. | Use a supported cluster. AWS documentation gives Kubernetes 1.36 or later ([Nitro Sandboxes](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html)) and says standard node groups need a custom AMI ([isolated setup](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-isolated-setup.html)). |
-| Pod Pending with `FailedScheduling` | Auto Mode is provisioning a node, or the NodePool cannot provide a capable instance. | Wait or inspect Events with `kubectl describe pod`; check the NodePool's instance families. |
-| `runtime diagnostics ... failed: dmi_product_name` | The Pod is not running in a Nitro Sandbox, or the instance family reports another DMI string. | Confirm `runtimeClassName` on the admitted Pod; check the family against the tested recipe. |
-| `runtime diagnostics ... failed: network_interfaces` or `route_table` | The guest lists an interface other than `lo` and `dummy0`, or has a route: the `network-isolated` annotation was not honoured, or a guest kernel added a device. | Check admission policies that edit Pod annotations; compare the observed interfaces with the allow-list. |
-| An admission mismatch naming a field | A webhook, policy engine or LimitRange changed the Pod. | Remove the mutation for the sandbox namespace; see [Admission prerequisites](#admission-prerequisites). |
+| `create pod: RuntimeClass "isolated-sandbox" was rejected by the cluster — no RuntimeClass with that name is registered (kubectl get runtimeclass); the isolated-sandbox RuntimeClass is installed by EKS Auto Mode on Kubernetes 1.36 or later; see docs/executors/k8s.md#eks-with-nitro-sandboxes: ...` (run), or `RuntimeClass "isolated-sandbox" does not exist in the cluster` with the same hint (dry run, only with credentials that can read RuntimeClasses) | The cluster is not EKS Auto Mode on Kubernetes 1.36 or later. | Use a supported cluster; do not apply `examples/k8s/runtimeclass.yaml`, which defines no `isolated-sandbox` class. AWS documentation gives Kubernetes 1.36 or later ([Nitro Sandboxes](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html)) and says standard node groups need a custom AMI ([isolated setup](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-isolated-setup.html)). |
+| `admitted pod <ns>/<pod> does not match the submitted pod: spec.overhead[eks.amazonaws.com/nitro-sandbox]: expected present, observed absent` (or `spec.nodeSelector[eks.amazonaws.com/nitro-sandbox]: expected "true", observed absent`) | The `isolated-sandbox` RuntimeClass is not the one EKS installs, for example a self-managed class of that name. | Use the EKS Auto Mode class; see [Whole-Pod admission check](#whole-pod-admission-check). |
+| `pod <ns>/<pod> not ready within 5m0s: phase Pending; PodScheduled False (...)` | Auto Mode is still provisioning a node, or no node it can launch matches `kubernetes.io/arch` and `node.kubernetes.io/instance-type` in `executor.k8sNodeSelector`. | Read the `PodScheduled` message in the error and the Events. Keep the selector on the tested `amd64` `m5d.xlarge`, and make sure the node pool can launch it. |
+| As above, with a node pool configured for an instance type or AMI that Nitro Sandboxes do not support | AWS documentation says the Pod stays Pending when Auto Mode cannot provision a capable node: FIPS AMIs, GPU or Neuron AMIs, multi-NUMA or unvalidated instance types, and the temporarily excluded `r5a`, `r5ad` and `m5ad` ([limitations](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-limitations.html)); `m5d.large` and `m5d.metal` are not supported ([EC2 Nitro Sandboxes](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html)). | Use the tested `m5d.xlarge`. |
+| `admitted pod <ns>/<pod> does not match the submitted pod: spec.volumes: expected [{"name":"workspace","emptyDir":{}}], observed [{"name":"workspace","emptyDir":{}},{"name":"eks-pod-identity-token",...}]` (`aws-iam-token` for IRSA) | The sandbox service account has a Pod Identity association or an IRSA role, whose webhook injected a token volume. | Set `executor.k8sServiceAccount` to a service account with no association, or use another namespace; see [Service account](#service-account). |
+| `admitted pod <ns>/<pod> does not match the submitted pod: spec.containers[agent].resources: ...` with an added `ephemeral-storage` | A LimitRange in the sandbox namespace defaulted resources. | Remove the LimitRange defaults from the sandbox namespace. |
+| Another `admitted pod ... does not match` or `observed pod ... no longer matches` mismatch | A webhook, policy engine or mutating policy changed the Pod. | Remove the mutation for the sandbox namespace; see [Cluster conditions that fail every run](#cluster-conditions-that-fail-every-run). |
+| `runtime diagnostics for executor.runtime "nitro-isolated" failed: dmi_product_name: DMI product name "..." does not end in ".enclave", ...` | The Pod is not running in a Nitro Sandbox, or the instance family reports another DMI string. | Compare the name in the error with the tested recipe; a family other than `m5d` needs its own evidence. |
+| `... failed: network_interfaces: ...` or `... failed: route_table: ...` | The guest lists an interface other than `lo` and `dummy0`, or has a route: the `network-isolated` annotation was not honoured, or a guest kernel added a device. | The error names the extra interfaces or the first route. A device a newer guest kernel adds fails every run until the allow-list is updated. |
+| `... failed: diagnostic_exec: guest file read exited <n>: ...` or `guest file read failed: ...`; `... failed: diagnostic_output: unexpected line ...` | The diagnostics `exec` failed, or the image's `/bin/sh` does not run the script (it uses `read -r`, `printf` and `[`). | Use an image whose `/bin/sh` is a POSIX shell; BusyBox `ash` and Debian `dash` ran the script on `kind`. |
+| `runtime diagnostics for executor.runtime "nitro-isolated" interrupted: ...` | The run's own deadline or a cancellation ended construction during the diagnostics. | In `stirrup job` raise `timeout`, which also covers sandbox startup. |
+| A command returns `command timed out after <timeout>: context deadline exceeded` where `output exceeded 10 MB cap` was expected | Output is throttled by `log-bandwidth`, and the timeout ended the command before the cap was reached. | Give commands with large output a longer timeout; see [Pod shape](#pod-shape) for the measured rates. |
+| `tear down pod <ns>/<pod> (run ID "<id>"): ...; retained egress NetworkPolicy <ns>/<pod>-egress` | Pod termination was not confirmed within the teardown bound. | Follow [Cleaning up retained objects](#cleaning-up-retained-objects). |
 
 #### Open live-validation items
 
-Closing these needs a paid EKS run:
+Closing these needs a paid EKS run. The gated integration group
+(`STIRRUP_TEST_NITRO_ISOLATED`, see
+[Testing the executor against a real cluster](#testing-the-executor-against-a-real-cluster))
+covers them and, with `STIRRUP_TEST_EVIDENCE_DIR` set, records the
+submitted Pod, the `Create` response, the Ready Pod and the workspace
+size.
 
-- the executor end to end on the tested recipe, including mode `none`
-  confinement and teardown;
-- guest workspace capacity when no `ephemeral-storage` is declared (the
-  executor declares none for this runtime; *measured* guest disks
-  followed the declaration, about 385 MiB at 64 MiB and about 909 MiB
-  at 1 GiB);
-- the diagnostics in their implemented form, and the DMI string on
-  instance families other than `m5d`;
-- the admission check against a real `Create` response;
-- graceful-delete teardown timing on a Nitro guest.
+- Guest workspace capacity when no `ephemeral-storage` is declared, which
+  is what this runtime always submits (see [Limits](#limits)).
+- The executor end to end on the tested recipe, including mode `none`
+  confinement and teardown.
+- Command timeout and kill behaviour, and the output-cap error, at
+  `log-bandwidth: 20M`. Under the default throttle the spike logged
+  `stirrup-kill: ... can't open /tmp/.stirrup-exec-<id>.pid` when killing
+  a timed-out command, and that path was not re-run at `20M`.
+- The runtime diagnostics in their implemented form, and the DMI string
+  on instance families other than `m5d`.
+- The whole-Pod admission check against a real EKS `Create` response,
+  including whether that response already carries the overhead and
+  node-selector marks. Upstream the RuntimeClass admission plugin sets
+  both at admission, so it is expected to.
+- The fields most likely to be written by the platform or a webhook at
+  create time and not seen in the read-backs: `schedulingGates`,
+  `readinessGates`, `affinity`, `topologySpreadConstraints` and container
+  `securityContext` defaults on newer API versions.
+- Graceful-delete teardown timing on a Nitro guest.
 
 ## Running the orchestrator in-cluster
 
@@ -1719,7 +1955,7 @@ it, the probe uses the same kubeconfig resolution as a run:
 | `the Agent Sandbox API agents.x-k8s.io/v1alpha1 is not served by the cluster` (dry run, `k8s-sandbox`) | The Agent Sandbox controller and its CRD are not installed, or serve another version. | Install the controller; see [`k8s-agent-sandbox.md`](k8s-agent-sandbox.md). |
 | `the cluster serves agents.x-k8s.io/v1alpha1 but not the sandboxes resource` (dry run, `k8s-sandbox`) | The group is registered without the `sandboxes` resource, usually an incomplete CRD install. | Reinstall the Agent Sandbox CRDs. |
 | `namespace "<ns>" does not exist in the cluster` (dry run) | `executor.k8sNamespace` names a namespace that is absent. | Create the namespace or correct the name. Credentials that cannot read namespaces get the permission-denied row instead. |
-| `RuntimeClass "<name>" does not exist in the cluster` (dry run) | The requested RuntimeClass is not registered. The real-run counterpart is the row below. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) or pick a registered runtime. |
+| `RuntimeClass "<name>" does not exist in the cluster` (dry run) | The requested RuntimeClass is not registered. The real-run counterpart is the row below. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) or pick a registered runtime. For `isolated-sandbox` (`nitro-isolated`) the class comes from EKS Auto Mode instead; see [Troubleshooting on Nitro](#troubleshooting-on-nitro). |
 | `executor.network.mode must be "none" or "allowlist" for executor.type=...` (`config-validation`) | `network.mode` is empty or another value. | Set `executor.network.mode` to `none` or `allowlist`. |
 | `executor.k8sNamespace is required for executor.type="k8s"` | `--k8s-namespace` / `executor.k8sNamespace` unset. | Set the namespace. |
 | `executor.k8sEgressProxyUrl is required when ... "allowlist"` | `network.mode: allowlist` without a proxy URL. | Set `--k8s-egress-proxy-url`, or use `network.mode: none`. |
@@ -1727,7 +1963,7 @@ it, the probe uses the same kubeconfig resolution as a run:
 | `executor.network is required for executor.type="k8s"` | No `network` block. | Set `executor.network.mode` to `none` or `allowlist`. |
 | `not in cluster and KUBECONFIG is unset` | No in-cluster config, no kubeconfig. | Set `--k8s-kubeconfig` or `$KUBECONFIG`, or run in-cluster. |
 | `open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory` (in-cluster orchestrator) | The orchestrator Pod's ServiceAccount has `automountServiceAccountToken: false` (the reference SA's default), so no token is projected for the in-cluster REST config. | Set `automountServiceAccountToken: true` on the orchestrator Pod spec. See [Running the orchestrator in-cluster](#running-the-orchestrator-in-cluster). |
-| `RuntimeClass "<name>" was rejected by the cluster` (real run) | The API server named the RuntimeClass in its rejection (the dry-run row above reports a missing class earlier when the credentials can read RuntimeClasses): it is not registered, or the name is invalid. Other admission rejections (a LimitRange, a quota, Pod Security, a webhook) are reported as `create pod: ...` with the API server's message stripped of control characters, scrubbed of credentials and cut to 256 characters. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) for the handlers actually installed, or pick a registered runtime. |
+| `RuntimeClass "<name>" was rejected by the cluster` (real run) | The API server named the RuntimeClass in its rejection (the dry-run row above reports a missing class earlier when the credentials can read RuntimeClasses): it is not registered, or the name is invalid. Other admission rejections (a LimitRange, a quota, Pod Security, a webhook) are reported as `create pod: ...` with the API server's message stripped of control characters, scrubbed of credentials and cut to 256 characters. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) for the handlers actually installed, or pick a registered runtime. For `isolated-sandbox` the error carries an EKS hint instead, and `runtimeclass.yaml` does not define that class; see [Troubleshooting on Nitro](#troubleshooting-on-nitro). |
 | `pod <ns>/<pod> not ready within 5m0s: phase Pending; PodScheduled False (Unschedulable: ...): context deadline exceeded` | No node fits the Pod and the autoscaler (if any) did not add one in time, or the RuntimeClass's scheduling matches no node. | Read the `PodScheduled` message in the error. The Pod's Events (`kubectl -n <ns> get events --field-selector involvedObject.name=<pod>`) remain after teardown until the event TTL; where the scale-up decision is recorded depends on the autoscaler. See [Readiness](#readiness). |
 | `0/N nodes available: ... had untolerated taint(s)` (Pod Pending) | The schedulable nodes are tainted (GKE Sandbox pools taint `sandbox.gke.io/runtime=gvisor:NoSchedule`; arch-dedicated pools may add `kubernetes.io/arch=...`) and the Pod tolerates none. | For the Sandbox pool, set `--container-runtime gvisor` so the managed RuntimeClass injects the toleration. For other tainted pools, add a matching `--k8s-node-selector` and ensure a toleration is available (the executor does not inject arbitrary tolerations). |
 | `pod <ns>/<pod> not ready within 5m0s: phase Pending; PodScheduled True; last waiting reason ContainerCreating` | The Pod was scheduled but its sandbox never started, usually because the RuntimeClass handler is not installed on that node. | Read the `FailedCreatePodSandBox` Event: `kubectl -n <ns> get events --field-selector involvedObject.name=<pod>` (Events outlive the Pod until the event TTL). Install the handler, or restrict the RuntimeClass's `scheduling.nodeSelector` to nodes that have it. |
