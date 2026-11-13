@@ -68,7 +68,7 @@ func requireTornDown(t *testing.T, cs *fake.Clientset) {
 	podName := createdPodName(t, cs)
 	deletes := podDeletes(cs)
 	must.NotEmpty(deletes, "pod was not deleted")
-	must.Equal(ptr.To(k8sDeleteGracePeriod), deletes[0].GracePeriodSeconds)
+	must.Equal(ptr.To(k8sTerminationGracePeriod), deletes[0].GracePeriodSeconds)
 	must.NotNil(deletes[0].Preconditions)
 	must.Equal(ptr.To(k8stypes.UID("uid-1")), deletes[0].Preconditions.UID)
 	must.False(trackerHas(t, cs, podsResource, podName), "pod left behind")

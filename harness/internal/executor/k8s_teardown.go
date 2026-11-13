@@ -16,12 +16,6 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-// k8sDeleteGracePeriod is the grace period sandbox Pods are deleted with. It
-// is non-zero so the API object outlives the workload until the kubelet
-// reports the containers stopped, and short because the "sleep infinity"
-// entrypoint ignores SIGTERM and has nothing to flush.
-const k8sDeleteGracePeriod int64 = 1
-
 // k8sTiming bounds the k8s executor's cluster waits.
 type k8sTiming struct {
 	readyTimeout time.Duration
@@ -98,7 +92,7 @@ func (t podTeardown) reconcileAmbiguousCreate(submitted map[string]string) error
 // terminatePod issues the graceful delete, retrying transient failures, and
 // waits until the Pod's termination is established or ctx ends.
 func (t podTeardown) terminatePod(ctx context.Context) error {
-	opts := metav1.DeleteOptions{GracePeriodSeconds: ptr.To(k8sDeleteGracePeriod)}
+	opts := metav1.DeleteOptions{GracePeriodSeconds: ptr.To(k8sTerminationGracePeriod)}
 	if t.podUID != "" {
 		opts.Preconditions = &metav1.Preconditions{UID: ptr.To(t.podUID)}
 	}

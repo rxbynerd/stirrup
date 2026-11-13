@@ -42,6 +42,12 @@ const (
 	k8sCloseTimeout     = 30 * time.Second
 	k8sAPITimeout       = 30 * time.Second
 	k8sPodNameRandBytes = 6
+	// k8sTerminationGracePeriod is the sandbox Pod's termination grace
+	// period and the grace period the k8s executor deletes it with. It is
+	// non-zero so the API object outlives the workload until the kubelet
+	// reports the containers stopped, and short because the "sleep infinity"
+	// entrypoint ignores SIGTERM and has nothing to flush.
+	k8sTerminationGracePeriod int64 = 1
 	// k8sRunAsUserUID matches the distroless "nonroot" convention (65532),
 	// letting RunAsNonRoot be enforced without the image declaring its own USER.
 	k8sRunAsUserUID int64 = 65532
@@ -313,8 +319,9 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraE
 	}
 
 	return corev1.PodSpec{
-		RestartPolicy:      corev1.RestartPolicyNever,
-		ServiceAccountName: serviceAccount,
+		RestartPolicy:                 corev1.RestartPolicyNever,
+		TerminationGracePeriodSeconds: ptr.To(k8sTerminationGracePeriod),
+		ServiceAccountName:            serviceAccount,
 		// AutomountServiceAccountToken is always false, even when
 		// ServiceAccountName is caller-provided.
 		AutomountServiceAccountToken: ptr.To(false),

@@ -53,7 +53,7 @@ func TestPodTeardown_DeletesGracefullyWithUIDPrecondition(t *testing.T) {
 	deletes := podDeletes(cs)
 	must.Len(deletes, 1)
 	must.NotNil(deletes[0].GracePeriodSeconds)
-	must.Equal(k8sDeleteGracePeriod, *deletes[0].GracePeriodSeconds)
+	must.Equal(k8sTerminationGracePeriod, *deletes[0].GracePeriodSeconds)
 	must.Positive(*deletes[0].GracePeriodSeconds, "a zero grace period removes the object before the kubelet confirms termination")
 	must.NotNil(deletes[0].Preconditions)
 	must.NotNil(deletes[0].Preconditions.UID)
