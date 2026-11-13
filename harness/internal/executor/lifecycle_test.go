@@ -20,7 +20,7 @@ func lifecycleK8sCfg() K8sExecutorConfig {
 }
 
 func TestBuildSandboxPod_DeadlineAndRunLabel(t *testing.T) {
-	pod := buildSandboxPod(lifecycleK8sCfg(), "stirrup-abc", nil)
+	pod := buildSandboxPod(lifecycleK8sCfg(), k8sRuntimeProfiles[""], "stirrup-abc", nil)
 
 	t.Run("active deadline matches the run lifetime", func(t *testing.T) {
 		must := require.New(t)
@@ -42,7 +42,7 @@ func TestBuildSandboxPod_NoLifetimeLeavesDeadlineUnset(t *testing.T) {
 	must := require.New(t)
 	cfg := lifecycleK8sCfg()
 	cfg.Lifecycle = Lifecycle{}
-	pod := buildSandboxPod(cfg, "stirrup-abc", nil)
+	pod := buildSandboxPod(cfg, k8sRuntimeProfiles[cfg.Runtime], "stirrup-abc", nil)
 
 	must.Nil(pod.Spec.ActiveDeadlineSeconds)
 	must.NotContains(pod.Labels, k8sRunIDLabel, "an empty run ID must not produce a run-id label")
@@ -55,7 +55,7 @@ func TestBuildSandboxPod_OwnerReference(t *testing.T) {
 		must := require.New(t)
 		cfg := lifecycleK8sCfg()
 		cfg.HarnessPod = harness
-		pod := buildSandboxPod(cfg, "stirrup-abc", nil)
+		pod := buildSandboxPod(cfg, k8sRuntimeProfiles[cfg.Runtime], "stirrup-abc", nil)
 
 		must.Len(pod.OwnerReferences, 1)
 		ref := pod.OwnerReferences[0]
@@ -72,12 +72,12 @@ func TestBuildSandboxPod_OwnerReference(t *testing.T) {
 		cfg := lifecycleK8sCfg()
 		cfg.Namespace = "sandboxes"
 		cfg.HarnessPod = harness
-		must.Empty(buildSandboxPod(cfg, "stirrup-abc", nil).OwnerReferences, "no owner across namespaces")
+		must.Empty(buildSandboxPod(cfg, k8sRuntimeProfiles[cfg.Runtime], "stirrup-abc", nil).OwnerReferences, "no owner across namespaces")
 	})
 
 	t.Run("unknown harness pod gets none", func(t *testing.T) {
 		must := require.New(t)
-		must.Empty(buildSandboxPod(lifecycleK8sCfg(), "stirrup-abc", nil).OwnerReferences)
+		must.Empty(buildSandboxPod(lifecycleK8sCfg(), k8sRuntimeProfiles[""], "stirrup-abc", nil).OwnerReferences)
 	})
 }
 

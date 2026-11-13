@@ -1405,7 +1405,7 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			Namespace:            cfg.K8sNamespace,
 			Kubeconfig:           cfg.K8sKubeconfig,
 			NodeSelector:         cfg.K8sNodeSelector,
-			RuntimeClassName:     cfg.Runtime,
+			Runtime:              cfg.Runtime,
 			ServiceAccountName:   cfg.K8sServiceAccount,
 			Resources:            cfg.Resources,
 			Network:              cfg.Network,

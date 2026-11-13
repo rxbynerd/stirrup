@@ -23,11 +23,11 @@ import (
 // constructor tests.
 func constructorCfg(runtimeClass string) K8sExecutorConfig {
 	return K8sExecutorConfig{
-		Image:            "busybox",
-		Namespace:        testK8sNamespace,
-		RuntimeClassName: runtimeClass,
-		Network:          &types.NetworkConfig{Mode: "none"},
-		Lifecycle:        Lifecycle{RunID: testK8sRunID},
+		Image:     "busybox",
+		Namespace: testK8sNamespace,
+		Runtime:   runtimeClass,
+		Network:   &types.NetworkConfig{Mode: "none"},
+		Lifecycle: Lifecycle{RunID: testK8sRunID},
 	}
 }
 
@@ -65,8 +65,99 @@ func newFakeK8sExecutor(ctx context.Context, cs *fake.Clientset, cfg K8sExecutor
 // newLoggedFakeK8sExecutor is newFakeK8sExecutor that also returns the log.
 func newLoggedFakeK8sExecutor(ctx context.Context, cs *fake.Clientset, cfg K8sExecutorConfig) (*K8sExecutor, *syncBuffer, error) {
 	logger, logs := testLogger()
-	exec, err := newK8sExecutor(ctx, cfg, nil, cs, nil, fastK8sTiming, logger)
+	profile, proxyEnv, err := prepareK8sExecutor(cfg)
+	if err != nil {
+		return nil, logs, err
+	}
+	exec, err := newK8sExecutor(ctx, cfg, profile, proxyEnv, cs, nil, fastK8sTiming, logger)
 	return exec, logs, err
+}
+
+// nitroCfg returns a k8s executor config that meets the nitro-isolated
+// runtime's requirements.
+func nitroCfg() K8sExecutorConfig {
+	cfg := constructorCfg("nitro-isolated")
+	cfg.Resources = &types.ResourceLimits{CPUs: 1, MemoryMB: 1024}
+	return cfg
+}
+
+func TestNewK8sExecutor_RejectsUnsupportedConfigBeforeAnyClusterCall(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(cfg *K8sExecutorConfig)
+		wantErr string
+	}{
+		{
+			name:    "runtime without a profile",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Runtime = "isolated-sandbox" },
+			wantErr: `unsupported executor.runtime "isolated-sandbox"`,
+		},
+		{
+			name:    "confidential runtime",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Runtime = "confidential-sandbox" },
+			wantErr: `unsupported executor.runtime "confidential-sandbox"`,
+		},
+		{
+			name: "nitro-isolated with allowlist egress",
+			mutate: func(cfg *K8sExecutorConfig) {
+				cfg.Network = &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"example.com"}}
+				cfg.EgressProxyURL = "http://stirrup-egress-proxy:8080"
+			},
+			wantErr: `executor.network.mode must be "none" for executor.runtime="nitro-isolated" (got "allowlist")`,
+		},
+		{
+			name:    "nitro-isolated without resources",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources = nil },
+			wantErr: `executor.resources.cpus must be positive`,
+		},
+		{
+			name:    "nitro-isolated without memory",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources.MemoryMB = 0 },
+			wantErr: `executor.resources.memoryMb must be positive`,
+		},
+		{
+			name:    "nitro-isolated with a disk limit",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources.DiskMB = 512 },
+			wantErr: `executor.resources.diskMb must be unset`,
+		},
+		{
+			name:    "nitro-isolated with a sandbox identity token",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.SandboxIdentityToken = true },
+			wantErr: `executor.sandboxIdentity and executor.gitProxy must be unset`,
+		},
+		{
+			name:    "nitro-isolated with identity environment",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.ExtraEnv = []EnvPair{{Name: "HAYBALE_TOKEN", Value: "x"}} },
+			wantErr: `executor.sandboxIdentity and executor.gitProxy must be unset`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cfg := nitroCfg()
+			tc.mutate(&cfg)
+			cs := fake.NewClientset()
+
+			_, err := newFakeK8sExecutor(context.Background(), cs, cfg)
+
+			must.ErrorContains(err, tc.wantErr)
+			must.Empty(cs.Actions(), "a rejected config reached the cluster")
+		})
+	}
+}
+
+// The public constructor applies the same checks before it builds a client,
+// so a rejected config never needs a reachable cluster or kubeconfig.
+func TestNewK8sExecutor_RejectsUnsupportedRuntimeBeforeBuildingAClient(t *testing.T) {
+	must := require.New(t)
+	cfg := nitroCfg()
+	cfg.Resources = nil
+	cfg.Kubeconfig = "/nonexistent/kubeconfig"
+
+	_, err := NewK8sExecutor(context.Background(), cfg)
+
+	must.ErrorContains(err, "executor.resources.cpus must be positive")
+	must.NotContains(err.Error(), "kube rest config")
 }
 
 // requireTornDown asserts the constructor deleted the Pod gracefully under

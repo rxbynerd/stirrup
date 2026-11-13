@@ -35,13 +35,15 @@ import (
 //
 //	STIRRUP_TEST_KUBECONFIG       path to a kubeconfig (also the suite gate)
 //	STIRRUP_TEST_NAMESPACE        sandbox namespace            (default "default")
-//	STIRRUP_TEST_RUNTIME_CLASS    Pod RuntimeClassName         (default "")
+//	STIRRUP_TEST_RUNTIME_CLASS    executor.runtime value       (default "")
 //	STIRRUP_TEST_IMAGE            sandbox image                (default "busybox:latest")
 //	STIRRUP_TEST_EGRESS_PROXY_URL allowlist proxy URL          (default the default-ns svc)
 //
 // On a cluster whose only schedulable nodes are tainted for a sandbox
-// runtime, STIRRUP_TEST_RUNTIME_CLASS must name the sandbox RuntimeClass
-// (e.g. "gvisor") or every Pod times out at readiness.
+// runtime, STIRRUP_TEST_RUNTIME_CLASS must name the sandbox runtime
+// (e.g. "gvisor") or every Pod times out at readiness. It and
+// STIRRUP_TEST_RUNTIME_CLASSES take executor.runtime values, which are the
+// RuntimeClass names for every runtime except "nitro-isolated".
 type testK8sConfig struct {
 	kubeconfig   string
 	namespace    string
@@ -91,11 +93,11 @@ func TestK8sExecutor_Lifecycle(t *testing.T) {
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:            cfg.image,
-		Namespace:        namespace,
-		Kubeconfig:       cfg.kubeconfig,
-		RuntimeClassName: cfg.runtimeClass,
-		Network:          &types.NetworkConfig{Mode: "none"},
+		Image:      cfg.image,
+		Namespace:  namespace,
+		Kubeconfig: cfg.kubeconfig,
+		Runtime:    cfg.runtimeClass,
+		Network:    &types.NetworkConfig{Mode: "none"},
 	})
 	must.NoError(err, "NewK8sExecutor")
 
@@ -132,11 +134,11 @@ func TestK8sExecutor_CloseIdempotent(t *testing.T) {
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:            cfg.image,
-		Namespace:        cfg.namespace,
-		Kubeconfig:       cfg.kubeconfig,
-		RuntimeClassName: cfg.runtimeClass,
-		Network:          &types.NetworkConfig{Mode: "none"},
+		Image:      cfg.image,
+		Namespace:  cfg.namespace,
+		Kubeconfig: cfg.kubeconfig,
+		Runtime:    cfg.runtimeClass,
+		Network:    &types.NetworkConfig{Mode: "none"},
 	})
 	must.NoError(err, "NewK8sExecutor")
 
@@ -156,12 +158,12 @@ func TestK8sExecutor_CloseRemovesPolicyAfterPodIsGone(t *testing.T) {
 	defer cancel()
 
 	sandbox, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:            cfg.image,
-		Namespace:        cfg.namespace,
-		Kubeconfig:       cfg.kubeconfig,
-		RuntimeClassName: cfg.runtimeClass,
-		Network:          &types.NetworkConfig{Mode: "none"},
-		Lifecycle:        Lifecycle{RunID: "teardown-order-test"},
+		Image:      cfg.image,
+		Namespace:  cfg.namespace,
+		Kubeconfig: cfg.kubeconfig,
+		Runtime:    cfg.runtimeClass,
+		Network:    &types.NetworkConfig{Mode: "none"},
+		Lifecycle:  Lifecycle{RunID: "teardown-order-test"},
 	})
 	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = sandbox.Close() })
@@ -244,11 +246,11 @@ func newTestK8sExecutor(t *testing.T) *K8sExecutor {
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:            cfg.image,
-		Namespace:        cfg.namespace,
-		Kubeconfig:       cfg.kubeconfig,
-		RuntimeClassName: cfg.runtimeClass,
-		Network:          &types.NetworkConfig{Mode: "none"},
+		Image:      cfg.image,
+		Namespace:  cfg.namespace,
+		Kubeconfig: cfg.kubeconfig,
+		Runtime:    cfg.runtimeClass,
+		Network:    &types.NetworkConfig{Mode: "none"},
 	})
 	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = exec.Close() })
@@ -552,11 +554,11 @@ func TestK8sRuntimeClass_Admitted(t *testing.T) {
 			defer cancel()
 
 			exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-				Image:            cfg.image,
-				Namespace:        cfg.namespace,
-				Kubeconfig:       cfg.kubeconfig,
-				RuntimeClassName: runtimeClass,
-				Network:          &types.NetworkConfig{Mode: "none"},
+				Image:      cfg.image,
+				Namespace:  cfg.namespace,
+				Kubeconfig: cfg.kubeconfig,
+				Runtime:    runtimeClass,
+				Network:    &types.NetworkConfig{Mode: "none"},
 			})
 			// An unregistered RuntimeClass surfaces as the friendly
 			// admission wrap; skip rather than fail.
@@ -597,11 +599,11 @@ func TestK8sRuntimeClass_KataValidatedAsString(t *testing.T) {
 	for _, runtimeClass := range []string{"kata-qemu", "kata-fc", "kata-clh"} {
 		t.Run(runtimeClass, func(t *testing.T) {
 			must := require.New(t)
-			// The RuntimeClassName flows verbatim into the Pod spec via
-			// optionalRuntimeClassName; that pure mapping is asserted here.
-			got := optionalRuntimeClassName(runtimeClass)
-			must.NotNil(got, "optionalRuntimeClassName(%q)", runtimeClass)
-			must.Equal(runtimeClass, *got)
+			// The runtime value is also the Pod RuntimeClassName; that pure
+			// mapping is asserted here.
+			profile, err := k8sRuntimeProfileFor(runtimeClass)
+			must.NoError(err)
+			must.Equal(runtimeClass, profile.runtimeClassName)
 			t.Skip("kind cannot host Kata Containers (needs nested virtualisation); skipping the live Pod-creation half")
 		})
 	}
@@ -624,11 +626,11 @@ func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:            cfg.image,
-		Namespace:        cfg.namespace,
-		Kubeconfig:       cfg.kubeconfig,
-		RuntimeClassName: cfg.runtimeClass,
-		Network:          &types.NetworkConfig{Mode: "none"},
+		Image:      cfg.image,
+		Namespace:  cfg.namespace,
+		Kubeconfig: cfg.kubeconfig,
+		Runtime:    cfg.runtimeClass,
+		Network:    &types.NetworkConfig{Mode: "none"},
 	})
 	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = exec.Close() })
@@ -681,12 +683,12 @@ func TestK8sEgress_AllowlistInstallsPolicyAndInjectsProxy(t *testing.T) {
 
 	proxyURL := cfg.proxyURL
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:            cfg.image,
-		Namespace:        cfg.namespace,
-		Kubeconfig:       cfg.kubeconfig,
-		RuntimeClassName: cfg.runtimeClass,
-		Network:          &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}},
-		EgressProxyURL:   proxyURL,
+		Image:          cfg.image,
+		Namespace:      cfg.namespace,
+		Kubeconfig:     cfg.kubeconfig,
+		Runtime:        cfg.runtimeClass,
+		Network:        &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}},
+		EgressProxyURL: proxyURL,
 	})
 	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = exec.Close() })
@@ -766,11 +768,11 @@ func TestK8sEgress_NoneEnforced(t *testing.T) {
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:            cfg.image,
-		Namespace:        cfg.namespace,
-		Kubeconfig:       cfg.kubeconfig,
-		RuntimeClassName: cfg.runtimeClass,
-		Network:          &types.NetworkConfig{Mode: "none"},
+		Image:      cfg.image,
+		Namespace:  cfg.namespace,
+		Kubeconfig: cfg.kubeconfig,
+		Runtime:    cfg.runtimeClass,
+		Network:    &types.NetworkConfig{Mode: "none"},
 	})
 	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = exec.Close() })
@@ -831,12 +833,12 @@ func TestK8sEgress_AllowlistEnforced(t *testing.T) {
 	}
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:            cfg.image,
-		Namespace:        cfg.namespace,
-		Kubeconfig:       cfg.kubeconfig,
-		RuntimeClassName: cfg.runtimeClass,
-		Network:          &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"github.com"}},
-		EgressProxyURL:   cfg.proxyURL,
+		Image:          cfg.image,
+		Namespace:      cfg.namespace,
+		Kubeconfig:     cfg.kubeconfig,
+		Runtime:        cfg.runtimeClass,
+		Network:        &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"github.com"}},
+		EgressProxyURL: cfg.proxyURL,
 	})
 	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = exec.Close() })
@@ -923,12 +925,12 @@ func TestK8sExecutor_OrphanHelperProcess(t *testing.T) {
 	}
 	cfg := testK8sEnv(t)
 	sandbox, err := NewK8sExecutor(context.Background(), K8sExecutorConfig{
-		Image:            cfg.image,
-		Namespace:        cfg.namespace,
-		Kubeconfig:       cfg.kubeconfig,
-		RuntimeClassName: cfg.runtimeClass,
-		Network:          &types.NetworkConfig{Mode: "none"},
-		Lifecycle:        Lifecycle{RunID: "orphan-test", MaxLifetime: k8sOrphanLifetime},
+		Image:      cfg.image,
+		Namespace:  cfg.namespace,
+		Kubeconfig: cfg.kubeconfig,
+		Runtime:    cfg.runtimeClass,
+		Network:    &types.NetworkConfig{Mode: "none"},
+		Lifecycle:  Lifecycle{RunID: "orphan-test", MaxLifetime: k8sOrphanLifetime},
 	})
 	must.NoError(err, "NewK8sExecutor")
 	fmt.Println(k8sOrphanReadyTag + sandbox.podName)
@@ -1043,7 +1045,7 @@ func TestK8sExecutor_SandboxGarbageCollectedWithHarnessPod(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{GenerateName: "stirrup-owner-", Namespace: cfg.namespace},
 		Spec: corev1.PodSpec{
 			RestartPolicy:                corev1.RestartPolicyNever,
-			RuntimeClassName:             optionalRuntimeClassName(cfg.runtimeClass),
+			RuntimeClassName:             optionalRuntimeClassName(k8sRuntimeProfiles[cfg.runtimeClass].runtimeClassName),
 			AutomountServiceAccountToken: ptr.To(false),
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot:   ptr.To(true),
@@ -1067,12 +1069,12 @@ func TestK8sExecutor_SandboxGarbageCollectedWithHarnessPod(t *testing.T) {
 	})
 
 	sandbox, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:            cfg.image,
-		Namespace:        cfg.namespace,
-		Kubeconfig:       cfg.kubeconfig,
-		RuntimeClassName: cfg.runtimeClass,
-		Network:          &types.NetworkConfig{Mode: "none"},
-		HarnessPod:       &HarnessPod{Namespace: cfg.namespace, Name: owner.Name, UID: string(owner.UID)},
+		Image:      cfg.image,
+		Namespace:  cfg.namespace,
+		Kubeconfig: cfg.kubeconfig,
+		Runtime:    cfg.runtimeClass,
+		Network:    &types.NetworkConfig{Mode: "none"},
+		HarnessPod: &HarnessPod{Namespace: cfg.namespace, Name: owner.Name, UID: string(owner.UID)},
 	})
 	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = sandbox.Close() })

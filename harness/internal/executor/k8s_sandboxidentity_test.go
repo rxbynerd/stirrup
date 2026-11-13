@@ -30,7 +30,7 @@ func TestK8sSandboxIdentityToken_RoundTrip(t *testing.T) {
 		Image:                cfg.image,
 		Namespace:            cfg.namespace,
 		Kubeconfig:           cfg.kubeconfig,
-		RuntimeClassName:     cfg.runtimeClass,
+		Runtime:              cfg.runtimeClass,
 		Network:              &types.NetworkConfig{Mode: "none"},
 		SandboxIdentityToken: true,
 	})

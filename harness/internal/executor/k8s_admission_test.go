@@ -15,9 +15,9 @@ import (
 func submittedPod(runtimeClass string) *corev1.Pod {
 	cfg := baseSandboxCfg()
 	cfg.Namespace = testK8sNamespace
-	cfg.RuntimeClassName = runtimeClass
+	cfg.Runtime = runtimeClass
 	cfg.Lifecycle.RunID = testK8sRunID
-	return buildSandboxPod(cfg, testK8sPodName, nil)
+	return buildSandboxPod(cfg, k8sRuntimeProfiles[cfg.Runtime], testK8sPodName, nil)
 }
 
 // admittedCopy returns submitted as the API server would return it, with a
