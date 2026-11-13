@@ -69,8 +69,19 @@ func newLoggedFakeK8sExecutor(ctx context.Context, cs *fake.Clientset, cfg K8sEx
 	if err != nil {
 		return nil, logs, err
 	}
-	exec, err := newK8sExecutor(ctx, cfg, profile, proxyEnv, cs, nil, fastK8sTiming, logger)
+	exec, err := newK8sExecutor(ctx, cfg, profile, proxyEnv, cs, nil, nil, fastK8sTiming, logger)
 	return exec, logs, err
+}
+
+// newFakeK8sExecutorWithExec is newFakeK8sExecutor with pods/exec served by
+// execFn.
+func newFakeK8sExecutorWithExec(ctx context.Context, cs *fake.Clientset, cfg K8sExecutorConfig, execFn podExecFunc) (*K8sExecutor, error) {
+	logger, _ := testLogger()
+	profile, proxyEnv, err := prepareK8sExecutor(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return newK8sExecutor(ctx, cfg, profile, proxyEnv, cs, nil, execFn, fastK8sTiming, logger)
 }
 
 // nitroCfg returns a k8s executor config that meets the nitro-isolated
