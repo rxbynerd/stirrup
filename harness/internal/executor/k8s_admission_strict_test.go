@@ -55,7 +55,7 @@ func TestStrictAdmissionFields_ClassifyEveryField(t *testing.T) {
 }
 
 // nitroFixtureCfg is the config whose submitted Pod the admitted-Pod
-// fixture was taken from.
+// fixture models.
 func nitroFixtureCfg() K8sExecutorConfig {
 	return K8sExecutorConfig{
 		Image:        "public.ecr.aws/docker/library/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4",
@@ -69,7 +69,13 @@ func nitroFixtureCfg() K8sExecutorConfig {
 }
 
 // decodeAdmittedNitroPod decodes the admitted-Pod fixture as a client
-// decodes an API response.
+// decodes an API response. The fixture is modelled on Pods read back from
+// EKS (Kubernetes 1.36) after they were Ready, with identifiers rewritten
+// to the test's names; it is not a Create response. Its enableServiceLinks
+// is false, the value the executor submits; every other value follows the
+// read-backs, including what EKS and API defaulting added (1Gi for 1024Mi,
+// topology labels, the merged node selector, default tolerations, the
+// overhead and scheduling fields).
 func decodeAdmittedNitroPod(t *testing.T) *corev1.Pod {
 	t.Helper()
 	must := require.New(t)

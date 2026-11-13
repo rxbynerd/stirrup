@@ -16,7 +16,7 @@
       "topology.kubernetes.io/zone": "us-east-1b"
     },
     "annotations": {
-      "sandbox.amazonaws.com/log-bandwidth": "2M",
+      "sandbox.amazonaws.com/log-bandwidth": "20M",
       "sandbox.amazonaws.com/network-isolated": "true"
     }
   },
