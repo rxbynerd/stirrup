@@ -1275,7 +1275,7 @@ registered `RuntimeClass` for `k8s`. The closed `k8s` set is:
 | `kata-qemu` | [Kata](https://katacontainers.io) Containers, QEMU VM | install Kata; KVM on the nodes |
 | `kata-fc` | Kata, Firecracker VM | install Kata + a devmapper snapshotter; KVM |
 | `kata-clh` | Kata, Cloud Hypervisor VM | install Kata for Cloud Hypervisor; KVM |
-| `nitro-isolated` | [AWS Nitro Sandbox](executors/k8s.md#eks-with-nitro-sandboxes) VM, RuntimeClass `isolated-sandbox`; [offline only](executors/k8s.md#network-mode-none-on-this-runtime): `network.mode: none` boots the guest with no network interface other than `lo` and `dummy0`, and no routes (measured once, on `m5d.xlarge`); the vsock channel remains | EKS Auto Mode on Kubernetes 1.36 or later (AWS documentation: [Nitro Sandboxes](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html)); explicit CPU and memory; not live-validated with this executor |
+| `nitro-isolated` | [AWS Nitro Sandbox](executors/k8s.md#eks-with-nitro-sandboxes) VM, RuntimeClass `isolated-sandbox`; [offline only](executors/k8s.md#network-mode-none-on-this-runtime): `network.mode: none` boots the guest with no network interface other than `lo` and `dummy0`, and no routes (measured once, on `m5d.xlarge`); the vsock channel remains | EKS Auto Mode on Kubernetes 1.36 or later (AWS documentation: [Nitro Sandboxes](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing.html)); explicit CPU and memory; for live validation see [Status](executors/k8s.md#status) |
 
 Note the runtime name is `gvisor` (the conventional RuntimeClass name),
 not the OCI runtime name `runsc` used by the `container` executor.
