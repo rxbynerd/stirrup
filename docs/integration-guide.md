@@ -1392,7 +1392,7 @@ The five operator-configurable rings, from
 
 | Ring | Surface | Default |
 |---|---|---|
-| 1 — Sandbox runtime class | `executor.runtime` (gVisor, Kata, or `nitro-isolated` on EKS; a `nitro-isolated` run that breaks the runtime's requirements is refused with the `K8sRuntimeRequirementErrors` messages listed in [What the runtime accepts](executors/k8s.md#what-the-runtime-accepts)) | Engine default (`runc`); hardening flags always on |
+| 1 — Sandbox runtime class | `executor.runtime` (gVisor, Kata, or `nitro-isolated` on EKS; a `nitro-isolated` run that breaks the runtime's requirements is refused at validation with a message naming the field; see [What the runtime accepts](executors/k8s.md#what-the-runtime-accepts)) | Engine default (`runc`); hardening flags always on |
 | 2 — Egress allowlist | `executor.network` + proxy / NetworkPolicy | Must be explicit for sandbox executors; `none` gives no network |
 | 3 — Cedar policy engine | `permissionPolicy.type: "policy-engine"` | Off; select a non-Cedar permission policy explicitly |
 | 4 — Rule of Two | `ruleOfTwo`, `sensitiveData` | Enforced; classifier auto-arms |
