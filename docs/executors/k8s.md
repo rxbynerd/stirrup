@@ -44,6 +44,7 @@ those files.
 - [Egress](#egress)
 - [Safety rings on Kubernetes](#safety-rings-on-kubernetes)
 - [Sandbox identity token exposure](#sandbox-identity-token-exposure)
+- [Dry-run preflight](#dry-run-preflight)
 - [Troubleshooting](#troubleshooting)
 - [Testing the executor against a real cluster](#testing-the-executor-against-a-real-cluster)
 
@@ -1216,10 +1217,75 @@ in etcd, at the cost of the harness needing `secrets` create/delete
 RBAC it does not need today. This is tracked as future work, not
 something the current implementation provides.
 
+## Dry-run preflight
+
+`stirrup harness --dry-run` ([configuration](../configuration.md#dry-run-preflight))
+never constructs the `k8s` or `k8s-sandbox` executor. Construction creates
+an egress NetworkPolicy and a sandbox Pod (or Sandbox custom resource) and
+waits for readiness, which a dry run must not do. The `executor` step
+reports that nothing was constructed, and the `executor-probe` step runs a
+read-only access check that creates, updates and deletes nothing.
+
+The check asks the API server, through `SelfSubjectAccessReview`, whether
+the configured credentials hold each permission the executor uses in
+`executor.k8sNamespace`:
+
+| Executor | Permissions checked |
+|---|---|
+| `k8s` | `pods`: `create`, `get`, `delete`; `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
+| `k8s-sandbox` | `sandboxes.agents.x-k8s.io`: `create`, `get`, `delete`; `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
+
+A denied permission fails the step and names the verb, resource and
+namespace. Holding Pod-create permission does not satisfy the
+`k8s-sandbox` check. The list matches what the executors call, and a test
+pins it to the reference Roles
+([`rbac.yaml`](../../examples/k8s/rbac.yaml),
+[`rbac-agent-sandbox.yaml`](../../examples/k8s/agent-sandbox/rbac-agent-sandbox.yaml)):
+the permissions those Roles grant beyond the list (`pods/log` `get`;
+`sandboxes` `list` and `watch`; `pods` `get` for `k8s-sandbox`) are not
+used by the executor and are not checked. `pods/exec` is checked as
+`create` only: the exec client tries a WebSocket upgrade first, which the
+API server authorises against the `get` verb, and falls back to the SPDY
+transport, which needs `create`, when the upgrade is refused. A Role that
+grants `create` alone therefore works, at the cost of one refused request
+per exec stream.
+
+Two reads are attempted in addition and never required:
+
+- The RuntimeClass the Pods will request (`executor.runtime`, or `gvisor`
+  for `k8s-sandbox`) is read from `node.k8s.io`. A missing RuntimeClass
+  fails the step. The reference Role grants no cluster-scoped reads, so a
+  refused read is reported in the step detail as *not checked*, never as
+  success.
+- For `k8s-sandbox`, API discovery confirms the
+  `agents.x-k8s.io/v1alpha1` group serves `sandboxes`. A group that is
+  not served fails the step; a discovery request that cannot be made is
+  reported as *not checked*.
+
+The access review itself needs `create` on
+`selfsubjectaccessreviews.authorization.k8s.io`, which the built-in
+`system:basic-user` ClusterRole grants to every authenticated user and
+which the reference Roles do not repeat. If the review call fails (the
+API server is unreachable, the credentials are rejected, or the default
+binding was removed), the step fails with the error and a hint.
+
+A dry run starts no sandbox, so it does not exercise image pull,
+RuntimeClass admission and scheduling, readiness, NetworkPolicy
+enforcement, or the tools inside the image (`/bin/sh`, `tar`, `git`). The
+`git-strategy-probe` step records a skip for that reason. These surface
+only in a real run.
+
+`--no-probe-executor` skips the check before any client is built, so the
+dry run makes no cluster call at all. Without it, `executor-probe` uses
+the same kubeconfig resolution as a run: `--k8s-kubeconfig`, then
+in-cluster configuration, then `$KUBECONFIG`.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| `credentials lack permission in namespace "<ns>": "<verb> <resource>"` (dry run) | The credentials' Role lacks the named verb in `executor.k8sNamespace`. | Apply [`rbac.yaml`](../../examples/k8s/rbac.yaml) (or [`rbac-agent-sandbox.yaml`](../../examples/k8s/agent-sandbox/rbac-agent-sandbox.yaml)) in that namespace, or grant the verb. |
+| `RuntimeClass "<name>" does not exist in the cluster` (dry run) | The requested RuntimeClass is not registered. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) or pick a registered runtime. |
 | `executor.k8sNamespace is required for executor.type="k8s"` | `--k8s-namespace` / `executor.k8sNamespace` unset. | Set the namespace. |
 | `executor.k8sEgressProxyUrl is required when ... "allowlist"` | `network.mode: allowlist` without a proxy URL. | Set `--k8s-egress-proxy-url`, or use `network.mode: none`. |
 | `executor.k8sEgressProxyUrl is only valid when ... "allowlist"` | A proxy URL set while `network.mode` is `none`. | Remove the URL, or switch to `allowlist`. |

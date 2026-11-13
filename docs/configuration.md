@@ -165,8 +165,13 @@ a billable runtime operation (so it confirms credentials resolve, not
 that the Bedrock endpoint is reachable). A container-executor dry-run is
 read-only: it pings the engine socket and checks the image is present
 locally without creating a container, starting the egress proxy, or
-pulling the image. Pass `--no-probe-executor` to suppress even that
-contact, recording the executor step as a `skip`.
+pulling the image. A `k8s` or `k8s-sandbox` dry-run is read-only too: it
+never constructs the executor, so it creates no Pod, Sandbox, or
+NetworkPolicy, and instead asks the API server whether the configured
+credentials hold the permissions a run needs (see
+[Dry-run preflight](executors/k8s.md#dry-run-preflight)). Pass
+`--no-probe-executor` to suppress even that contact, recording the
+executor step as a `skip`.
 
 The trace probe is the one step that reaches a live backend: for
 `traceEmitter.type=otel` it exports a single throwaway span (tagged
@@ -234,7 +239,7 @@ fail the run:
 | `--no-probe-mcp` | The MCP `initialize` / `tools/list` handshake for every configured server. |
 | `--no-probe-trace` | The trace-emitter reachability probe (`otel` flush, `gcs` bucket check). |
 | `--no-probe-egress` | The egress-allowlist DNS resolution (container executor in `allowlist` network mode). |
-| `--no-probe-executor` | The container-engine probe (socket ping + image-present, container executor only). The executor step then records `skip`; no engine is contacted. No effect on `local`/`api` executors, which construct without an engine. |
+| `--no-probe-executor` | The container-engine probe (socket ping + image-present) for the `container` executor, and the cluster access check for the `k8s` and `k8s-sandbox` executors. The `executor-probe` step then records `skip`; no engine or API server is contacted. No effect on `local`/`api` executors, which construct without an engine. |
 | `--dry-run-timeout` | Not a gate — bounds the total preflight wall-clock. Defaults to `30s`. |
 
 The egress-allowlist probe (`--no-probe-egress`) is DNS-only: it
@@ -982,7 +987,7 @@ full workflow, the per-step report, and how the flags compose.
 | `--no-probe-mcp` | `false` | Skip the MCP server handshake probe. Meaningless without `--dry-run` (exit `4`). |
 | `--no-probe-trace` | `false` | Skip the trace-emitter reachability probe. Meaningless without `--dry-run` (exit `4`). |
 | `--no-probe-egress` | `false` | Skip the egress-allowlist DNS probe. Meaningless without `--dry-run` (exit `4`). |
-| `--no-probe-executor` | `false` | Skip the container-engine probe (container executor only). Meaningless without `--dry-run` (exit `4`). |
+| `--no-probe-executor` | `false` | Skip the container-engine probe (`container` executor) or the cluster access check (`k8s`, `k8s-sandbox`). Meaningless without `--dry-run` (exit `4`). |
 | `--dry-run-timeout` | `30s` | Total wall-clock budget for the preflight. Meaningless without `--dry-run` (exit `4`). |
 
 `--output=json` (above) emits the `PreflightReport` to stdout when paired

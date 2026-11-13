@@ -31,6 +31,7 @@ files. The reference manifests live under
 - [Egress is unchanged](#egress-is-unchanged)
 - [The controller-owned TTL GC backstop](#the-controller-owned-ttl-gc-backstop)
 - [RBAC delta](#rbac-delta)
+- [Dry-run preflight](#dry-run-preflight)
 - [Configuration](#configuration)
 - [Testing against a real cluster](#testing-against-a-real-cluster)
 - [Deferred value-adds](#deferred-value-adds)
@@ -312,6 +313,23 @@ applies identically here — `buildSandboxPodSpec` is shared between the
 initial token lands in the Pod env, and its token-file volume in the Pod
 spec, the same way regardless of which executor created the Pod; refresh
 rides the shared `pods/exec` path too.
+
+## Dry-run preflight
+
+`stirrup harness --dry-run` never constructs this executor, so it creates
+no Sandbox, Pod, or NetworkPolicy. The `executor-probe` step asks the API
+server, through `SelfSubjectAccessReview`, whether the credentials hold
+`create`, `get` and `delete` on `sandboxes.agents.x-k8s.io`, `create` on
+`pods/exec`, and `create` and `delete` on `networkpolicies` in
+`executor.k8sNamespace`. Pod-create permission does not satisfy the check.
+It also confirms through API discovery that `agents.x-k8s.io/v1alpha1`
+serves `sandboxes` (a group that is not served fails the step) and reads the
+`gvisor` RuntimeClass (reported as *not checked* when the credentials may
+not read it). The full list, the permission the review itself needs, and
+what a dry run does not exercise (image pull, admission, readiness,
+in-sandbox tools) are described in
+[the `k8s` executor's dry-run section](k8s.md#dry-run-preflight).
+`--no-probe-executor` skips the check without contacting the API server.
 
 ## Configuration
 
