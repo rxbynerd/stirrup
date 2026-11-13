@@ -678,6 +678,12 @@ func TestClusterText_StripsControlCharactersBeforeScrubbing(t *testing.T) {
 	must.Contains(got, "[REDACTED]")
 }
 
+func TestClusterText_DropsControlAndFormatCharacters(t *testing.T) {
+	must := require.New(t)
+	got := clusterText("a\x1b[1m\u009b31m\u0085b\u202ec\u200bd\u2066e\ufeff")
+	must.Equal("a[1m31mbcde", got)
+}
+
 func containsHint(err error) bool {
 	return strings.Contains(err.Error(), "was rejected by the cluster —")
 }

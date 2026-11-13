@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -574,12 +575,14 @@ func boundClusterErr(err error) error {
 	return clusterError{err: err}
 }
 
-// clusterText bounds a cluster-supplied string for inclusion in an error:
-// secrets are scrubbed first, so truncation cannot cut one past recognition,
-// then control characters are dropped and the length is capped.
+// clusterText bounds a cluster-supplied string for inclusion in an error.
+// Control and format characters (C0, C1, bidirectional overrides,
+// zero-width characters) are dropped first, so none can hide a secret from
+// the scrubber or reorder what a terminal shows; secrets are then scrubbed,
+// so truncation cannot cut one past recognition; the length is capped last.
 func clusterText(s string) string {
 	cleaned := security.Scrub(strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		if isUnprintableRune(r) {
 			return -1
 		}
 		return r
@@ -588,6 +591,11 @@ func clusterText(s string) string {
 		return string(runes[:k8sClusterTextMax]) + "…"
 	}
 	return cleaned
+}
+
+// isUnprintableRune reports whether r is a control or format character.
+func isUnprintableRune(r rune) bool {
+	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
 }
 
 // generatePodName returns "stirrup-<12-hex-chars>". 6 random bytes give 48
