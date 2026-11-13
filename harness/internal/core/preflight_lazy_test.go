@@ -329,6 +329,37 @@ func TestCapabilityOnlyExecutor_RegistersTheToolsAContainerExecutorDoes(t *testi
 	check.Equal(want, toolNames(standIn))
 }
 
+func TestCapabilityOnlyExecutor_RegistersTheToolsAPodExecutorDoes(t *testing.T) {
+	standIn := capabilityOnlyExecutor{caps: containerToolCapabilities()}
+	toolNames := func(exec executor.Executor) []string {
+		var names []string
+		for _, def := range buildToolRegistry(exec, buildEditStrategy(types.EditStrategyConfig{Type: "whole-file"}), types.ToolsConfig{}, nil).List() {
+			names = append(names, def.Name)
+		}
+		slices.Sort(names)
+		return names
+	}
+
+	for name, podExecutor := range map[string]executor.Executor{
+		"k8s":         &executor.K8sExecutor{},
+		"k8s-sandbox": &executor.AgentSandboxExecutor{},
+	} {
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+
+			wantCaps, gotCaps := podExecutor.Capabilities(), standIn.Capabilities()
+			check.Equal(
+				[]bool{wantCaps.CanRead, wantCaps.CanWrite, wantCaps.CanExec},
+				[]bool{gotCaps.CanRead, gotCaps.CanWrite, gotCaps.CanExec},
+			)
+			want := toolNames(podExecutor)
+			must.NotEmpty(want)
+			check.Equal(want, toolNames(standIn))
+		})
+	}
+}
+
 func TestPreflight_LazyToolsStepNamesEveryModeSelectionOfAPerModeRouter(t *testing.T) {
 	must := require.New(t)
 	mcpSrv := mcpToolsServer(t, "search")
