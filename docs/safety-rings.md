@@ -106,7 +106,7 @@ flowchart TB
 |---|---|---|---|---|
 | **4 — Rule of Two** | `ValidateRunConfig` pre-flight, plus a deterministic classifier inside the loop | A run config that mixes untrusted input + sensitive data + egress without operator gating — *and* sensitive data that arrives mid-run through a tool result, dynamic context, or the prompt | Structural check enforced unconditionally; the runtime classifier auto-arms enforcing when untrusted input and egress both hold and no sensitivity was declared | `ruleOfTwo.enforce: false` disarms enforcement; `ruleOfTwo.runtime.classifier: "none"` disarms detection (RunConfig only — no CLI flag) |
 | **3 — Cedar policy** | Per tool call, before the executor runs | Specific dangerous tool uses inside an otherwise-allowed tool (`rm -rf`, fetch outside an allowlist, secret-shaped input, sub-agent calls running shell) | Off (use `allow-all`, `deny-all`, `deny-side-effects`, or `ask-upstream` instead) | `--permission-policy-file <file>.cedar` or `permissionPolicy.type: policy-engine` |
-| **1 — Container runtime** | Structural; in effect for every operation in the container | Kernel exploits in the agent's commands escaping the container | Engine default (usually `runc` — process isolation only, shared kernel) | `--container-runtime runsc` for gVisor; `kata*` for Kata; or set `runtimeClassName` on the K8s pod spec |
+| **1 — Container runtime** | Structural; in effect for every operation in the container | Kernel exploits in the agent's commands escaping the container | Engine default (usually `runc` — process isolation only, shared kernel) | `--container-runtime runsc` for gVisor; `kata*` for Kata; on `k8s`, a Pod RuntimeClass through the same flag (`gvisor`, `kata-*`, or `nitro-isolated` on EKS) |
 | **2 — Egress proxy** | At the container's network egress, for HTTP/HTTPS clients that honour `HTTP_PROXY` | Data exfiltration and malicious package fetches to non-allowlisted hosts | `network.mode: none` (no network at all in v1) | `network.mode: allowlist`, `network.allowlist: [...]` |
 | **5 — Code scanner** | After every successful `EditStrategy.Apply` | The model writing a backdoor, hardcoded secret, or obvious eval/exec sink to the workspace | `patterns` for execution mode, `none` for read-only modes | `--code-scanner patterns\|semgrep`, `codeScanner.semgrepConfigPath`, `codeScanner.blockOnWarn` |
 
@@ -808,7 +808,9 @@ is no silent fallback to `runc`.
 For the `k8s` executor, `--container-runtime` (`executor.runtime`) maps
 to the sandbox Pod's `spec.runtimeClassName` — the same flag, a
 different closed set (`runc`, `gvisor`, `kata-qemu`, `kata-fc`,
-`kata-clh`; note `gvisor`, not the host OCI name `runsc`). The executor
+`kata-clh`, `nitro-isolated`; note `gvisor`, not the host OCI name
+`runsc`, and `nitro-isolated`, which maps to AWS's `isolated-sandbox`
+class). The executor
 sets `runtimeClassName` on the Pod it creates, so the runtime is
 threaded through stirrup rather than hand-set on a static spec. Empty
 selects the cluster-default RuntimeClass and logs an isolation warning.
@@ -1262,8 +1264,8 @@ ring-by-ring mapping.
 On `k8s`, `executor.runtime` (`--container-runtime`) maps to the Pod's
 `spec.runtimeClassName` rather than a host OCI runtime. The accepted set
 differs because the values name different things: a host OCI runtime for
-the `container` executor versus a registered `RuntimeClass` name for
-`k8s`. The closed `k8s` set is:
+the `container` executor versus a runtime the executor maps to a
+registered `RuntimeClass` for `k8s`. The closed `k8s` set is:
 
 | Value | RuntimeClass / isolation | Cluster prerequisite |
 |---|---|---|
@@ -1273,9 +1275,13 @@ the `container` executor versus a registered `RuntimeClass` name for
 | `kata-qemu` | [Kata](https://katacontainers.io) Containers, QEMU VM | install Kata; KVM on the nodes |
 | `kata-fc` | Kata, Firecracker VM | install Kata + a devmapper snapshotter; KVM |
 | `kata-clh` | Kata, Cloud Hypervisor VM | install Kata for Cloud Hypervisor; KVM |
+| `nitro-isolated` | [AWS Nitro Sandbox](executors/k8s.md#eks-with-nitro-sandboxes) VM, RuntimeClass `isolated-sandbox`; offline only (`network.mode: none` boots the guest with no network device) | EKS Auto Mode on Kubernetes 1.36 or later; explicit CPU and memory; not live-validated with this executor |
 
 Note the runtime name is `gvisor` (the conventional RuntimeClass name),
 not the OCI runtime name `runsc` used by the `container` executor.
+`nitro-isolated` is the one value whose RuntimeClass has another name;
+it also carries extra requirements and guest diagnostics described in
+[EKS with Nitro Sandboxes](executors/k8s.md#eks-with-nitro-sandboxes).
 `ValidateRunConfig` rejects values outside the set, and an unregistered
 or impermissible RuntimeClass surfaces a friendly Pod-create error
 rather than an opaque admission rejection.

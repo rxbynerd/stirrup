@@ -775,6 +775,20 @@ mounts.
 Optional kernel-isolation runtime selection (`runc`, `runsc`, `kata*`)
 is documented in [`safety-rings.md`](safety-rings.md).
 
+### Runtime diagnostics on Kubernetes
+
+For a `k8s` runtime that can be checked from inside the guest, the
+executor reads guest files after the sandbox Pod is Ready and fails the
+run when they do not match the runtime. Only `nitro-isolated` has such
+checks today. Their outcome is the `sandbox_runtime_diagnostic_passed`
+(info) or `sandbox_runtime_diagnostic_failed` (error) security event,
+documented with its keys in
+[EKS with Nitro Sandboxes](executors/k8s.md#runtime-diagnostics). The
+values in the event are reported by the sandbox image, so they are
+scrubbed and length-bounded before they are emitted, and the checks are
+configuration diagnostics rather than attestation: a hostile image can
+fabricate the output.
+
 ### Egress proxy CONNECT/SNI protocol
 
 The in-process egress proxy (`harness/internal/executor/egressproxy`)

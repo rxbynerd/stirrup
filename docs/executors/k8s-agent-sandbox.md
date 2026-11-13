@@ -215,7 +215,7 @@ delete by another actor, apply here too.
 Enforcement still depends on the cluster CNI: a `NetworkPolicy`-enforcing
 CNI (GKE Dataplane V2, Cilium, Calico) is required for the policy to bite.
 This is the same caveat as the `k8s` executor — see
-[`k8s.md`](k8s.md#enforcement-caveat--kindnet-does-not-enforce-networkpolicy).
+[`k8s.md`](k8s.md#enforcement-caveat--networkpolicy-may-be-accepted-but-not-enforced).
 
 ## The controller-owned TTL GC backstop
 
