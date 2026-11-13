@@ -602,7 +602,11 @@ func TestGuestFileDumpScript_ParsesUnderARealShell(t *testing.T) {
 		t.Helper()
 		must := require.New(t)
 		argv := guestFileDumpCommand(paths...)
-		out, err := exec.CommandContext(context.Background(), argv[0], argv[1:]...).Output()
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+		cmd.Env = []string{"PATH=/usr/bin:/bin", "LC_ALL=C"}
+		out, err := cmd.Output()
 		must.NoError(err)
 		files, err := parseGuestFileDump(out, paths)
 		must.NoError(err, "output:\n%s", out)
@@ -633,7 +637,7 @@ func TestGuestFileDumpScript_ParsesUnderARealShell(t *testing.T) {
 func TestParseGuestFileDump_FailsClosedOnCRLFOutput(t *testing.T) {
 	must := require.New(t)
 	_, err := parseGuestFileDump([]byte("begin /a\r\n x\r\nend /a\r\n"), []string{"/a"})
-	must.Error(err)
+	must.ErrorContains(err, "where the report for /a should start")
 }
 
 func TestParseGuestFileDump_KeepsAPrefixedFrameMarkerAsContent(t *testing.T) {

@@ -166,13 +166,16 @@ func (sl *SecurityLogger) OutputTruncated(command string, originalSize, limit in
 // failure reason in a sandbox runtime diagnostic event.
 const sandboxDiagnosticValueMaxBytes = 256
 
-// SandboxRuntimeDiagnostic emits the outcome of the runtime diagnostics the
-// k8s executor runs for a runtime after the sandbox Pod is Ready:
+// SandboxRuntimeDiagnostic emits the outcome of the k8s executor's
+// whole-Pod admission check or runtime diagnostics for a runtime:
 // sandbox_runtime_diagnostic_passed at info, or
 // sandbox_runtime_diagnostic_failed at error with the failing check and
-// reason. observed holds values the sandbox image reported, so each is
-// scrubbed and bounded here; the map is converted to map[string]any
-// because ScrubMap does not descend into map[string]string.
+// reason. observed carries field (the first mismatching field) for
+// admitted_pod, the guest values read (dmiProductName, interfaces,
+// routeEntries) for the content checks, and nothing for diagnostic_exec or
+// a framing diagnostic_output. Values come from the cluster or the sandbox
+// image, so each is scrubbed and bounded here; the map is converted to
+// map[string]any because ScrubMap does not descend into map[string]string.
 func (sl *SecurityLogger) SandboxRuntimeDiagnostic(runtime string, passed bool, check, reason string, observed map[string]string) {
 	obs := make(map[string]any, len(observed))
 	for k, v := range observed {

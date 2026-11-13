@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -349,13 +348,4 @@ func allUnsigned(fields []string) bool {
 		}
 	}
 	return true
-}
-
-func sortedSetMembers(set map[string]bool) []string {
-	keys := make([]string, 0, len(set))
-	for k := range set {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

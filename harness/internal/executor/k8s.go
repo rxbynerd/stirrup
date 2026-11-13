@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -604,6 +605,16 @@ func clusterText(s string) string {
 // isUnprintableRune reports whether r is a control or format character.
 func isUnprintableRune(r rune) bool {
 	return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+}
+
+// sortedSetMembers returns the members of set in sorted order.
+func sortedSetMembers(set map[string]bool) []string {
+	keys := make([]string, 0, len(set))
+	for k := range set {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // generatePodName returns "stirrup-<12-hex-chars>". 6 random bytes give 48
