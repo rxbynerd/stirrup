@@ -428,7 +428,7 @@ func (e *AgentSandboxExecutor) reconcileFailedCreate(submitted map[string]string
 		return e.egress().retain(fmt.Errorf("look up sandbox after a failed create: %w", err))
 	}
 	if sandbox == nil {
-		if podCreateRejectedDefinitively(createErr) {
+		if createRejectedDefinitively(createErr) {
 			return e.egress().removePolicy()
 		}
 		return e.egress().retain(fmt.Errorf("sandbox %s/%s was not found after a create whose outcome is unknown; a create persisted later starts under the retained policy", e.namespace, e.sandboxName))

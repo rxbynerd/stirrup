@@ -87,7 +87,7 @@ func (t podTeardown) reconcileFailedCreate(submitted map[string]string, createEr
 		return t.retain(fmt.Errorf("look up pod after a failed create: %w", err))
 	}
 	if pod == nil {
-		if podCreateRejectedDefinitively(createErr) {
+		if createRejectedDefinitively(createErr) {
 			return t.removePolicy()
 		}
 		return t.retain(fmt.Errorf("pod %s/%s was not found after a create whose outcome is unknown; a create persisted later starts under the retained policy", t.namespace, t.podName))
@@ -270,12 +270,12 @@ func (e sandboxEgress) retain(cause error) error {
 		e.kind, e.namespace, e.name, e.runID, cause, e.namespace, e.policyName)
 }
 
-// podCreateRejectedDefinitively reports whether a Pod create error is a
-// client-error status the API server returns before persisting anything.
-// A timeout, a transport failure, a server error, a throttled request (which
-// the client may have retried) and a 409 (AlreadyExists under the run's own
-// random name, from such a retry) are not.
-func podCreateRejectedDefinitively(err error) bool {
+// createRejectedDefinitively reports whether a Pod or Sandbox create error is
+// a client-error status: the API server refused the last attempt. A timeout,
+// a transport failure, a server error, a throttled request (which the client
+// may have retried) and a 409 (AlreadyExists under the run's own random name,
+// from such a retry) are not.
+func createRejectedDefinitively(err error) bool {
 	var status apierrors.APIStatus
 	if !errors.As(err, &status) {
 		return false

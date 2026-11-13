@@ -551,7 +551,7 @@ func TestPodTeardown_ReconcileFailedCreate(t *testing.T) {
 	}
 }
 
-func TestPodCreateRejectedDefinitively_ClassifiesErrors(t *testing.T) {
+func TestCreateRejectedDefinitively_ClassifiesErrors(t *testing.T) {
 	gr := schema.GroupResource{Resource: "pods"}
 	cases := []struct {
 		name string
@@ -575,7 +575,7 @@ func TestPodCreateRejectedDefinitively_ClassifiesErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			must.Equal(tc.want, podCreateRejectedDefinitively(tc.err))
+			must.Equal(tc.want, createRejectedDefinitively(tc.err))
 		})
 	}
 }
