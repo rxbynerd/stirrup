@@ -102,12 +102,25 @@ The provisioning sequence
    Sandbox status; on the cold-create path it equals the Sandbox name.
    Command execution and file I/O then ride the shared `pods/exec` core.
 
-On a construction failure before any Sandbox can exist (including a
-definitive rejection of the Sandbox create), the `NetworkPolicy` is
-deleted. A later failure, or a Sandbox create whose outcome is unknown
-(a timeout, a connection error, a server error), tears down through
-`Close`, so the policy is removed only once the Sandbox is confirmed
-gone (see [the TTL GC backstop](#the-controller-owned-ttl-gc-backstop)).
+A construction failure before the Sandbox create is submitted deletes
+the `NetworkPolicy` directly. Every Sandbox create error is followed by
+a read of the Sandbox under its name, by the same rule as the `k8s`
+executor's [create-error table](k8s.md#teardown):
+
+- a Sandbox carrying every label the run submitted is torn down through
+  `Close`;
+- a Sandbox without those labels is left alone and the policy retained;
+- no Sandbox after a definitive rejection (a `4xx` status other than
+  `408`, `409` or `429`) removes the policy;
+- no Sandbox after any other outcome (a timeout, throttling (`429`),
+  `AlreadyExists` (`409`), a server error, a connection error, a
+  cancelled context) retains the policy and reports it.
+
+A Sandbox the API server persists after that read starts under the
+retained policy, and its 12-hour `shutdownTime` bounds it (see
+[the TTL GC backstop](#the-controller-owned-ttl-gc-backstop)). A later
+failure, such as the readiness wait or a backing Pod whose name differs
+from the Sandbox's, also tears down through `Close`.
 
 ### Cold-create only
 
@@ -195,23 +208,43 @@ This is the same caveat as the `k8s` executor — see
 
 ## The controller-owned TTL GC backstop
 
-`Close()` is the normal teardown: it deletes the Sandbox with foreground
-propagation (so the Sandbox object lingers until its dependent Pod is
-gone, making "Sandbox gone" a reliable signal that the Pod is gone too),
-then removes the egress `NetworkPolicy`. Only the Sandbox is deleted — not
-the Pod — because the controller owns the Pod via owner references and
-cascade-GCs it; deleting the Pod directly would race that cascade.
+`Close()` is the normal teardown and follows the `k8s` executor's
+[teardown contract](k8s.md#teardown) with the Sandbox in place of the
+Pod. It deletes the Sandbox with foreground propagation, retrying
+transient errors, then reads the Sandbox until it is `NotFound`; the
+delete response alone is not taken as proof. Only then does it delete
+the egress `NetworkPolicy`, in one attempt with its own 30-second bound.
+Only the Sandbox is deleted — not the Pod — because the controller owns
+the Pod via owner references and cascade-GCs it; deleting the Pod
+directly would race that cascade.
 
-The egress `NetworkPolicy` is removed only after the Sandbox (and, via
-the foreground cascade, its Pod) is confirmed gone, so egress is never
-reopened for a still-running Pod — the teardown analogue of the
-constructor's policy-before-Pod ordering. The posture is fail-closed in
-three ways: if the Sandbox delete fails, the policy is left in place and
-the error returned (the TTL backstop still GCs the Sandbox eventually);
-if the Sandbox does not disappear within the close timeout, the policy
-is left in place and logged (inert once the Pod is gone, still
-confining it if it somehow lingers); a `NotFound` Sandbox is treated as
-already-gone, and the policy is then safe to remove.
+"Sandbox gone" implies "Pod gone" only if the controller sets
+`blockOwnerDeletion: true` on the owner reference it writes to the
+backing Pod, because foreground deletion waits only for dependents that
+block it. That has not been verified (kind has no Sandbox CRD, and the
+controller's owner reference on GKE was not inspected), and `Close`
+does not read the Pod itself.
+
+The Sandbox delete and the wait share a 30-second bound; `Forbidden` or
+`Unauthorized` on either stops at once. The Pod spec in
+`spec.podTemplate.spec` carries `terminationGracePeriodSeconds: 1`, the
+same as the `k8s` executor, so the cascade normally finishes in seconds.
+Whether GKE's Agent Sandbox admission policy accepts that field has not
+been verified live.
+
+When the Sandbox delete fails, the Sandbox is not confirmed gone within
+the bound, or the policy delete fails, `Close` retains the policy. It
+logs the same warning as the `k8s` executor (`sandbox teardown
+incomplete; retaining the egress NetworkPolicy (fail closed)`, with
+`namespace`, `pod` set to the Sandbox name, `networkpolicy`, `runId` and
+`err`) and returns an error of the form `tear down sandbox
+<ns>/<name> (run ID "<id>"): <cause>; retained egress NetworkPolicy
+<ns>/<name>-egress`. A later `Close` call tries again. Retained objects
+are cleaned up with the `k8s` executor's
+[procedure](k8s.md#cleaning-up-retained-objects): the Sandbox
+(`kubectl -n <ns> get sandboxes.agents.x-k8s.io <name>`) must also be
+`NotFound` before its policy is deleted, and on the cold-create path the
+Sandbox name equals the Pod name and the policy name's prefix.
 
 As a backstop against a crashed orchestrator that never calls `Close()`,
 the executor writes `spec.shutdownPolicy: Delete` and an absolute
@@ -220,8 +253,8 @@ Sandbox — and cascades to the Pod — once that time passes. The TTL is a
 generous 12 hours (`agentSandboxMaxTTL`): a run that legitimately
 approaches that bound is far rarer than an orchestrator crash, and cutting
 a live run short is worse than letting a leaked sandbox linger a few extra
-hours. The TTL fires *only* if `Close()` never runs; a normal run is torn
-down in seconds.
+hours. The TTL fires *only* if `Close()` never runs; with the one-second
+grace period above, a normal run is torn down in seconds.
 
 ## RBAC delta
 
@@ -325,7 +358,7 @@ STIRRUP_TEST_NAMESPACE=stirrup-sandbox \
 STIRRUP_TEST_ENFORCE_EGRESS=1 \
 STIRRUP_TEST_IMAGE=curlimages/curl:latest \
 STIRRUP_TEST_EGRESS_PROXY_URL=http://stirrup-egress-proxy.stirrup-sandbox.svc:8080 \
-  go test -tags integration_k8s -count=1 -v -run TestAgentSandbox \
+  go test -tags integration_k8s -count=1 -timeout 30m -v -run TestAgentSandbox \
   ./harness/internal/executor/
 ```
 
