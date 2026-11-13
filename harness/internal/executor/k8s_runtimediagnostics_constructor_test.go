@@ -143,6 +143,30 @@ func TestNewK8sExecutor_InterruptedDiagnosticsReportNoFailure(t *testing.T) {
 	}
 }
 
+func TestNewK8sExecutor_ContentFailureAsTheCallerCancelsIsAFailure(t *testing.T) {
+	must := require.New(t)
+	cs := fake.NewClientset()
+	admitPods(cs, nil)
+	cfg, recorder := nitroConstructorCfg()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	dump := guestDump(ptr.To("m5d.xlarge\n"), ptr.To(procNetDevHeader+procNetDevLo+procNetDevEth0), ptr.To(procNetRouteHeader+procNetRouteDflt))
+	execFn := func(_ context.Context, _ []string, _ io.Reader, out, _ io.Writer) error {
+		cancel()
+		_, err := io.WriteString(out, dump)
+		return err
+	}
+
+	exec, err := newFakeK8sExecutorWithExec(ctx, cs, cfg, execFn)
+
+	must.Nil(exec)
+	must.ErrorContains(err, `runtime diagnostics for executor.runtime "nitro-isolated" failed: dmi_product_name: `)
+	must.NotErrorIs(err, context.Canceled)
+	must.Len(recorder.runtimeDiagnostics, 1)
+	must.Equal("dmi_product_name", recorder.runtimeDiagnostics[0].check)
+	requireTornDown(t, cs)
+}
+
 func TestNewK8sExecutor_DiagnosticsTimeoutWithLiveCallerIsAFailure(t *testing.T) {
 	must := require.New(t)
 	cs := fake.NewClientset()

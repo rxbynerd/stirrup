@@ -23,9 +23,10 @@ func (e *k8sRuntimeDiagnosticError) Unwrap() error { return e.err }
 
 // runK8sRuntimeDiagnostics runs the profile's runtime diagnostics over core's
 // exec path and reports the outcome as a sandbox runtime diagnostic event.
-// A profile without diagnostics passes without an event. A failure while the
-// caller's ctx is done is an interruption, not a runtime problem: it returns
-// the context error and emits no event.
+// A profile without diagnostics passes without an event. A failure caused by
+// the caller's ctx ending is an interruption, not a runtime problem: it
+// returns the context error and emits no event. A completed check that fails
+// stays a failure even if the caller has just cancelled.
 func runK8sRuntimeDiagnostics(ctx context.Context, runtime string, profile k8sRuntimeProfile, core *podExecCore) error {
 	if profile.diagnose == nil {
 		return nil
@@ -37,7 +38,7 @@ func runK8sRuntimeDiagnostics(ctx context.Context, runtime string, profile k8sRu
 		}
 		return nil
 	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	if ctxErr := ctx.Err(); ctxErr != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		return fmt.Errorf("runtime diagnostics for executor.runtime %q interrupted: %w", runtime, ctxErr)
 	}
 	var diagErr *k8sRuntimeDiagnosticError
