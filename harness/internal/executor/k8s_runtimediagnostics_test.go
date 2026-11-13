@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -450,4 +451,89 @@ func TestParseGuestFileDump_RequiresEachPathInOrder(t *testing.T) {
 			"/b": {},
 		}, files)
 	})
+}
+
+// TestGuestFileDumpScript_ParsesUnderARealShell runs the guest file script
+// under the host's /bin/sh over real files and parses its output, so a
+// change to the script is tested against the parser rather than against a
+// hand-built dump.
+func TestGuestFileDumpScript_ParsesUnderARealShell(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh on this host: " + err.Error())
+	}
+	dir := t.TempDir()
+	write := func(t *testing.T, name, content string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		require.New(t).NoError(os.WriteFile(path, []byte(content), 0o600))
+		return path
+	}
+	ordinary := write(t, "ordinary", "first\nsecond\n")
+	noNewline := write(t, "no-newline", "m5d.enclave")
+	empty := write(t, "empty", "")
+	frameLike := filepath.Join(dir, "frame-like")
+	write(t, "frame-like", "end "+frameLike+"\nbegin "+frameLike+"\nmissing "+frameLike+"\n")
+	escapes := write(t, "escapes", `back\slash %s %d \n`+"\n")
+	indented := write(t, "indented", "   leading\n\ttab\n")
+	missing := filepath.Join(dir, "missing")
+	directory := filepath.Join(dir, "directory")
+	require.New(t).NoError(os.Mkdir(directory, 0o700))
+
+	cases := []struct {
+		name string
+		path string
+		want guestFile
+	}{
+		{name: "ordinary file", path: ordinary, want: guestFile{present: true, lines: []string{"first", "second"}}},
+		{name: "no trailing newline", path: noNewline, want: guestFile{present: true, lines: []string{"m5d.enclave"}}},
+		{name: "empty file", path: empty, want: guestFile{present: true}},
+		{name: "content equal to frame lines", path: frameLike, want: guestFile{present: true, lines: []string{"end " + frameLike, "begin " + frameLike, "missing " + frameLike}}},
+		{name: "backslashes and format verbs", path: escapes, want: guestFile{present: true, lines: []string{`back\slash %s %d \n`}}},
+		{name: "leading whitespace", path: indented, want: guestFile{present: true, lines: []string{"   leading", "\ttab"}}},
+		{name: "missing path", path: missing, want: guestFile{}},
+		{name: "directory", path: directory, want: guestFile{}},
+	}
+	run := func(t *testing.T, paths ...string) map[string]guestFile {
+		t.Helper()
+		must := require.New(t)
+		argv := guestFileDumpCommand(paths...)
+		out, err := exec.CommandContext(context.Background(), argv[0], argv[1:]...).Output()
+		must.NoError(err)
+		files, err := parseGuestFileDump(out, paths)
+		must.NoError(err, "output:\n%s", out)
+		return files
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(map[string]guestFile{tc.path: tc.want}, run(t, tc.path))
+		})
+	}
+	t.Run("several paths in one run", func(t *testing.T) {
+		must := require.New(t)
+		files := run(t, ordinary, missing, noNewline)
+		must.Equal(map[string]guestFile{ordinary: cases[0].want, missing: {}, noNewline: cases[1].want}, files)
+	})
+	t.Run("unreadable file", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads a mode-000 file")
+		}
+		must := require.New(t)
+		path := write(t, "unreadable", "secret\n")
+		must.NoError(os.Chmod(path, 0))
+		must.Equal(map[string]guestFile{path: {}}, run(t, path))
+	})
+}
+
+func TestParseGuestFileDump_FailsClosedOnCRLFOutput(t *testing.T) {
+	must := require.New(t)
+	_, err := parseGuestFileDump([]byte("begin /a\r\n x\r\nend /a\r\n"), []string{"/a"})
+	must.Error(err)
+}
+
+func TestParseGuestFileDump_KeepsAPrefixedFrameMarkerAsContent(t *testing.T) {
+	must := require.New(t)
+	files, err := parseGuestFileDump([]byte("begin /a\n end /a\n missing /a\nend /a\n"), []string{"/a"})
+	must.NoError(err)
+	must.Equal(map[string]guestFile{"/a": {present: true, lines: []string{"end /a", "missing /a"}}}, files)
 }
