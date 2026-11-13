@@ -643,6 +643,18 @@ func TestClassifyPodCreateError_BoundsWebhookMessage(t *testing.T) {
 	check.Contains(err.Error(), "denied the request")
 }
 
+func TestClusterText_ScrubsBeforeTruncating(t *testing.T) {
+	must := require.New(t)
+	// Assembled at run time so no token-shaped literal sits in the source.
+	segment := strings.Repeat("A", 40)
+	token := "ey" + "J" + segment + "." + segment + "." + segment
+	prefix := strings.Repeat("p", k8sClusterTextMax-len("ey")-50)
+	got := clusterText(prefix + token)
+
+	must.NotContains(got, "eyJ"+segment[:10], "a token cut at the length cap kept a recognisable prefix")
+	must.Contains(got, "[REDACTED]")
+}
+
 func containsHint(err error) bool {
 	return strings.Contains(err.Error(), "kubectl get runtimeclass")
 }
