@@ -311,13 +311,15 @@ outbound git operations through a proxy such as
 [Haybale](https://github.com/rxbynerd/haybale). The harness never
 holds a signing key or a long-lived credential itself; it requests a
 token from the control plane over the same `RunTask` stream used for
-everything else — once before the sandbox is created, and again
-ahead of each expiry the control plane reports (see Token lifetime,
-below).
+everything else — once before the sandbox is created, once more before
+the token file is first written if sandbox startup took the token past
+its refresh point, and again ahead of each expiry the control plane
+reports (see Token lifetime, below).
 
 - **`sandbox_token_request`** (`HarnessEvent`) — sent after
-  `task_assignment` and before the sandbox is created, then again on
-  each refresh; at most eight per run. Carries `request_id`
+  `task_assignment` and before the sandbox is created, then before
+  first delivery when startup took the token past its refresh point,
+  then again on each refresh; at most eight per run. Carries `request_id`
   (correlation; `sbid-1`, `sbid-2`, … in issue order) and `audience`,
   the intended JWT `aud` claim (e.g. `https://haybale.internal`). The
   event deliberately carries no harness-asserted identity field: the
