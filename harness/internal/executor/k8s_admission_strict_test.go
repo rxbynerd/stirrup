@@ -98,12 +98,18 @@ func TestPodAdmission_StrictAcceptsAdmittedNitroPodFixture(t *testing.T) {
 	must.NoError(admission.checkPoll(admitted.DeepCopy()))
 }
 
-func TestPodAdmission_StrictRejectsAdmittedPodMutations(t *testing.T) {
-	cases := []struct {
-		name      string
-		mutate    func(pod *corev1.Pod)
-		wantField string
-	}{
+// strictMutation is an admission change the whole-Pod admission check must
+// reject, and the mismatch text it must report.
+type strictMutation struct {
+	name      string
+	mutate    func(pod *corev1.Pod)
+	wantField string
+}
+
+// strictAdmissionMutations are named rewrites of the nitro-isolated Pod
+// built from nitroFixtureCfg: the vectors the check exists for.
+func strictAdmissionMutations() []strictMutation {
+	return []strictMutation{
 		{name: "no-network annotation stripped", mutate: func(p *corev1.Pod) { delete(p.Annotations, "sandbox.amazonaws.com/network-isolated") }, wantField: "metadata.annotations[sandbox.amazonaws.com/network-isolated]: expected \"true\", observed absent"},
 		{name: "no-network annotation changed", mutate: func(p *corev1.Pod) { p.Annotations["sandbox.amazonaws.com/network-isolated"] = "false" }, wantField: "metadata.annotations[sandbox.amazonaws.com/network-isolated]"},
 		{name: "run label rewritten", mutate: func(p *corev1.Pod) { p.Labels[k8sRunIDLabel] = "other" }, wantField: "metadata.labels[" + k8sRunIDLabel + "]"},
@@ -162,9 +168,15 @@ func TestPodAdmission_StrictRejectsAdmittedPodMutations(t *testing.T) {
 			p.Spec.Tolerations = append(p.Spec.Tolerations, corev1.Toleration{Operator: corev1.TolerationOpExists})
 		}, wantField: `spec.nodeSelector[eks.amazonaws.com/nitro-sandbox]: expected "true", observed absent`},
 		{name: "runtime class selector value changed", mutate: func(p *corev1.Pod) { p.Spec.NodeSelector["eks.amazonaws.com/nitro-sandbox"] = "false" }, wantField: `spec.nodeSelector[eks.amazonaws.com/nitro-sandbox]: expected "true", observed "false"`},
+		{name: "submitted node selector value changed", mutate: func(p *corev1.Pod) { p.Spec.NodeSelector["kubernetes.io/arch"] = "arm64" }, wantField: "spec.nodeSelector: expected at least"},
+		{name: "submitted label removed", mutate: func(p *corev1.Pod) { delete(p.Labels, k8sRunIDLabel) }, wantField: "metadata.labels[" + k8sRunIDLabel + `]: expected "` + testK8sRunID + `", observed absent`},
+		{name: "container renamed", mutate: func(p *corev1.Pod) { p.Spec.Containers[0].Name = "other" }, wantField: "spec.containers: expected containers [agent], observed containers [other]"},
 	}
+}
+
+func TestPodAdmission_StrictRejectsAdmittedPodMutations(t *testing.T) {
 	profile := k8sRuntimeProfiles["nitro-isolated"]
-	for _, tc := range cases {
+	for _, tc := range strictAdmissionMutations() {
 		t.Run(tc.name+" at creation", func(t *testing.T) {
 			must := require.New(t)
 			submitted := buildSandboxPod(nitroFixtureCfg(), profile, testK8sPodName, nil)
@@ -243,34 +255,24 @@ func nitroConstructorCfg() (K8sExecutorConfig, *recordingSecurityEmitter) {
 	return cfg, security
 }
 
+// TestNewK8sExecutor_StrictAdmissionMismatchTearsDownAndReports runs every
+// named mutation through the constructor: the run fails, the Pod is torn
+// down in order, and one admitted_pod event names the first field.
 func TestNewK8sExecutor_StrictAdmissionMismatchTearsDownAndReports(t *testing.T) {
-	cases := []struct {
-		name      string
-		mutate    func(pod *corev1.Pod)
-		wantField string
-	}{
-		{name: "stripped annotation", mutate: func(p *corev1.Pod) { delete(p.Annotations, "sandbox.amazonaws.com/network-isolated") }, wantField: "metadata.annotations[sandbox.amazonaws.com/network-isolated]"},
-		{name: "sidecar", mutate: func(p *corev1.Pod) {
-			p.Spec.Containers = append(p.Spec.Containers, corev1.Container{Name: "istio-proxy"})
-		}, wantField: "spec.containers"},
-		{name: "injected env", mutate: func(p *corev1.Pod) {
-			p.Spec.Containers[0].Env = append(p.Spec.Containers[0].Env, corev1.EnvVar{Name: "AWS_ROLE_ARN", Value: "arn"})
-		}, wantField: "spec.containers[agent].env"},
-		{name: "changed runtime class", mutate: func(p *corev1.Pod) { p.Spec.RuntimeClassName = ptr.To("runc") }, wantField: "spec.runtimeClassName"},
-		{name: "overhead removed", mutate: func(p *corev1.Pod) { p.Spec.Overhead = nil }, wantField: "spec.overhead[eks.amazonaws.com/nitro-sandbox]"},
-		{name: "runtime class selector removed", mutate: func(p *corev1.Pod) { delete(p.Spec.NodeSelector, "eks.amazonaws.com/nitro-sandbox") }, wantField: "spec.nodeSelector[eks.amazonaws.com/nitro-sandbox]"},
-	}
-	for _, tc := range cases {
+	for _, tc := range strictAdmissionMutations() {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			cs := fake.NewClientset()
 			admitPods(cs, tc.mutate)
 			lingering := lingerOnDelete(t, cs, 3)
-			cfg, security := nitroConstructorCfg()
+			cfg := nitroFixtureCfg()
+			security := &recordingSecurityEmitter{}
+			cfg.Security = security
 
 			_, err := newFakeK8sExecutor(context.Background(), cs, cfg)
 
 			must.ErrorContains(err, tc.wantField)
+			must.NotContains(err.Error(), "init-secret-value")
 			must.Zero(lingering.readsBeforeDelete, "readiness wait ran after an admission mismatch")
 			requireTornDown(t, cs)
 			requireRemovedAfterRelease(t, lingering)
@@ -279,7 +281,7 @@ func TestNewK8sExecutor_StrictAdmissionMismatchTearsDownAndReports(t *testing.T)
 			must.False(event.passed)
 			must.Equal("admitted_pod", event.check)
 			must.Equal("nitro-isolated", event.runtime)
-			must.Contains(event.observed["field"], strings.Split(tc.wantField, "[")[0])
+			must.Contains(event.observed["field"], strings.Split(strings.Split(tc.wantField, ":")[0], "[")[0])
 		})
 	}
 }
@@ -446,4 +448,212 @@ func TestNewK8sExecutor_BaseAdmissionMismatchEmitsNoDiagnostic(t *testing.T) {
 
 	must.ErrorContains(err, "spec.runtimeClassName")
 	must.Empty(security.runtimeDiagnostics)
+}
+
+// mutateForAdmission changes v in place to a value the semantic comparison
+// sees as different, and reports false for a kind it cannot synthesise.
+func mutateForAdmission(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.Pointer:
+		changed := reflect.New(v.Type().Elem())
+		if !v.IsNil() {
+			changed.Elem().Set(v.Elem())
+			if !mutateForAdmission(changed.Elem()) {
+				return false
+			}
+		}
+		v.Set(changed)
+	case reflect.String:
+		v.SetString(v.String() + "-changed")
+	case reflect.Bool:
+		v.SetBool(!v.Bool())
+	case reflect.Int, reflect.Int32, reflect.Int64:
+		v.SetInt(v.Int() + 1)
+	case reflect.Slice:
+		v.Set(reflect.Append(v, reflect.Zero(v.Type().Elem())))
+	case reflect.Map:
+		if v.Type().Key().Kind() != reflect.String {
+			return false
+		}
+		if v.IsNil() {
+			v.Set(reflect.MakeMap(v.Type()))
+		}
+		v.SetMapIndex(reflect.ValueOf("stirrup-test").Convert(v.Type().Key()), reflect.Zero(v.Type().Elem()))
+	default:
+		return false
+	}
+	return true
+}
+
+// explicitPodSpecChanges and explicitContainerChanges change the compared
+// fields whose fixture value mutateForAdmission cannot synthesise a change
+// for: a set struct.
+var explicitPodSpecChanges = map[string]func(spec *corev1.PodSpec){
+	"SecurityContext": func(spec *corev1.PodSpec) { spec.SecurityContext.RunAsGroup = ptr.To(int64(0)) },
+}
+
+var explicitContainerChanges = map[string]func(c *corev1.Container){
+	"SecurityContext": func(c *corev1.Container) { c.SecurityContext.ReadOnlyRootFilesystem = ptr.To(true) },
+	"Resources": func(c *corev1.Container) {
+		c.Resources.Requests[corev1.ResourceCPU] = resource.MustParse("2")
+	},
+}
+
+// comparedFieldExceptions are compared fields whose change another check
+// reports first, so the table entry alone is not what catches it.
+var comparedFieldExceptions = map[string]string{
+	"pod.RuntimeClassName": "checkRuntimeClassKept, a base check, reports it at both stages",
+	"container.Name":       "firstContainersMismatch reports a renamed container as a containers mismatch",
+}
+
+// TestPodAdmission_StrictComparesEveryComparedField changes each field the
+// tables classify as compared, one at a time, and requires both admission
+// stages to name it, so reclassifying a field breaks a test.
+func TestPodAdmission_StrictComparesEveryComparedField(t *testing.T) {
+	profile := k8sRuntimeProfiles["nitro-isolated"]
+	type fieldCase struct {
+		key, path string
+		change    func(t *testing.T, pod *corev1.Pod)
+	}
+	var cases []fieldCase
+	for name, field := range strictPodSpecFields {
+		if field.rule != fieldCompared {
+			continue
+		}
+		f, _ := reflect.TypeOf(corev1.PodSpec{}).FieldByName(name)
+		cases = append(cases, fieldCase{key: "pod." + name, path: "spec." + jsonFieldName(f) + ":", change: func(t *testing.T, pod *corev1.Pod) {
+			if change, ok := explicitPodSpecChanges[name]; ok {
+				change(&pod.Spec)
+				return
+			}
+			require.New(t).True(mutateForAdmission(reflect.ValueOf(&pod.Spec).Elem().FieldByName(name)), "no change for PodSpec.%s; add one to explicitPodSpecChanges", name)
+		}})
+	}
+	for name, field := range strictContainerFields {
+		if field.rule != fieldCompared {
+			continue
+		}
+		f, _ := reflect.TypeOf(corev1.Container{}).FieldByName(name)
+		cases = append(cases, fieldCase{key: "container." + name, path: "spec.containers[agent]." + jsonFieldName(f) + ":", change: func(t *testing.T, pod *corev1.Pod) {
+			if change, ok := explicitContainerChanges[name]; ok {
+				change(&pod.Spec.Containers[0])
+				return
+			}
+			require.New(t).True(mutateForAdmission(reflect.ValueOf(&pod.Spec.Containers[0]).Elem().FieldByName(name)), "no change for Container.%s; add one to explicitContainerChanges", name)
+		}})
+	}
+	for _, tc := range cases {
+		if _, ok := comparedFieldExceptions[tc.key]; ok {
+			continue
+		}
+		path := tc.path
+		if tc.key == "pod.Containers" {
+			path = "spec.containers: expected containers [agent], observed containers [agent, ]"
+		}
+		t.Run(tc.key+" at creation", func(t *testing.T) {
+			must := require.New(t)
+			submitted := buildSandboxPod(nitroFixtureCfg(), profile, testK8sPodName, nil)
+			admitted := decodeAdmittedNitroPod(t)
+			tc.change(t, admitted)
+
+			must.ErrorContains(newPodAdmission(submitted, admitted, profile).checkCreate(), path)
+		})
+		t.Run(tc.key+" during the readiness wait", func(t *testing.T) {
+			must := require.New(t)
+			submitted := buildSandboxPod(nitroFixtureCfg(), profile, testK8sPodName, nil)
+			admitted := decodeAdmittedNitroPod(t)
+			admission := newPodAdmission(submitted, admitted, profile)
+			must.NoError(admission.checkCreate())
+			observed := admitted.DeepCopy()
+			tc.change(t, observed)
+
+			must.ErrorContains(admission.checkPoll(observed), path)
+		})
+	}
+}
+
+// TestPodAdmission_StrictIgnoresPlatformOwnedFields is the converse: a
+// change to each platform-owned field passes both stages.
+func TestPodAdmission_StrictIgnoresPlatformOwnedFields(t *testing.T) {
+	profile := k8sRuntimeProfiles["nitro-isolated"]
+	for _, table := range []struct {
+		kind   string
+		fields map[string]admissionField
+		target func(pod *corev1.Pod) reflect.Value
+	}{
+		{kind: "pod", fields: strictPodSpecFields, target: func(pod *corev1.Pod) reflect.Value { return reflect.ValueOf(&pod.Spec).Elem() }},
+		{kind: "container", fields: strictContainerFields, target: func(pod *corev1.Pod) reflect.Value { return reflect.ValueOf(&pod.Spec.Containers[0]).Elem() }},
+	} {
+		for name, field := range table.fields {
+			if field.rule != fieldPlatformOwned {
+				continue
+			}
+			t.Run(table.kind+"."+name, func(t *testing.T) {
+				must := require.New(t)
+				submitted := buildSandboxPod(nitroFixtureCfg(), profile, testK8sPodName, nil)
+				admitted := decodeAdmittedNitroPod(t)
+				must.True(mutateForAdmission(table.target(admitted).FieldByName(name)), "no change for %s", name)
+
+				admission := newPodAdmission(submitted, admitted, profile)
+
+				must.NoError(admission.checkCreate())
+				observed := admitted.DeepCopy()
+				must.True(mutateForAdmission(table.target(observed).FieldByName(name)))
+				must.NoError(admission.checkPoll(observed))
+			})
+		}
+	}
+}
+
+func TestPodAdmission_StrictSubsetFields(t *testing.T) {
+	profile := k8sRuntimeProfiles["nitro-isolated"]
+	cases := []struct {
+		name      string
+		mutate    func(pod *corev1.Pod)
+		wantField string
+	}{
+		{name: "node selector key added", mutate: func(p *corev1.Pod) { p.Spec.NodeSelector["topology.kubernetes.io/zone"] = "eu-west-1a" }},
+		{name: "toleration added", mutate: func(p *corev1.Pod) {
+			p.Spec.Tolerations = append(p.Spec.Tolerations, corev1.Toleration{Key: "example.com/pool", Operator: corev1.TolerationOpExists})
+		}},
+		{name: "node selector value changed", mutate: func(p *corev1.Pod) { p.Spec.NodeSelector["kubernetes.io/arch"] = "arm64" }, wantField: "spec.nodeSelector: expected at least"},
+		{name: "node selector key removed", mutate: func(p *corev1.Pod) { delete(p.Spec.NodeSelector, "kubernetes.io/arch") }, wantField: "spec.nodeSelector: expected at least"},
+		{name: "toleration removed", mutate: func(p *corev1.Pod) { p.Spec.Tolerations = p.Spec.Tolerations[1:] }, wantField: "spec.tolerations: expected at least"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			submitted := buildSandboxPod(nitroFixtureCfg(), profile, testK8sPodName, nil)
+			admitted := decodeAdmittedNitroPod(t)
+			must.NotEmpty(admitted.Spec.Tolerations, "the fixture carries the default tolerations")
+			admission := newPodAdmission(submitted, admitted, profile)
+			must.NoError(admission.checkCreate())
+			observed := admitted.DeepCopy()
+			tc.mutate(observed)
+
+			err := admission.checkPoll(observed)
+
+			if tc.wantField == "" {
+				must.NoError(err)
+				return
+			}
+			must.ErrorContains(err, tc.wantField)
+		})
+	}
+}
+
+func TestPodAdmission_StrictRejectsAChangedSubmittedOwnerReference(t *testing.T) {
+	must := require.New(t)
+	profile := k8sRuntimeProfiles["nitro-isolated"]
+	cfg := nitroFixtureCfg()
+	cfg.HarnessPod = &HarnessPod{Namespace: testK8sNamespace, Name: "harness", UID: "harness-uid"}
+	submitted := buildSandboxPod(cfg, profile, testK8sPodName, nil)
+	must.Len(submitted.OwnerReferences, 1)
+	admitted := admittedCopy(submitted)
+	applyRuntimeClassMarks(admitted)
+	must.NoError(newPodAdmission(submitted, admitted, profile).checkCreate())
+
+	admitted.OwnerReferences[0].UID = "other-uid"
+
+	must.ErrorContains(newPodAdmission(submitted, admitted, profile).checkCreate(), "metadata.ownerReferences: expected")
 }
