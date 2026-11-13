@@ -12,12 +12,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/commandoutput"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -170,6 +172,87 @@ func TestRunCommand_ArchiveContainsOnlyScrubbedBytes(t *testing.T) {
 		redacted = redacted || strings.Contains(string(body), "[REDACTED]")
 	}
 	must.True(redacted, "no archive member carries the redaction, so the assertion proved nothing")
+}
+
+// failingStreamExecutor fails every streamed command with err, writing
+// nothing to either stream and returning result alongside the error.
+type failingStreamExecutor struct {
+	mockExecutor
+	result *executor.ExecResult
+	err    error
+}
+
+func (e *failingStreamExecutor) ExecStream(context.Context, string, time.Duration, io.Writer, io.Writer) (*executor.ExecResult, error) {
+	return e.result, e.err
+}
+
+func TestRunCommand_CaptureExecutorErrorReachesText(t *testing.T) {
+	const execErr = `exec: unable to upgrade connection: container not found ("agent")`
+	secret := "gh" + "p_runCommandFixture0123456789"
+	cases := []struct {
+		name   string
+		result *executor.ExecResult
+		err    error
+	}{
+		{name: "zero result", result: &executor.ExecResult{}, err: errors.New(execErr)},
+		{name: "nil result", result: nil, err: errors.New(execErr)},
+		{name: "secret in error", result: &executor.ExecResult{}, err: errors.New("exec: dial https://user:" + secret + "@sandbox: refused")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cfg := (types.ToolsConfig{}).EffectiveCommandOutput()
+			store, err := commandoutput.New(commandoutput.Options{RunID: "exec-error", Config: cfg, ArchivePath: filepath.Join(t.TempDir(), "archive.tar.gz")})
+			must.NoError(err)
+			t.Cleanup(func() { _ = store.Close() })
+			exec := &failingStreamExecutor{result: tc.result, err: tc.err}
+
+			ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "exec-error", ToolUseID: "cmd"})
+			got, err := RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes).StructuredHandler(ctx, json.RawMessage(`{"command":"echo still here"}`))
+			must.NoError(err)
+			must.True(got.IsError)
+			must.Contains(got.Text, "[executor error: "+security.Scrub(tc.err.Error())+"]")
+			must.NotContains(got.Text, secret)
+		})
+	}
+}
+
+func TestRunCommand_CaptureExecutorErrorFitsMaxResultBytes(t *testing.T) {
+	must := require.New(t)
+	const maxBytes = 1024
+	cfg := (types.ToolsConfig{}).EffectiveCommandOutput()
+	store, err := commandoutput.New(commandoutput.Options{RunID: "long-error", Config: cfg, ArchivePath: filepath.Join(t.TempDir(), "archive.tar.gz")})
+	must.NoError(err)
+	t.Cleanup(func() { _ = store.Close() })
+	exec := &failingStreamExecutor{result: &executor.ExecResult{}, err: errors.New("exec: " + strings.Repeat("x", 64<<10) + " tail")}
+
+	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "long-error", ToolUseID: "cmd"})
+	got, err := RunCommandToolWithStore(exec, store, cfg, maxBytes).StructuredHandler(ctx, json.RawMessage(`{"command":"echo still here"}`))
+	must.NoError(err)
+	must.LessOrEqual(len(got.Text), maxBytes)
+	must.True(strings.HasPrefix(got.Text, "[executor error: exec: "), "text: %q", got.Text)
+	must.True(strings.HasSuffix(got.Text, " tail]"), "text: %q", got.Text)
+	must.Contains(got.Text, "[run_command error truncated: ")
+}
+
+// A local command whose working directory is gone fails to start, which the
+// executor reports as an error rather than an exit status.
+func TestRunCommand_CaptureLocalStartFailureReachesText(t *testing.T) {
+	must := require.New(t)
+	workspace := t.TempDir()
+	exec, err := executor.NewLocalExecutor(workspace)
+	must.NoError(err)
+	must.NoError(os.Remove(workspace))
+	cfg := (types.ToolsConfig{}).EffectiveCommandOutput()
+	store, err := commandoutput.New(commandoutput.Options{RunID: "start-failure", Config: cfg, ArchivePath: filepath.Join(t.TempDir(), "archive.tar.gz")})
+	must.NoError(err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "start-failure", ToolUseID: "cmd"})
+	got, err := RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes).StructuredHandler(ctx, json.RawMessage(`{"command":"echo still here"}`))
+	must.NoError(err)
+	must.True(got.IsError)
+	must.Contains(got.Text, "[executor error: exec command: ")
 }
 
 func TestReadCommandOutput_PaginationStaysWithinMaxResultBytes(t *testing.T) {
