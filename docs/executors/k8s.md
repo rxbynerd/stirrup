@@ -167,7 +167,9 @@ them in sync. A run with a run ID also labels the Pod and its policy
 
 A normal run goes like this. Construction installs the egress policy,
 creates the Pod, compares what admission returned with what was
-submitted, and waits up to 5 minutes for the Pod to become Ready.
+submitted, waits up to 5 minutes for the Pod to become Ready, and, for a
+runtime with guest diagnostics (`nitro-isolated`), checks the guest
+before the run starts.
 `Close` deletes the Pod with a 1-second grace period, reads the Pod
 until it is gone, and then deletes the policy; measured on kind 1.31
 this takes about 5 seconds. When `Close` returns no error, nothing is
@@ -196,7 +198,8 @@ reaches one of these states:
   is bound to);
 - the Pod is being deleted, or is not found;
 - the Pod's UID, its `runtimeClassName` or a policy-selected label
-  changed (see [Admission check](#admission-check));
+  changed, or, for `nitro-isolated`, any field the whole-Pod check
+  compares (see [Admission check](#admission-check));
 - the API server answers `Forbidden` or `Unauthorized`.
 
 `ErrImagePull` and `ImagePullBackOff` are retried within the same
@@ -250,10 +253,14 @@ and the Pod is torn down. A UID mismatch during the wait means the Pod
 was deleted and another created under its name. Ordinary API defaulting
 and added labels or annotations are not mismatches.
 
-Not compared: the container set, image, command, security context,
-volumes, environment, service account, `hostNetwork`,
-`automountServiceAccountToken`, annotations, and the NetworkPolicy
-object itself. A webhook that changes those is not detected. Added
+For every runtime except `nitro-isolated`, these are not compared: the
+container set, image, command, security context, volumes, environment,
+service account, `hostNetwork`, `automountServiceAccountToken`,
+annotations, and the NetworkPolicy object itself. A webhook that changes
+those is not detected. `nitro-isolated` adds a whole-Pod comparison at
+both stages, described in
+[Admission prerequisites](#admission-prerequisites); the NetworkPolicy
+object is not compared for any runtime. Added
 labels are allowed, and because NetworkPolicies are additive, a label
 added at admission can place the Pod under another policy in the
 namespace that allows more egress. Controlling which policies exist in
@@ -373,7 +380,7 @@ What the read in step 2 cannot establish:
   in no guaranteed order;
 - on a CNI that does not enforce NetworkPolicy, retaining a policy
   confines nothing (see
-  [the kindnet caveat](#enforcement-caveat--kindnet-does-not-enforce-networkpolicy)).
+  [the enforcement caveat](#enforcement-caveat--networkpolicy-may-be-accepted-but-not-enforced)).
 
 On a cluster that enforces NetworkPolicy a retained policy keeps
 confining a Pod that is still running and is inert once the Pod is gone.
@@ -1008,31 +1015,49 @@ The node and its operator are trusted in this model.
 
 #### Admission prerequisites
 
-The executor compares the Pod returned by `Create`, and the same Pod
-again at readiness, with the Pod it submitted. The comparison covers the
-whole Pod and container spec: every field is classified either as
-compared, where the admitted value must be semantically equal to the
-submitted one (so `1Gi` matches a submitted `1024Mi`), or as owned by
-the platform. The platform-owned fields cover scheduling and API
-defaulting: `nodeName`, `overhead`, `schedulerName`, `priority`,
-`preemptionPolicy`, `dnsPolicy`, `enableServiceLinks`, the deprecated
-`serviceAccount`, termination-message fields and `imagePullPolicy`;
-`nodeSelector` and `tolerations` may gain entries but not lose them. The
-compared fields include the container list (no sidecar), empty
-`initContainers` and `ephemeralContainers`, image, command, arguments,
-environment, volumes and mounts, security contexts, resources, the
-service account, `activeDeadlineSeconds` and the RuntimeClass. The
-`network-isolated` annotation must keep its value, the selector labels
-must be unchanged, and the owner references must be unchanged; added
-labels and other annotations are allowed.
+On top of the [admission check](#admission-check) every runtime gets,
+`nitro-isolated` compares the whole Pod at both stages: the `Create`
+response against the submitted Pod, and each Pod seen during the
+readiness wait against the `Create` response. Every field of the Pod
+spec and the container spec is classified in one table
+([`k8s_admission_strict.go`](../../harness/internal/executor/k8s_admission_strict.go))
+as compared, where the value must be semantically equal (so `1Gi`
+matches a submitted `1024Mi`), as owned by the platform and ignored, or
+as a set that may gain entries but not lose any.
 
-A mismatch deletes the Pod and fails the run. The check runs after the
-Pod is created, so it detects drift and prevents tool use but cannot
-stop the Pod starting first; the cluster's own admission configuration
-must preserve the Pod. Ephemeral containers can only be added after
-creation, so the check sees them only at readiness. The error names the
-first differing field with bounded, scrubbed values and never prints
-environment values.
+- **Owned by the platform:** `nodeName`, `overhead`, `schedulerName`,
+  `priority`, `priorityClassName`, `preemptionPolicy`, `dnsPolicy`,
+  `enableServiceLinks`, the deprecated `serviceAccount`,
+  `imagePullSecrets` (copied from the service account by the
+  ServiceAccount admission plugin), and the container's
+  `terminationMessagePath`, `terminationMessagePolicy` and
+  `imagePullPolicy`.
+- **May gain entries:** `nodeSelector` (the RuntimeClass merges its own)
+  and `tolerations` (the default not-ready and unreachable tolerations).
+- **Compared:** everything else, including exactly the submitted
+  containers (no sidecar), empty `initContainers` and
+  `ephemeralContainers`, image, command, arguments, environment,
+  `envFrom`, volumes and mounts, the Pod and container security
+  contexts, resources, the service account and
+  `automountServiceAccountToken`, `terminationGracePeriodSeconds`,
+  `activeDeadlineSeconds`, `hostNetwork`, `hostPID`, `hostIPC`,
+  `hostUsers` and the RuntimeClass.
+
+In the metadata, the `network-isolated` annotation must keep its value,
+every submitted label must be kept, and the owner references must be
+unchanged; added labels and other annotations are allowed.
+`log-bandwidth` is set but not verified.
+
+A mismatch fails the run, emits `sandbox_runtime_diagnostic_failed` with
+`check: admitted_pod`, and tears the Pod down as in
+[Teardown](#teardown). The error names the first differing field with
+expected and observed values, scrubbed and cut to 256 characters; a
+container list is shown by container names, and an environment
+difference names the variable and says whether its value or its source
+changed, never the value. As for every runtime, the check runs after the
+Pod is created and stops once it is Ready: it cannot stop a mutated Pod
+from starting, and an ephemeral container, which can only be added after
+creation, is seen only if it is added before the Pod is Ready.
 
 Each of these fails every run by design:
 
@@ -1042,8 +1067,15 @@ Each of these fails every run by design:
 - a LimitRange that defaults `ephemeral-storage` or other resources;
 - any sidecar injector.
 
-This contract has been checked against unit-test fixtures modelled on
-the spike's admitted Pods, not against a real `Create` response.
+The classification is a judgement for fields the 2026-11-11 read-backs
+did not exercise. The passing test fixture is modelled on Pods read back
+from EKS after they were Ready; no `Create` response was captured there,
+so whether a field is filled in at creation or only at scheduling is
+unverified on EKS. On a `kind` cluster (Kubernetes 1.31) with a
+RuntimeClass named `isolated-sandbox` pointing at `runc`, the check
+accepted a real `Create` response and the readiness observations, and
+the run then failed the DMI diagnostic as it should; that exercises
+upstream API defaulting, not EKS or its webhooks.
 
 #### Service account
 
@@ -1062,12 +1094,12 @@ environment regardless.
 #### Readiness on a cold node
 
 Auto Mode provisions a capable node on demand, so the first Pod can wait
-for a node. *Measured:* warm-node Pods reached Ready 5.8 to 7.8 s after
-the wait began; a Pod on a clean cold node took 43.84 s. These are
-samples, not ceilings. The readiness wait counts against the run's
-deadline. The autoscaler publishes the reason a node is not provisioned
-as Events, which the reference Role cannot read; inspect them with
-`kubectl describe pod` under an operator identity.
+for a node within the [readiness](#readiness) ceiling. *Measured:*
+warm-node Pods reached Ready 5.8 to 7.8 s after the wait began; a Pod on
+a clean cold node took 43.84 s. These are samples, not ceilings. See
+[Diagnosing a slow or failed start](#diagnosing-a-slow-or-failed-start)
+for where the reason a node was not provisioned is recorded and what
+the wait costs the run.
 
 #### Runtime diagnostics
 
@@ -1681,8 +1713,9 @@ defaulting to the kind-friendly values when a variable is unset:
 |---|---|---|
 | `STIRRUP_TEST_KUBECONFIG` | *(unset → skip)* | Kubeconfig path; also the suite gate. |
 | `STIRRUP_TEST_NAMESPACE` | `default` | Sandbox namespace (use `stirrup-sandbox` for the restricted-PSS path). |
-| `STIRRUP_TEST_RUNTIME_CLASS` | *(empty)* | Pod `RuntimeClassName` for the generic tests (`gvisor` on GKE Sandbox — a no-RuntimeClass Pod is unschedulable on a fully tainted cluster). |
-| `STIRRUP_TEST_RUNTIME_CLASSES` | `,runc,gvisor` | Comma-separated set for `TestK8sRuntimeClass_Admitted` (e.g. `gvisor` alone on GKE). |
+| `STIRRUP_TEST_RUNTIME_CLASS` | *(empty)* | `executor.runtime` value for the generic tests (`gvisor` on GKE Sandbox — a no-RuntimeClass Pod is unschedulable on a fully tainted cluster). Runtime values equal RuntimeClass names except `nitro-isolated`, which the generic tests do not support; use `STIRRUP_TEST_NITRO_ISOLATED`. |
+| `STIRRUP_TEST_RUNTIME_CLASSES` | `,runc,gvisor` | Comma-separated `executor.runtime` values for `TestK8sRuntimeClass_Admitted` (e.g. `gvisor` alone on GKE). |
+| `STIRRUP_TEST_NITRO_ISOLATED` | *(unset → skip)* | Set to run `TestK8sNitroIsolated_EndToEnd` on an EKS cluster with Nitro Sandboxes: the Pod passes the whole-Pod admission check and the diagnostics, has no guest network, and the workspace capacity is logged. It skips everywhere else and has not yet run. |
 | `STIRRUP_TEST_IMAGE` | `busybox:latest` | Sandbox image (amd64/multi-arch for the Sandbox pool; `curlimages/curl:latest` for the allowlist TLS test). |
 | `STIRRUP_TEST_EGRESS_PROXY_URL` | `…default.svc:8080` | Allowlist-mode proxy URL. |
 | `STIRRUP_TEST_ENFORCE_EGRESS` | *(unset → skip)* | Set to run the enforcement tests (`*_Enforced`); skipped otherwise so kindnet never produces a false negative. |
