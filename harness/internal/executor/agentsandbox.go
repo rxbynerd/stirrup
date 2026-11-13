@@ -313,9 +313,10 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 	}, nil
 }
 
-// Close deletes the Sandbox (foreground, so it outlives its controller-owned
-// Pod), waits until a read finds it gone, and only then deletes the egress
-// NetworkPolicy, on bounded contexts independent of the caller's. Otherwise
+// Close deletes the Sandbox, waits until a read finds it gone and then until
+// a read finds no backing Pod under its name, and only then deletes the
+// egress NetworkPolicy, on bounded contexts independent of the caller's.
+// The Pod read does not rely on the controller's cascade order. Otherwise
 // the policy is retained and the error names it; see
 // docs/executors/k8s-agent-sandbox.md.
 func (e *AgentSandboxExecutor) Close() error {
@@ -328,6 +329,9 @@ func (e *AgentSandboxExecutor) Close() error {
 	defer cancel()
 
 	err := e.terminateSandbox(ctx)
+	if err == nil {
+		err = e.backingPod().waitForTermination(ctx)
+	}
 	if err != nil {
 		err = e.egress().retain(err)
 	} else {
@@ -342,6 +346,17 @@ func (e *AgentSandboxExecutor) effectiveTiming() k8sTiming {
 		return defaultK8sTiming
 	}
 	return e.timing
+}
+
+// backingPod is the teardown view of the controller-created Pod. Its UID is
+// not recorded, so only a read finding no Pod under the name confirms it.
+func (e *AgentSandboxExecutor) backingPod() podTeardown {
+	return podTeardown{
+		clientset: e.clientset,
+		namespace: e.namespace,
+		podName:   e.podName,
+		timing:    e.effectiveTiming(),
+	}
 }
 
 func (e *AgentSandboxExecutor) egress() sandboxEgress {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -216,15 +217,24 @@ func TestNewAgentSandboxExecutor_RollsBackThroughClose(t *testing.T) {
 	})
 }
 
+// backingPodNamed returns a running Pod standing in for the controller-created
+// Pod behind the named Sandbox.
+func backingPodNamed(name string) *corev1.Pod {
+	pod := readyPod("uid-backing")
+	pod.Name = name
+	pod.Labels = podLabels(name, testK8sRunID)
+	return pod
+}
+
 func TestAgentSandboxExecutor_CloseRetainsPolicy(t *testing.T) {
 	cases := []struct {
 		name    string
-		arrange func(f *fakeAgentSandbox)
+		arrange func(t *testing.T, f *fakeAgentSandbox, name string)
 		wantErr string
 	}{
 		{
 			name: "sandbox delete keeps failing",
-			arrange: func(f *fakeAgentSandbox) {
+			arrange: func(_ *testing.T, f *fakeAgentSandbox, _ string) {
 				f.dyn.PrependReactor("delete", "sandboxes", func(clienttesting.Action) (bool, runtime.Object, error) {
 					return true, nil, errors.New("connection refused")
 				})
@@ -233,7 +243,7 @@ func TestAgentSandboxExecutor_CloseRetainsPolicy(t *testing.T) {
 		},
 		{
 			name: "sandbox delete forbidden",
-			arrange: func(f *fakeAgentSandbox) {
+			arrange: func(_ *testing.T, f *fakeAgentSandbox, _ string) {
 				f.dyn.PrependReactor("delete", "sandboxes", func(clienttesting.Action) (bool, runtime.Object, error) {
 					return true, nil, apierrors.NewForbidden(sandboxGVR.GroupResource(), "x", errors.New("denied by RBAC"))
 				})
@@ -242,7 +252,7 @@ func TestAgentSandboxExecutor_CloseRetainsPolicy(t *testing.T) {
 		},
 		{
 			name: "sandbox not confirmed gone",
-			arrange: func(f *fakeAgentSandbox) {
+			arrange: func(_ *testing.T, f *fakeAgentSandbox, _ string) {
 				f.dyn.PrependReactor("delete", "sandboxes", func(clienttesting.Action) (bool, runtime.Object, error) {
 					return true, nil, nil
 				})
@@ -250,8 +260,56 @@ func TestAgentSandboxExecutor_CloseRetainsPolicy(t *testing.T) {
 			wantErr: "sandbox deletion not confirmed within the 100ms teardown bound",
 		},
 		{
+			name: "sandbox delete answers not found while the sandbox remains",
+			arrange: func(_ *testing.T, f *fakeAgentSandbox, name string) {
+				f.dyn.PrependReactor("delete", "sandboxes", func(clienttesting.Action) (bool, runtime.Object, error) {
+					return true, nil, apierrors.NewNotFound(sandboxGVR.GroupResource(), name)
+				})
+			},
+			wantErr: "sandbox deletion not confirmed within the 100ms teardown bound",
+		},
+		{
+			name: "sandbox delete answers conflict while the sandbox remains",
+			arrange: func(_ *testing.T, f *fakeAgentSandbox, name string) {
+				f.dyn.PrependReactor("delete", "sandboxes", func(clienttesting.Action) (bool, runtime.Object, error) {
+					return true, nil, apierrors.NewConflict(sandboxGVR.GroupResource(), name, errors.New("precondition failed"))
+				})
+			},
+			wantErr: "gave up within the 100ms teardown bound",
+		},
+		{
+			name: "sandbox read unauthorized",
+			arrange: func(_ *testing.T, f *fakeAgentSandbox, _ string) {
+				f.dyn.PrependReactor("get", "sandboxes", func(clienttesting.Action) (bool, runtime.Object, error) {
+					return true, nil, apierrors.NewUnauthorized("token expired")
+				})
+			},
+			wantErr: "confirm sandbox deletion: token expired",
+		},
+		{
+			name: "backing pod remains after the sandbox is gone",
+			arrange: func(t *testing.T, f *fakeAgentSandbox, name string) {
+				require.New(t).NoError(f.cs.Tracker().Add(backingPodNamed(name)))
+			},
+			wantErr: "pod termination not confirmed within the 100ms teardown bound",
+		},
+		{
+			name: "backing pod read forbidden",
+			arrange: func(_ *testing.T, f *fakeAgentSandbox, _ string) {
+				failVerb(f.cs, "get", "pods", errForbiddenPods)
+			},
+			wantErr: "confirm pod termination: ",
+		},
+		{
+			name: "backing pod read unauthorized",
+			arrange: func(_ *testing.T, f *fakeAgentSandbox, _ string) {
+				failVerb(f.cs, "get", "pods", apierrors.NewUnauthorized("token expired"))
+			},
+			wantErr: "confirm pod termination: token expired",
+		},
+		{
 			name: "policy delete fails",
-			arrange: func(f *fakeAgentSandbox) {
+			arrange: func(_ *testing.T, f *fakeAgentSandbox, _ string) {
 				failVerb(f.cs, "delete", "networkpolicies", errors.New("etcd unavailable"))
 			},
 			wantErr: "delete egress NetworkPolicy: etcd unavailable",
@@ -264,7 +322,7 @@ func TestAgentSandboxExecutor_CloseRetainsPolicy(t *testing.T) {
 			f.admitSandboxes(nil)
 			exec, logs, err := f.build(t, fastK8sTiming)
 			must.NoError(err)
-			tc.arrange(f)
+			tc.arrange(t, f, f.sandboxName(t))
 
 			err = exec.Close()
 
@@ -275,6 +333,43 @@ func TestAgentSandboxExecutor_CloseRetainsPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestAgentSandboxExecutor_CloseWaitsForTheBackingPod(t *testing.T) {
+	must := require.New(t)
+	f := newFakeAgentSandbox(t)
+	f.admitSandboxes(nil)
+	exec, _, err := f.build(t, fastK8sTiming)
+	must.NoError(err)
+	name := f.sandboxName(t)
+	must.NoError(f.cs.Tracker().Add(backingPodNamed(name)))
+
+	readsLeft, released, policyDeletedEarly := 3, false, false
+	f.cs.PrependReactor("get", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if released {
+			return false, nil, nil
+		}
+		if readsLeft > 0 {
+			readsLeft--
+			return false, nil, nil
+		}
+		get := action.(clienttesting.GetAction)
+		if err := f.cs.Tracker().Delete(podsResource, get.GetNamespace(), get.GetName()); err != nil {
+			return true, nil, err
+		}
+		released = true
+		return false, nil, nil
+	})
+	f.cs.PrependReactor("delete", "networkpolicies", func(clienttesting.Action) (bool, runtime.Object, error) {
+		policyDeletedEarly = !released
+		return false, nil, nil
+	})
+
+	must.NoError(exec.Close())
+	must.True(released, "teardown stopped reading before the backing pod disappeared")
+	must.False(policyDeletedEarly, "the policy was deleted while the backing pod remained")
+	must.False(f.hasPolicy(t, name))
+	must.Zero(countVerb(f.cs, "delete", "pods"), "the controller-owned pod was deleted directly")
 }
 
 func TestNewAgentSandboxExecutor_ReconcilesFailedCreate(t *testing.T) {
