@@ -1092,7 +1092,7 @@ func TestK8sExecutor_SandboxGarbageCollectedWithHarnessPod(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout+2*time.Minute)
 	defer cancel()
 
-	owner := createStandInOwnerPod(t, ctx, clientset, cfg.namespace, cfg.image, k8sRuntimeProfiles[cfg.runtimeClass].runtimeClassName)
+	owner := createStandInOwnerPod(t, ctx, clientset, cfg.namespace, cfg.image)
 
 	sandbox, err := NewK8sExecutor(ctx, K8sExecutorConfig{
 		Image:      cfg.image,
@@ -1121,18 +1121,23 @@ func TestK8sExecutor_SandboxGarbageCollectedWithHarnessPod(t *testing.T) {
 	}
 }
 
+// standInOwnerNodeSelector matches no node, so the stand-in owner Pod stays
+// Pending and never makes an autoscaler provision a node.
+var standInOwnerNodeSelector = map[string]string{"stirrup.dev/stand-in-owner": "never-scheduled"}
+
 // createStandInOwnerPod creates a bare Pod to stand in for the harness pod
-// as a sandbox's owner, and deletes it on cleanup. It satisfies the
-// restricted Pod Security Standard so the test runs in a namespace that
-// enforces it; it only needs to exist, not to run.
-func createStandInOwnerPod(t *testing.T, ctx context.Context, clientset kubernetes.Interface, namespace, image, runtimeClassName string) *corev1.Pod {
+// as a sandbox's owner, and deletes it on cleanup. Owner-reference garbage
+// collection needs it only to exist, so it is never scheduled; it satisfies
+// the restricted Pod Security Standard so namespaces that enforce it admit
+// it.
+func createStandInOwnerPod(t *testing.T, ctx context.Context, clientset kubernetes.Interface, namespace, image string) *corev1.Pod {
 	t.Helper()
 	must := require.New(t)
 	owner, err := clientset.CoreV1().Pods(namespace).Create(ctx, &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{GenerateName: "stirrup-owner-", Namespace: namespace},
 		Spec: corev1.PodSpec{
 			RestartPolicy:                corev1.RestartPolicyNever,
-			RuntimeClassName:             optionalRuntimeClassName(runtimeClassName),
+			NodeSelector:                 standInOwnerNodeSelector,
 			AutomountServiceAccountToken: ptr.To(false),
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot:   ptr.To(true),
