@@ -31,6 +31,7 @@ files. The reference manifests live under
 - [Egress is unchanged](#egress-is-unchanged)
 - [The controller-owned TTL GC backstop](#the-controller-owned-ttl-gc-backstop)
 - [RBAC delta](#rbac-delta)
+- [Dry-run preflight](#dry-run-preflight)
 - [Configuration](#configuration)
 - [Testing against a real cluster](#testing-against-a-real-cluster)
 - [Deferred value-adds](#deferred-value-adds)
@@ -312,6 +313,23 @@ applies identically here — `buildSandboxPodSpec` is shared between the
 initial token lands in the Pod env, and its token-file volume in the Pod
 spec, the same way regardless of which executor created the Pod; refresh
 rides the shared `pods/exec` path too.
+
+## Dry-run preflight
+
+`stirrup harness --dry-run` never constructs this executor, so it creates
+no Sandbox, Pod, or NetworkPolicy. The `executor-probe` step runs the
+read-only access check described in
+[the `k8s` executor's dry-run section](k8s.md#dry-run-preflight), which
+holds the authoritative permission table. For `k8s-sandbox` that table has
+`sandboxes.agents.x-k8s.io` verbs in place of Pod create and delete, plus
+the `pods` `get` that teardown uses, so Pod-create permission does not
+satisfy it. The check also confirms through API
+discovery that `agents.x-k8s.io/v1alpha1` serves `sandboxes` (a group that
+is not served fails the step) and reads the `gvisor` RuntimeClass and the
+namespace (each reported as `not checked`, with the step still `ok`, when
+the credentials may not read it). Failure messages and fixes are in the
+[`k8s` troubleshooting table](k8s.md#troubleshooting).
+`--no-probe-executor` skips the check without contacting the API server.
 
 ## Configuration
 

@@ -223,6 +223,7 @@ Quick map for "I need to change X" lookups:
 | K8s executor (Pod-per-run) + egress NetworkPolicy | `harness/internal/executor/k8s.go`, `k8s_netpol.go`; readiness wait `k8s_readiness.go`, admission check `k8s_admission.go`, teardown and create-error reconciliation `k8s_teardown.go` (operator doc: `docs/executors/k8s.md`) |
 | `k8s-sandbox` executor (Agent Sandbox CRD: `agents.x-k8s.io/v1alpha1` Sandbox → controller-created Pod) | `harness/internal/executor/agentsandbox.go` (the constructor rolls back through `Close`, which shares the policy removal and retention reporting in `k8s_teardown.go`), `agentsandbox_api.go` (operator doc: `docs/executors/k8s-agent-sandbox.md`) |
 | `--k8s-*` CLI flags (`--k8s-namespace`, `--k8s-kubeconfig`, `--k8s-node-selector`, `--k8s-service-account`, `--k8s-egress-proxy-url`; serve both `k8s` and `k8s-sandbox`) | `harness/cmd/stirrup/cmd/runconfigflags.go` (defs), `harness.go` (mapping) |
+| `--dry-run` access check for `k8s` / `k8s-sandbox` (read-only `SelfSubjectAccessReview`s; the verb list is pinned to the reference RBAC Roles by a test) | `harness/internal/executor/k8s_preflight.go`, dispatch in `harness/internal/core/preflight.go::preflightExecutorConstruct` / `preflightExecutorProbe` (operator doc: `docs/executors/k8s.md#dry-run-preflight`) |
 | `stirrup egress-proxy` subcommand | `harness/cmd/stirrup/cmd/egress_proxy.go` |
 | Egress proxy | `harness/internal/executor/egressproxy/` |
 | Code scanner | `harness/internal/security/codescanner/` |

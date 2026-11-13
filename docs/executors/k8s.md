@@ -21,7 +21,9 @@ with the [sandbox lifecycle](#sandbox-lifecycle) in
 (admission check) and
 [`k8s_teardown.go`](../../harness/internal/executor/k8s_teardown.go)
 (teardown and create-error reconciliation, shared with the
-`k8s-sandbox` executor, whose constructor rolls back through `Close`);
+`k8s-sandbox` executor, whose constructor rolls back through `Close`)
+and the dry-run check
+[`k8s_preflight.go`](../../harness/internal/executor/k8s_preflight.go);
 every flag, field, and label documented here is cross-checked against
 those files.
 
@@ -44,6 +46,7 @@ those files.
 - [Egress](#egress)
 - [Safety rings on Kubernetes](#safety-rings-on-kubernetes)
 - [Sandbox identity token exposure](#sandbox-identity-token-exposure)
+- [Dry-run preflight](#dry-run-preflight)
 - [Troubleshooting](#troubleshooting)
 - [Testing the executor against a real cluster](#testing-the-executor-against-a-real-cluster)
 
@@ -1216,17 +1219,129 @@ in etcd, at the cost of the harness needing `secrets` create/delete
 RBAC it does not need today. This is tracked as future work, not
 something the current implementation provides.
 
+## Dry-run preflight
+
+`stirrup harness --dry-run` (see *Dry-run preflight* in the
+[configuration reference](../configuration.md#dry-run-preflight)) never
+constructs the `k8s` or `k8s-sandbox` executor. Construction creates an
+egress NetworkPolicy and a sandbox Pod (or Sandbox custom resource) and
+waits for readiness, which a dry run must not do. The `executor` step
+reports that nothing was constructed, and the `executor-probe` step runs a
+read-only access check that creates, updates and deletes nothing. The check
+is implemented in
+[`harness/internal/executor/k8s_preflight.go`](../../harness/internal/executor/k8s_preflight.go).
+
+The check asks the API server, through `SelfSubjectAccessReview`, whether
+the configured credentials hold each permission the executor uses in
+`executor.k8sNamespace`. This table is the authoritative list for both
+executors:
+
+| Executor | Permissions checked |
+|---|---|
+| `k8s` | `pods`: `create`, `get`, `delete`; `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
+| `k8s-sandbox` | `sandboxes.agents.x-k8s.io`: `create`, `get`, `delete`; `pods`: `get` (teardown reads the controller-created Pod until it is gone); `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
+
+Every denied permission is listed in one failure, with the API server's
+reason in parentheses when it gives one. Holding Pod-create permission does
+not satisfy the `k8s-sandbox` check. The list matches what the executors
+call, and a test pins it to the reference Roles
+([`rbac.yaml`](../../examples/k8s/rbac.yaml),
+[`rbac-agent-sandbox.yaml`](../../examples/k8s/agent-sandbox/rbac-agent-sandbox.yaml)):
+the permissions those Roles grant beyond the list (`pods/log` `get`;
+`sandboxes` `list` and `watch`) are not used by the executors and are not
+checked.
+
+`pods/exec` is checked as `create`, which is correct on every Kubernetes
+version: SPDY exec is a POST authorised as `create`, and the WebSocket path
+falls back to SPDY when its upgrade is refused. On Kubernetes 1.31 with
+kubectl (whose fallback is built on the same client-go fallback executor
+the executor uses), a Role granting `pods/exec` `create` without `get` had the
+WebSocket upgrade refused with "cannot get pods/exec" and the SPDY request
+then succeeded. From Kubernetes 1.35 the WebSocket upgrade is also
+authorised against `create` (feature gate
+`AuthorizePodWebsocketUpgradeCreatePermission`, Beta and enabled by default
+from 1.35). The check is conservative: a Role granting only `get` on
+`pods/exec` may work at run time on versions before 1.35, but fails the dry
+run.
+
+Three reads are attempted in addition. The credentials need not be able to
+perform them: a read that is refused or fails is reported as `not checked`
+in the step detail, and a definitive negative fails the step.
+
+- The target namespace is read. A namespace that does not exist fails the
+  step, naming it. The reference Roles grant no `namespaces` read, so `not
+  checked` is the normal outcome with them. A namespaced Role cannot exist
+  in a missing namespace, so with credentials that cannot read namespaces a
+  misspelled `executor.k8sNamespace` reads as a permission denial.
+- The RuntimeClass the Pods will request (`executor.runtime`, or `gvisor`
+  for `k8s-sandbox`) is read from `node.k8s.io`. A missing RuntimeClass
+  fails the step; a refused read is `not checked`. With `executor.runtime`
+  empty no RuntimeClass is read.
+- For `k8s-sandbox`, API discovery confirms the `agents.x-k8s.io/v1alpha1`
+  group serves `sandboxes`. A group or resource that is not served fails the
+  step; a discovery request that cannot be made is `not checked`.
+
+A `not checked` outcome does not change the step status, which stays `ok`:
+the reference Roles cannot read RuntimeClasses or namespaces, so a warning
+would appear on every dry run of the recommended setup. The step detail
+must be read to see what was and was not checked:
+
+```text
+[OK  ] executor-probe: 6 required permissions granted in namespace "stirrup-sandbox"; namespace "stirrup-sandbox" not checked (the credentials may not read namespaces); RuntimeClass "gvisor" not checked (the credentials may not read runtimeclasses)
+[FAIL] executor-probe: credentials lack permission in namespace "stirrup-sandbox": "delete networkpolicies.networking.k8s.io"
+       hint: bind a Role granting the denied verbs in executor.k8sNamespace (reference: examples/k8s/rbac.yaml)
+```
+
+With `executor.type` `k8s` and `executor.runtime` empty, the Pod runs under
+the cluster-default RuntimeClass, which may not be sandboxed. The dry run
+records an `executor-runtime` step with status `warn` carrying the warning
+the executor logs at run start. The step needs no cluster call, so it also
+appears under `--no-probe-executor`.
+
+The access review itself needs `create` on
+`selfsubjectaccessreviews.authorization.k8s.io`, which the built-in
+`system:basic-user` ClusterRole grants to every authenticated user and
+which the reference Roles do not repeat. If a review request fails (the API
+server is unreachable, the credentials are rejected, the request times out,
+or the default binding was removed), the step fails with the error and a
+hint about reachability and credentials. The reviews run one after another
+and share the `--dry-run-timeout` budget (30 s by default).
+
+A dry run starts no sandbox, so it does not exercise image pull,
+RuntimeClass admission and scheduling, the [admission check and readiness
+wait](#sandbox-lifecycle), teardown, NetworkPolicy enforcement, or the
+tools inside the image (`/bin/sh`, `tar`, `git`). It
+does not check that `executor.k8sServiceAccount` exists, that
+`executor.k8sNodeSelector` matches a schedulable node, or admission
+controls such as Pod Security, quota and webhooks. The egress proxy URL for
+these executors is not probed either (the `egress` step records a skip).
+The `git-strategy-probe` step records a skip because no sandbox runs. These
+surface only in a real run.
+
+`--no-probe-executor` makes the `executor-probe` step record a skip before
+any client is built, so the dry run makes no cluster call at all. Without
+it, the probe uses the same kubeconfig resolution as a run:
+`--k8s-kubeconfig`, then in-cluster configuration, then `$KUBECONFIG`.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
+| `credentials lack permission in namespace "<ns>": "<verb> <resource>" (<reason>)` (dry run) | Every listed permission is missing in `executor.k8sNamespace`: the credentials' Role lacks the verbs, the Role is not bound there, or the namespace does not exist (credentials that cannot read namespaces see a missing namespace as a denial). | Apply [`rbac.yaml`](../../examples/k8s/rbac.yaml) (or [`rbac-agent-sandbox.yaml`](../../examples/k8s/agent-sandbox/rbac-agent-sandbox.yaml)) in that namespace, or grant the verbs; confirm the namespace name. |
+| `access review for "<verb> <resource>" in namespace "<ns>" failed: ...` (dry run) | The review request itself failed: the API server is unreachable, the credentials are rejected, `create` on `selfsubjectaccessreviews` was removed, or `context deadline exceeded` because the sequential reviews used up the `--dry-run-timeout` budget (30 s by default). | Check reachability and credentials (`kubectl auth can-i create selfsubjectaccessreviews`); raise `--dry-run-timeout` for a slow API server. |
+| `build kube rest config: ...` / `build kube clientset: ...` (dry run) | No usable kubeconfig or in-cluster configuration. | Set `--k8s-kubeconfig` (`executor.k8sKubeconfig`) or `$KUBECONFIG`, or run in-cluster. |
+| `the Agent Sandbox API agents.x-k8s.io/v1alpha1 is not served by the cluster` (dry run, `k8s-sandbox`) | The Agent Sandbox controller and its CRD are not installed, or serve another version. | Install the controller; see [`k8s-agent-sandbox.md`](k8s-agent-sandbox.md). |
+| `the cluster serves agents.x-k8s.io/v1alpha1 but not the sandboxes resource` (dry run, `k8s-sandbox`) | The group is registered without the `sandboxes` resource, usually an incomplete CRD install. | Reinstall the Agent Sandbox CRDs. |
+| `namespace "<ns>" does not exist in the cluster` (dry run) | `executor.k8sNamespace` names a namespace that is absent. | Create the namespace or correct the name. Credentials that cannot read namespaces get the permission-denied row instead. |
+| `RuntimeClass "<name>" does not exist in the cluster` (dry run) | The requested RuntimeClass is not registered. The real-run counterpart is the row below. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) or pick a registered runtime. |
+| `executor.network.mode must be "none" or "allowlist" for executor.type=...` (`config-validation`) | `network.mode` is empty or another value. | Set `executor.network.mode` to `none` or `allowlist`. |
 | `executor.k8sNamespace is required for executor.type="k8s"` | `--k8s-namespace` / `executor.k8sNamespace` unset. | Set the namespace. |
 | `executor.k8sEgressProxyUrl is required when ... "allowlist"` | `network.mode: allowlist` without a proxy URL. | Set `--k8s-egress-proxy-url`, or use `network.mode: none`. |
 | `executor.k8sEgressProxyUrl is only valid when ... "allowlist"` | A proxy URL set while `network.mode` is `none`. | Remove the URL, or switch to `allowlist`. |
 | `executor.network is required for executor.type="k8s"` | No `network` block. | Set `executor.network.mode` to `none` or `allowlist`. |
 | `not in cluster and KUBECONFIG is unset` | No in-cluster config, no kubeconfig. | Set `--k8s-kubeconfig` or `$KUBECONFIG`, or run in-cluster. |
 | `open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory` (in-cluster orchestrator) | The orchestrator Pod's ServiceAccount has `automountServiceAccountToken: false` (the reference SA's default), so no token is projected for the in-cluster REST config. | Set `automountServiceAccountToken: true` on the orchestrator Pod spec. See [Running the orchestrator in-cluster](#running-the-orchestrator-in-cluster). |
-| `RuntimeClass "<name>" was rejected by the cluster` | The API server named the RuntimeClass in its rejection: it is not registered, or the name is invalid. Other admission rejections (a LimitRange, a quota, Pod Security, a webhook) are reported as `create pod: ...` with the API server's message stripped of control characters, scrubbed of credentials and cut to 256 characters. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) for the handlers actually installed, or pick a registered runtime. |
+| `RuntimeClass "<name>" was rejected by the cluster` (real run) | The API server named the RuntimeClass in its rejection (the dry-run row above reports a missing class earlier when the credentials can read RuntimeClasses): it is not registered, or the name is invalid. Other admission rejections (a LimitRange, a quota, Pod Security, a webhook) are reported as `create pod: ...` with the API server's message stripped of control characters, scrubbed of credentials and cut to 256 characters. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) for the handlers actually installed, or pick a registered runtime. |
 | `pod <ns>/<pod> not ready within 5m0s: phase Pending; PodScheduled False (Unschedulable: ...): context deadline exceeded` | No node fits the Pod and the autoscaler (if any) did not add one in time, or the RuntimeClass's scheduling matches no node. | Read the `PodScheduled` message in the error. The Pod's Events (`kubectl -n <ns> get events --field-selector involvedObject.name=<pod>`) remain after teardown until the event TTL; where the scale-up decision is recorded depends on the autoscaler. See [Readiness](#readiness). |
 | `0/N nodes available: ... had untolerated taint(s)` (Pod Pending) | The schedulable nodes are tainted (GKE Sandbox pools taint `sandbox.gke.io/runtime=gvisor:NoSchedule`; arch-dedicated pools may add `kubernetes.io/arch=...`) and the Pod tolerates none. | For the Sandbox pool, set `--container-runtime gvisor` so the managed RuntimeClass injects the toleration. For other tainted pools, add a matching `--k8s-node-selector` and ensure a toleration is available (the executor does not inject arbitrary tolerations). |
 | `pod <ns>/<pod> not ready within 5m0s: phase Pending; PodScheduled True; last waiting reason ContainerCreating` | The Pod was scheduled but its sandbox never started, usually because the RuntimeClass handler is not installed on that node. | Read the `FailedCreatePodSandBox` Event: `kubectl -n <ns> get events --field-selector involvedObject.name=<pod>` (Events outlive the Pod until the event TTL). Install the handler, or restrict the RuntimeClass's `scheduling.nodeSelector` to nodes that have it. |

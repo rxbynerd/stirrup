@@ -37,8 +37,8 @@ func (d mcpDiscovery) unprobedTool(name string) bool {
 	return false
 }
 
-// containerToolCapabilities are the container executor capabilities that
-// tool registration reads.
+// containerToolCapabilities are the capabilities, shared by the container,
+// k8s and k8s-sandbox executors, that tool registration reads.
 func containerToolCapabilities() executor.ExecutorCapabilities {
 	return executor.ExecutorCapabilities{CanRead: true, CanWrite: true, CanExec: true}
 }
