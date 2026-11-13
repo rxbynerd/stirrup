@@ -1148,8 +1148,11 @@ const DefaultSandboxIdentityEnvVar = "HAYBALE_TOKEN"
 // SandboxIdentityConfig requests a control-plane-issued sandbox identity
 // token. The harness sends a sandbox_token_request after task assignment
 // and before sandbox creation, then injects the returned JWT under the
-// variable EffectiveEnvVar names. The JWT is never written to RunConfig, a
-// trace, or a transcript. Wire-level exchange:
+// variable EffectiveEnvVar names. One more request precedes the first
+// delivery of the token file when sandbox startup took the token past its
+// refresh point, and further ones refresh it ahead of each reported expiry.
+// The JWT is never written to RunConfig, a trace, or a transcript.
+// Wire-level exchange:
 // docs/deployment.md#sandbox-identity-token-issuance-control-plane-implementers.
 type SandboxIdentityConfig struct {
 	Source   string `json:"source"` // only "control-plane" in v1
