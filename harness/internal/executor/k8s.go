@@ -238,8 +238,9 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 	}
 	teardown.podUID = created.UID
 
-	admission := newPodAdmission(pod, created)
+	admission := newPodAdmission(pod, created, profile)
 	if err := admission.checkCreate(); err != nil {
+		reportAdmissionFailure(cfg.Security, cfg.Runtime, profile, err)
 		return nil, withTeardownErr(err, teardown.run())
 	}
 	if profile.runtimeClassName == "" && created.Spec.RuntimeClassName != nil {
@@ -248,6 +249,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 	}
 
 	if _, err := waitForPodReady(ctx, clientset, cfg.Namespace, podName, admission, timing, logger); err != nil {
+		reportAdmissionFailure(cfg.Security, cfg.Runtime, profile, err)
 		return nil, withTeardownErr(fmt.Errorf("pod %s/%s %w", cfg.Namespace, podName, err), teardown.run())
 	}
 
@@ -267,6 +269,20 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 		runID:             cfg.Lifecycle.RunID,
 		timing:            timing,
 	}, nil
+}
+
+// reportAdmissionFailure emits the admitted_pod runtime diagnostic event when
+// err is an admission contract failure under a strict-admission profile.
+func reportAdmissionFailure(security SecurityEventEmitter, runtime string, profile k8sRuntimeProfile, err error) {
+	var mismatch *admissionMismatchError
+	if security == nil || !profile.strictAdmission || !errors.As(err, &mismatch) {
+		return
+	}
+	observed := map[string]string{}
+	if len(mismatch.mismatches) > 0 {
+		observed["field"] = mismatch.mismatches[0].field
+	}
+	security.SandboxRuntimeDiagnostic(runtime, false, diagnosticCheckAdmission, mismatch.Error(), observed)
 }
 
 // withTeardownErr appends a cleanup failure to the error that caused the

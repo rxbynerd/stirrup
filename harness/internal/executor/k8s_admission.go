@@ -37,14 +37,22 @@ type podAdmission struct {
 	pollChecks   []admissionCheck
 }
 
-// newPodAdmission returns the base two-stage contract for a Pod submitted as
-// submitted and returned by Create as admitted.
-func newPodAdmission(submitted, admitted *corev1.Pod) podAdmission {
+// newPodAdmission returns the two-stage contract for a Pod submitted as
+// submitted and returned by Create as admitted: the base checks, plus the
+// whole-Pod checks of strictAdmissionChecks at both stages when the runtime
+// profile asks for strict admission. Ephemeral containers cannot be set at
+// creation, so the strict tier sees one only if it is added before the Pod
+// is Ready.
+func newPodAdmission(submitted, admitted *corev1.Pod, profile k8sRuntimeProfile) podAdmission {
+	checks := slices.Clone(baseAdmissionChecks)
+	if profile.strictAdmission {
+		checks = append(checks, strictAdmissionChecks(profile.noNetworkAnnotations)...)
+	}
 	return podAdmission{
 		submitted:    submitted,
 		admitted:     admitted,
-		createChecks: slices.Clone(baseAdmissionChecks),
-		pollChecks:   slices.Clone(baseAdmissionChecks),
+		createChecks: checks,
+		pollChecks:   slices.Clone(checks),
 	}
 }
 
@@ -73,15 +81,25 @@ func (a podAdmission) checkPoll(observed *corev1.Pod) error {
 	return mismatchError(fmt.Sprintf("observed pod %s/%s no longer matches the admitted pod", a.submitted.Namespace, a.submitted.Name), mismatches)
 }
 
+// admissionMismatchError is an admission contract failure at either stage.
+type admissionMismatchError struct {
+	prefix     string
+	mismatches []admissionMismatch
+}
+
+func (e *admissionMismatchError) Error() string {
+	parts := make([]string, len(e.mismatches))
+	for i, m := range e.mismatches {
+		parts[i] = fmt.Sprintf("%s: expected %s, observed %s", m.field, m.expected, clusterText(m.observed))
+	}
+	return fmt.Sprintf("%s: %s", e.prefix, strings.Join(parts, "; "))
+}
+
 func mismatchError(prefix string, mismatches []admissionMismatch) error {
 	if len(mismatches) == 0 {
 		return nil
 	}
-	parts := make([]string, len(mismatches))
-	for i, m := range mismatches {
-		parts[i] = fmt.Sprintf("%s: expected %s, observed %s", m.field, m.expected, clusterText(m.observed))
-	}
-	return fmt.Errorf("%s: %s", prefix, strings.Join(parts, "; "))
+	return &admissionMismatchError{prefix: prefix, mismatches: mismatches}
 }
 
 // checkRuntimeClassKept requires an expected RuntimeClass to be unchanged. A
