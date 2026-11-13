@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/kubernetes/fake"
 	utilexec "k8s.io/client-go/util/exec"
+	"k8s.io/utils/ptr"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
 )
@@ -62,10 +63,10 @@ func TestNewK8sExecutor_NitroDiagnosticsFailureTearsDown(t *testing.T) {
 	}{
 		{name: "dmi mismatch", stdout: string(ordinaryPod), wantCheck: "dmi_product_name"},
 		{name: "unexpected interface", stdout: guestDump(
-			text("m5d.enclave\n"), text(procNetDevHeader+procNetDevLo+procNetDevDummy0+procNetDevEth0), text(procNetRouteHeader),
+			ptr.To("m5d.enclave\n"), ptr.To(procNetDevHeader+procNetDevLo+procNetDevDummy0+procNetDevEth0), ptr.To(procNetRouteHeader),
 		), wantCheck: "network_interfaces"},
 		{name: "route entry", stdout: guestDump(
-			text("m5d.enclave\n"), text(procNetDevHeader+procNetDevLo+procNetDevDummy0), text(procNetRouteHeader+procNetRouteDflt),
+			ptr.To("m5d.enclave\n"), ptr.To(procNetDevHeader+procNetDevLo+procNetDevDummy0), ptr.To(procNetRouteHeader+procNetRouteDflt),
 		), wantCheck: "route_table"},
 		{name: "exec error", execErr: errors.New("upgrade request failed"), wantCheck: "diagnostic_exec"},
 		{name: "non-zero exit", execErr: utilexec.CodeExitError{Err: errors.New("exit 2"), Code: 2}, wantCheck: "diagnostic_exec"},
@@ -189,7 +190,7 @@ func TestNewK8sExecutor_NitroDiagnosticsRedactSecretShapedGuestValues(t *testing
 	cfg := nitroCfg()
 	cfg.Security = security.NewSecurityLogger(&events, testK8sRunID)
 	calls := 0
-	dump := guestDump(text("sk-ant-abc123_DEF-456\n"), text(procNetDevHeader+procNetDevLo), text(procNetRouteHeader))
+	dump := guestDump(ptr.To("sk-ant-abc123_DEF-456\n"), ptr.To(procNetDevHeader+procNetDevLo), ptr.To(procNetRouteHeader))
 
 	_, err := newFakeK8sExecutorWithExec(context.Background(), cs, cfg, guestExec(dump, nil, &calls))
 

@@ -468,8 +468,6 @@ func (e *AgentSandboxExecutor) lookUpSandbox(ctx context.Context) (*metav1unstru
 	}
 }
 
-var _ Executor = (*AgentSandboxExecutor)(nil)
-
 // checkAgentSandboxRuntime rejects every runtime but gVisor, before any
 // cluster call: the Agent Sandbox path runs only under gVisor, so another
 // value would otherwise run the workload under a runtime the caller did not
@@ -480,3 +478,5 @@ func checkAgentSandboxRuntime(runtime string) error {
 	}
 	return fmt.Errorf("agent sandbox executor: executor.runtime must be %q or empty (got %q); the Agent Sandbox path is gVisor-only", gkeSandboxRuntimeValue, runtime)
 }
+
+var _ Executor = (*AgentSandboxExecutor)(nil)
