@@ -1351,6 +1351,10 @@ func sandboxLifecycle(config *types.RunConfig, sessionBudget time.Duration) exec
 // failure closes the executor.
 var buildExecutorFn = buildExecutor
 
+// newK8sExecutorFn is executor.NewK8sExecutor; tests replace it to observe
+// the config buildExecutor passes.
+var newK8sExecutorFn = executor.NewK8sExecutor
+
 func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore, secLogger *security.SecurityLogger, extraEnv []executor.EnvPair, life executor.Lifecycle) (executor.Executor, error) {
 	sandboxIdentityToken := cfg.SandboxIdentity != nil
 	switch cfg.Type {
@@ -1419,7 +1423,7 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 		if cfg.Type == "k8s-sandbox" {
 			return executor.NewAgentSandboxExecutor(ctx, k8sCfg)
 		}
-		return executor.NewK8sExecutor(ctx, k8sCfg)
+		return newK8sExecutorFn(ctx, k8sCfg)
 	case "api":
 		if cfg.VcsBackend == nil {
 			return nil, fmt.Errorf("api executor requires vcsBackend configuration")
