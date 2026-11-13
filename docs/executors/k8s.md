@@ -828,37 +828,45 @@ Two requirements are easy to miss:
   toleration) or a dedicated untainted pool.
 
 **`terminationGracePeriodSeconds` on the orchestrator Pod.** Kubernetes
-sends SIGTERM to the orchestrator process on Pod deletion/eviction/scale-
-down, then SIGKILL after the grace period — 30 seconds by default when
-the field is unset. Stirrup's signal handler
-(`harness/cmd/stirrup/cmd/root.go::setupSignalHandler`) cancels the run
-context on SIGTERM, letting the trace emitter flush and
-`workspaceExportTo` upload before the kill. A run configuring `postRun`
-lifecycle hooks (issue #461) is a partial exception: those hooks
-deliberately run on a context detached from the run's own deadline/
-cancellation so an in-flight artifact upload can survive it, but the
-harness still observes SIGTERM directly on that detached context
-(`AgenticLoop.Shutdown`) and cuts a `postRun` hook short promptly rather
-than letting it run for its full configured budget (up to 1830s). A
-background watchdog additionally starts executor teardown 5 seconds
-after SIGTERM even if `Run()` has not yet returned, regardless of what
-an in-flight `postRun` hook is doing. [Teardown](#teardown) then waits
-for the kubelet to confirm the sandbox Pod stopped before it removes the
-egress `NetworkPolicy`: about 5 seconds normally, at most 30 seconds for
-the Pod plus 30 for the policy delete. A normal teardown therefore ends
-about 10 seconds after SIGTERM, inside the default 30-second grace
-window. A slow kubelet or API server can push teardown past the window;
-SIGKILL then leaves the policy (and possibly a terminating Pod) behind,
-which fails closed and is cleaned up as described in
-[Cleaning up retained objects](#cleaning-up-retained-objects). A
-SIGTERM that arrives while the sandbox is still starting ends the
-readiness wait at once, and the same teardown follows. Set
-`terminationGracePeriodSeconds` explicitly on the orchestrator Pod spec
-when running with long `postRun` hooks, sized for the run's own
-`timeout` plus normal shutdown overhead; 70 seconds or more also covers
-the worst-case teardown (5 seconds before it starts, 30 for the Pod, 30
-for the policy delete). A cluster with a tighter eviction or preemption
-grace period should account for the same budget.
+sends one SIGTERM on Pod deletion, eviction or scale-down, then SIGKILL
+after the grace period (30 seconds when the field is unset). Stirrup's
+signal handler (`harness/cmd/stirrup/cmd/root.go::setupSignalHandler`)
+cancels the run's context on the first signal, so the agentic loop
+stops. Post-run work (git finalise, `postRun` hooks, the workspace
+handoff and the trace finish) runs on a context detached from the run
+with its own bounded budget, and stops early only on a second signal.
+What follows differs by command:
+
+- **`stirrup job`** arms a shutdown watchdog on the first signal. Five
+  seconds later it closes the loop even if `Run()` has not returned,
+  which cuts post-run work short and starts executor teardown.
+- **`stirrup harness`** arms the watchdog only on a second signal.
+  Kubernetes sends one SIGTERM, so teardown starts when `Run()` and its
+  post-run work return; a long `postRun` hook delays it by up to the
+  hook's budget (at most 1830 seconds).
+
+The watchdog starts teardown; it does not bound it. Closing the loop
+closes its resources in reverse build order: the sandbox identity token
+refresher (up to 5 seconds), the metrics exporter, the trace emitter,
+the MCP client, the transport, the log exporter, the command output
+store, and the executor last. [Teardown](#teardown) of the executor
+takes about 5 seconds normally and at most 30 seconds for the Pod plus
+30 for the policy delete. Each configured OTLP exporter (traces, metrics,
+logs) flushes on shutdown under the OpenTelemetry SDK's 30-second export
+timeout, so an unreachable collector delays executor teardown by up to
+30 seconds per exporter.
+
+For `stirrup job` the worst case without OTLP export is 5 + 5 + 30 + 30
+= 70 seconds after SIGTERM. Set `terminationGracePeriodSeconds` to at
+least 90 seconds, plus 30 for each OTLP exporter the run configures; for
+`stirrup harness`, add the post-run budget the run can spend after the
+signal. A SIGKILL before the Pod delete leaves a running sandbox Pod and
+its policy; one during the termination wait leaves a terminating Pod
+and its policy. Both fail closed and are cleaned up as described in
+[Cleaning up retained objects](#cleaning-up-retained-objects). A SIGTERM
+that arrives while the sandbox is still starting ends the readiness wait
+at once, and the same teardown follows. A cluster with a tighter
+eviction or preemption grace period should account for the same budget.
 
 Provider auth is **orthogonal to sandbox egress**. The orchestrator's
 provider call (to Anthropic / Vertex / an OpenAI-compatible endpoint) is
