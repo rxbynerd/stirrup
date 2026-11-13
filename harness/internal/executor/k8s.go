@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"os"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -49,6 +50,9 @@ const (
 	// SPDY stream is not bounded by rest.Config.Timeout, so a hung Pod would
 	// otherwise wedge a goroutine indefinitely.
 	k8sFileIOTimeout = 60 * time.Second
+	// k8sClusterTextMax bounds a cluster-supplied string (a status message,
+	// an API error) quoted in an error.
+	k8sClusterTextMax = 256
 )
 
 // errK8sOutputCap is returned when exec output or a file payload exceeds
@@ -374,19 +378,74 @@ func buildRESTConfig(kubeconfig string) (*rest.Config, error) {
 	return cfg, nil
 }
 
-// classifyPodCreateError wraps a Pod-create failure with a friendlier
-// message when the API server rejects the spec (IsInvalid or IsForbidden)
-// AND a non-empty RuntimeClass was requested — the raw admission error is
-// opaque to an operator who mistyped a runtime name. The original error is
-// wrapped, not replaced, so callers can still errors.As / errors.Is it.
+// classifyPodCreateError wraps a Pod-create failure, adding a RuntimeClass
+// hint only when the API server's response names the requested class: an
+// Invalid cause on spec.runtimeClassName, or the RuntimeClass admission
+// plugin's Forbidden "RuntimeClass %q not found". Any other rejection (a
+// LimitRange, a quota, Pod Security, a webhook) passes through behind the
+// wrap. The message is length-capped but otherwise unchanged, and the original
+// error stays reachable through errors.As.
 func classifyPodCreateError(runtimeClass string, err error) error {
-	if runtimeClass != "" && (apierrors.IsInvalid(err) || apierrors.IsForbidden(err)) {
+	if runtimeClass != "" && createErrorNamesRuntimeClass(runtimeClass, err) {
 		return fmt.Errorf(
 			"create pod: RuntimeClass %q was rejected by the cluster — confirm a RuntimeClass with that name is registered and permitted (kubectl get runtimeclass): %w",
-			runtimeClass, err,
+			runtimeClass, boundClusterErr(err),
 		)
 	}
-	return fmt.Errorf("create pod: %w", err)
+	return fmt.Errorf("create pod: %w", boundClusterErr(err))
+}
+
+func createErrorNamesRuntimeClass(runtimeClass string, err error) bool {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) {
+		return false
+	}
+	st := status.Status()
+	switch {
+	case apierrors.IsInvalid(err):
+		if st.Details == nil {
+			return false
+		}
+		for _, cause := range st.Details.Causes {
+			if cause.Field == "spec.runtimeClassName" {
+				return true
+			}
+		}
+		return false
+	case apierrors.IsForbidden(err):
+		return strings.Contains(st.Message, fmt.Sprintf("RuntimeClass %q not found", runtimeClass))
+	}
+	return false
+}
+
+// clusterError bounds the text of an API error while keeping the error
+// itself reachable through errors.Is and errors.As.
+type clusterError struct{ err error }
+
+func (e clusterError) Error() string { return clusterText(e.err.Error()) }
+func (e clusterError) Unwrap() error { return e.err }
+
+// boundClusterErr wraps err in a clusterError; nil stays nil.
+func boundClusterErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	return clusterError{err: err}
+}
+
+// clusterText bounds a cluster-supplied string for inclusion in an error:
+// control characters are dropped and the length is capped.
+func clusterText(s string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+	if runes := []rune(cleaned); len(runes) > k8sClusterTextMax {
+		return string(runes[:k8sClusterTextMax]) + "…"
+	}
+	return cleaned
 }
 
 // generatePodName returns "stirrup-<12-hex-chars>". 6 random bytes give 48

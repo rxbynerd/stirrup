@@ -565,65 +565,86 @@ func (r *recordingSecurityEmitter) OutputTruncated(command string, originalSize,
 
 var _ SecurityEventEmitter = (*recordingSecurityEmitter)(nil)
 
-// TestClassifyPodCreateError_RuntimeClassHint covers the RuntimeClass-aware error wrap. An
-// IsInvalid (built-in admission) or IsForbidden (webhook/OPA) error with a
-// non-empty RuntimeClass gets the friendly hint; an empty RuntimeClass or
-// an unrelated error falls through to the plain "create pod" wrap. The
-// original error must remain reachable via errors.Is/As in every case.
-func TestClassifyPodCreateError_RuntimeClassHint(t *testing.T) {
-	invalid := apierrors.NewInvalid(
-		schema.GroupKind{Group: "", Kind: "Pod"},
-		"stirrup-abc",
-		field.ErrorList{field.Invalid(
-			field.NewPath("spec", "runtimeClassName"), "gvisor", "not found",
-		)},
-	)
-	forbidden := apierrors.NewForbidden(
-		schema.GroupResource{Group: "", Resource: "pods"},
-		"stirrup-abc",
-		errors.New("RuntimeClass \"gvisor\" is not allowed by policy"),
-	)
-	transport := errors.New("connection refused")
+func TestClassifyPodCreateError_AttributesOnlyNamedRuntimeClass(t *testing.T) {
+	pods := schema.GroupResource{Resource: "pods"}
+	podKind := schema.GroupKind{Kind: "Pod"}
+	cases := []struct {
+		name     string
+		err      error
+		wantHint bool
+	}{
+		{
+			name: "invalid runtimeClassName field",
+			err: apierrors.NewInvalid(podKind, "stirrup-x", field.ErrorList{
+				field.Invalid(field.NewPath("spec", "runtimeClassName"), "Bad_Name", "a lowercase RFC 1123 subdomain must consist of"),
+			}),
+			wantHint: true,
+		},
+		{
+			name:     "runtime class admission not found",
+			err:      apierrors.NewForbidden(pods, "stirrup-x", errors.New(`pod rejected: RuntimeClass "gvisor" not found`)),
+			wantHint: true,
+		},
+		{
+			name: "invalid resources field",
+			err: apierrors.NewInvalid(podKind, "stirrup-x", field.ErrorList{
+				field.Invalid(field.NewPath("spec", "containers").Index(0).Child("resources", "requests"), "4", "must be less than or equal to cpu limit"),
+			}),
+		},
+		{
+			name: "limit range maximum",
+			err:  apierrors.NewForbidden(pods, "stirrup-x", errors.New("maximum cpu usage per Container is 2, but limit is 4")),
+		},
+		{
+			name: "resource quota",
+			err:  apierrors.NewForbidden(pods, "stirrup-x", errors.New("exceeded quota: compute, requested: pods=1, used: pods=10, limited: pods=10")),
+		},
+		{
+			name: "pod security",
+			err:  apierrors.NewForbidden(pods, "stirrup-x", errors.New(`violates PodSecurity "restricted:v1.31": seccompProfile`)),
+		},
+		{
+			name: "runtime class scheduling conflict",
+			err:  apierrors.NewForbidden(pods, "stirrup-x", errors.New("conflict: runtimeClass.scheduling.nodeSelector[pool] = sandbox; pod.spec.nodeSelector[pool] = general")),
+		},
+		{
+			name: "a different runtime class not found",
+			err:  apierrors.NewForbidden(pods, "stirrup-x", errors.New(`pod rejected: RuntimeClass "kata-qemu" not found`)),
+		},
+		{
+			name: "transport error",
+			err:  errors.New("connection refused"),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			err := classifyPodCreateError("gvisor", tc.err)
+			must.ErrorIs(err, tc.err, "the original error must stay reachable")
+			check.Equal(tc.wantHint, containsHint(err), "RuntimeClass hint on %v", err)
+			check.False(containsHint(classifyPodCreateError("", tc.err)), "hint without a requested RuntimeClass")
+		})
+	}
+}
 
-	t.Run("invalid with runtime class gets hint", func(t *testing.T) {
-		must := require.New(t)
-		err := classifyPodCreateError("gvisor", invalid)
-		must.ErrorContains(err, `RuntimeClass "gvisor"`)
-		must.ErrorContains(err, "kubectl get runtimeclass")
-		must.True(apierrors.IsInvalid(err), "wrapped error must remain IsInvalid via errors.As")
-	})
+func TestClassifyPodCreateError_BoundsWebhookMessage(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	webhook := apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "stirrup-x",
+		errors.New("admission webhook \"policy.example.com\" denied the request:\n"+strings.Repeat("y", 10*k8sClusterTextMax)))
 
-	t.Run("forbidden with runtime class gets hint", func(t *testing.T) {
-		must := require.New(t)
-		err := classifyPodCreateError("gvisor", forbidden)
-		must.ErrorContains(err, `RuntimeClass "gvisor"`)
-		must.ErrorContains(err, "kubectl get runtimeclass")
-		must.True(apierrors.IsForbidden(err), "wrapped error must remain IsForbidden via errors.As")
-	})
+	err := classifyPodCreateError("gvisor", webhook)
 
-	t.Run("forbidden without runtime class is plain", func(t *testing.T) {
-		must := require.New(t)
-		err := classifyPodCreateError("", forbidden)
-		// The synthetic forbidden error carries "RuntimeClass" in its own
-		// text, so assert on the hint phrase the wrapper adds rather than
-		// the bare word.
-		must.NotContains(err.Error(), "kubectl get runtimeclass")
-		must.True(apierrors.IsForbidden(err), "wrapped error must remain IsForbidden")
-	})
+	must.ErrorIs(err, webhook)
+	must.True(apierrors.IsForbidden(err))
+	check.NotContains(err.Error(), "\n")
+	check.Less(len(err.Error()), k8sClusterTextMax+100)
+	check.Contains(err.Error(), "denied the request")
+}
 
-	t.Run("invalid without runtime class is plain", func(t *testing.T) {
-		must := require.New(t)
-		err := classifyPodCreateError("", invalid)
-		must.NotContains(err.Error(), "RuntimeClass")
-		must.True(strings.HasPrefix(err.Error(), "create pod:"), "expected plain create-pod wrap")
-	})
-
-	t.Run("non-invalid error with runtime class is plain", func(t *testing.T) {
-		must := require.New(t)
-		err := classifyPodCreateError("gvisor", transport)
-		must.NotContains(err.Error(), "RuntimeClass")
-		must.ErrorIs(err, transport)
-	})
+func containsHint(err error) bool {
+	return strings.Contains(err.Error(), "kubectl get runtimeclass")
 }
 
 // recordingExecCore returns a podExecCore whose exec calls are appended to
