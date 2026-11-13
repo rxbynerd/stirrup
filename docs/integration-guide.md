@@ -76,9 +76,12 @@ status.
    [Joining a control-plane trace](#joining-a-control-plane-trace-trace_context).
 4. If the `RunConfig` opts in, loop construction sends a
    `sandbox_token_request` and blocks (fail-closed, 60 s) for the
-   `sandbox_token_response` before creating the sandbox. When the
-   response carries `expires_at`, further requests follow ahead of
-   each expiry — at most eight per run.
+   `sandbox_token_response` before creating the sandbox. If sandbox
+   startup takes that token past its refresh point, one more request
+   precedes the first delivery of the token file, and its failure
+   aborts construction and tears the sandbox down. When a response
+   carries `expires_at`, further requests follow ahead of each expiry —
+   at most eight per run in total.
 5. Once the run's setup is done, the harness sends
    `HarnessEvent{type:"run_started", id, trace_reference}`, followed by
    a `user_message` carrying the run's prompt. `id` is the run ID.
@@ -1220,10 +1223,13 @@ without the harness ever holding a signing key.
 The control plane must:
 
 1. Answer every `sandbox_token_request` (the first after
-   `task_assignment`, before sandbox creation; up to seven more as
-   refreshes) with a signed JWT in `sandbox_token_response.token`
-   within 60 s — or refuse explicitly with `is_error: true`. Silence
-   on the first request aborts the run fail-closed; on a refresh it
+   `task_assignment`, before sandbox creation; one more before the
+   token file is first written if sandbox startup took the token past
+   its refresh point; the rest as refreshes; at most eight in total)
+   with a signed JWT in `sandbox_token_response.token` within 60 s — or
+   refuse explicitly with `is_error: true`. Silence on the first
+   request aborts the run fail-closed; on the pre-delivery request it
+   aborts construction and tears the sandbox down; on a refresh it
    stops refreshing and surfaces a `warning` event.
 2. Derive the run's identity from the stream, never from the
    request body; validate `audience` against its own allowlist

@@ -58,6 +58,10 @@ spec:
       # RestartPolicy: Never — the Pod is a one-shot sandbox; the controller
       # cascade-deletes it when the Sandbox is deleted.
       restartPolicy: Never
+      # k8sTerminationGracePeriod. The sleep entrypoint ignores SIGTERM and
+      # holds no state, so every deletion path stops the sandbox after one
+      # second. GKE admission acceptance of this field is not yet verified.
+      terminationGracePeriodSeconds: 1
       # serviceAccountName from --k8s-service-account / executor.k8sServiceAccount,
       # or "default" when unset. The sandbox needs NO API access (see the token
       # mount below), so the account is effectively just an identity.
