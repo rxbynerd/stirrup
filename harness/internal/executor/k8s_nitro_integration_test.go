@@ -63,7 +63,7 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 
 	ready, err := clientset.CoreV1().Pods(cfg.namespace).Get(ctx, exec.podName, metav1.GetOptions{})
 	must.NoError(err)
-	evidence.writeJSON(t, "ready-pod.json", ready)
+	evidence.writePod(t, "ready-pod.json", ready)
 
 	t.Run("runtime diagnostics passed", func(t *testing.T) {
 		must := require.New(t)
