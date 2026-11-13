@@ -46,7 +46,7 @@ type podAdmission struct {
 func newPodAdmission(submitted, admitted *corev1.Pod, profile k8sRuntimeProfile) podAdmission {
 	checks := slices.Clone(baseAdmissionChecks)
 	if profile.strictAdmission {
-		checks = append(checks, strictAdmissionChecks(profile.noNetworkAnnotations)...)
+		checks = append(checks, strictAdmissionChecks(profile)...)
 	}
 	return podAdmission{
 		submitted:    submitted,
