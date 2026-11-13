@@ -152,6 +152,7 @@ func TestPodAdmission_StrictRejectsAdmittedPodMutations(t *testing.T) {
 		{name: "host network", mutate: func(p *corev1.Pod) { p.Spec.HostNetwork = true }, wantField: "spec.hostNetwork"},
 		{name: "host users", mutate: func(p *corev1.Pod) { p.Spec.HostUsers = ptr.To(false) }, wantField: "spec.hostUsers"},
 		{name: "submitted node selector dropped", mutate: func(p *corev1.Pod) { delete(p.Spec.NodeSelector, "kubernetes.io/arch") }, wantField: "spec.nodeSelector: expected at least"},
+		{name: "service links enabled", mutate: func(p *corev1.Pod) { p.Spec.EnableServiceLinks = ptr.To(true) }, wantField: "spec.enableServiceLinks: expected false, observed true"},
 		{name: "overhead removed", mutate: func(p *corev1.Pod) { p.Spec.Overhead = nil }, wantField: "spec.overhead[eks.amazonaws.com/nitro-sandbox]: expected present, observed absent"},
 		{name: "overhead without the sandbox resource", mutate: func(p *corev1.Pod) {
 			p.Spec.Overhead = corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("256Mi")}

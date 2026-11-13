@@ -119,7 +119,9 @@ The pieces and their lifecycle:
   (the distroless "nonroot" UID), and `seccompProfile.type:
   RuntimeDefault`. `automountServiceAccountToken` is **always** `false`,
   so the sandbox itself has no Kubernetes API access regardless of the
-  ServiceAccount named. `restartPolicy` is `Never` (one-shot), the
+  ServiceAccount named. `enableServiceLinks` is `false`, so the
+  namespace's Services are not listed in the sandbox environment as
+  `<SERVICE>_SERVICE_HOST` and `_PORT` variables. `restartPolicy` is `Never` (one-shot), the
   container is named `agent`, and the entrypoint is `/bin/sh -c "sleep
   infinity"` — all real work runs through subsequent `exec` calls, not
   the entrypoint. The working directory `/workspace` is an `emptyDir` the
@@ -1027,7 +1029,7 @@ as a set that may gain entries but not lose any.
 
 - **Owned by the platform:** `nodeName`, `overhead`, `schedulerName`,
   `priority`, `priorityClassName`, `preemptionPolicy`, `dnsPolicy`,
-  `enableServiceLinks`, the deprecated `serviceAccount`,
+  the deprecated `serviceAccount`,
   `imagePullSecrets` (copied from the service account by the
   ServiceAccount admission plugin), and the container's
   `terminationMessagePath`, `terminationMessagePolicy` and
@@ -1040,8 +1042,9 @@ as a set that may gain entries but not lose any.
   `envFrom`, volumes and mounts, the Pod and container security
   contexts, resources, the service account and
   `automountServiceAccountToken`, `terminationGracePeriodSeconds`,
-  `activeDeadlineSeconds`, `hostNetwork`, `hostPID`, `hostIPC`,
-  `hostUsers` and the RuntimeClass.
+  `activeDeadlineSeconds`, `enableServiceLinks` (submitted as `false`),
+  `hostNetwork`, `hostPID`, `hostIPC`, `hostUsers` and the
+  RuntimeClass.
 
 In the metadata, the `network-isolated` annotation must keep its value,
 every submitted label must be kept, and the owner references must be

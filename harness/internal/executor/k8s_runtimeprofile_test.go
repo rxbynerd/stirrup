@@ -103,6 +103,17 @@ func TestBuildSandboxPod_ShapePerRuntimeProfile(t *testing.T) {
 		pod := podFor("nitro-isolated", "allowlist")
 		must.Equal(map[string]string{"sandbox.amazonaws.com/log-bandwidth": "20M"}, pod.Annotations)
 	})
+	for _, runtime := range append([]string{""}, types.ValidK8sExecutorRuntimeValues()...) {
+		t.Run(fmt.Sprintf("%q disables service links", runtime), func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(ptr.To(false), podFor(runtime, "none").Spec.EnableServiceLinks)
+		})
+	}
+	t.Run("the shared spec leaves service links to the caller", func(t *testing.T) {
+		must := require.New(t)
+		cfg := K8sExecutorConfig{Image: "busybox", Namespace: testK8sNamespace, Network: &types.NetworkConfig{Mode: "none"}}
+		must.Nil(buildSandboxPodSpec(cfg, nil, nil).EnableServiceLinks)
+	})
 	t.Run("the registry maps are not shared with the pod", func(t *testing.T) {
 		must := require.New(t)
 		pod := podFor("nitro-isolated", "none")
