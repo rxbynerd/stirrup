@@ -174,8 +174,8 @@ func buildSandboxObject(namespace, name, runID string, podSpec corev1.PodSpec, s
 // cluster op, install the egress NetworkPolicy BEFORE the Sandbox so the Pod
 // never runs with unrestricted egress, then create the Sandbox and wait for the
 // controller to report it Ready. A failure after the Sandbox create tears down
-// through Close, which removes the policy only once the Sandbox is gone; a
-// failed create is reconciled by name first.
+// through Close, which removes the policy only once the Sandbox and its
+// backing Pod are gone; a failed create is reconciled by name first.
 func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*AgentSandboxExecutor, error) {
 	if cfg.Image == "" {
 		return nil, fmt.Errorf("agent sandbox executor requires an image")
