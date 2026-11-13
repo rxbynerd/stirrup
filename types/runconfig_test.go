@@ -2186,6 +2186,44 @@ func TestValidateRunConfig_NitroIsolatedIdentityReportedOnce(t *testing.T) {
 	must.Equal(1, strings.Count(err.Error(), `executor.sandboxIdentity and executor.gitProxy must be unset`))
 }
 
+func TestValidateRunConfig_NonFiniteCPUsReportedOnce(t *testing.T) {
+	configs := map[string]func() *RunConfig{
+		"k8s nitro-isolated": nitroIsolatedValidConfig,
+		"k8s gvisor": func() *RunConfig {
+			c := nitroIsolatedValidConfig()
+			c.Executor.Runtime = "gvisor"
+			return c
+		},
+		"container": func() *RunConfig {
+			c := validConfig()
+			c.Executor = ExecutorConfig{Type: "container", Image: "img", Resources: &ResourceLimits{CPUs: 1}}
+			return c
+		},
+	}
+	for name, build := range configs {
+		for _, cpus := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+			t.Run(fmt.Sprintf("%s cpus %v", name, cpus), func(t *testing.T) {
+				must := require.New(t)
+				c := build()
+				must.NoError(ValidateRunConfig(c), "the base config is valid")
+				c.Executor.Resources.CPUs = cpus
+
+				err := ValidateRunConfig(c)
+
+				must.Error(err)
+				must.Equal(1, strings.Count(err.Error(), "executor.resources.cpus"), err.Error())
+				must.ErrorContains(err, fmt.Sprintf("executor.resources.cpus must be a finite number (got %v)", cpus))
+			})
+		}
+	}
+	t.Run("fractional cpus accepted", func(t *testing.T) {
+		must := require.New(t)
+		c := nitroIsolatedValidConfig()
+		c.Executor.Resources.CPUs = 0.5
+		must.NoError(ValidateRunConfig(c))
+	})
+}
+
 // TestK8sRuntimeRequirementErrors_OnlyNitroIsolatedHasRequirements pins
 // that the shared requirement rules leave every other k8s runtime value to
 // the existing validation, including an offline-incompatible shape.
@@ -2209,11 +2247,16 @@ func TestK8sRuntimeRequirementErrors_NitroIsolated(t *testing.T) {
 		must := require.New(t)
 		must.Empty(K8sRuntimeRequirementErrors("nitro-isolated", &NetworkConfig{Mode: "none"}, &ResourceLimits{CPUs: 0.25, MemoryMB: 512}, false))
 	})
-	t.Run("not-a-number cpu rejected", func(t *testing.T) {
+	t.Run("non-finite cpu left to the shared rule", func(t *testing.T) {
 		must := require.New(t)
-		errs := K8sRuntimeRequirementErrors("nitro-isolated", &NetworkConfig{Mode: "none"}, &ResourceLimits{CPUs: math.NaN(), MemoryMB: 512}, false)
-		must.Len(errs, 1)
-		must.Contains(errs[0], "executor.resources.cpus must be positive")
+		for _, cpus := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+			must.Empty(K8sRuntimeRequirementErrors("nitro-isolated", &NetworkConfig{Mode: "none"}, &ResourceLimits{CPUs: cpus, MemoryMB: 512}, false), "cpus %v", cpus)
+		}
+	})
+	t.Run("negative disk rejected", func(t *testing.T) {
+		must := require.New(t)
+		errs := K8sRuntimeRequirementErrors("nitro-isolated", &NetworkConfig{Mode: "none"}, &ResourceLimits{CPUs: 1, MemoryMB: 512, DiskMB: -1}, false)
+		must.Equal([]string{`executor.resources.diskMb must be unset for executor.runtime="nitro-isolated" (got -1); an ephemeral-storage limit is not an enforced quota inside the guest`}, errs)
 	})
 	t.Run("every violation reported", func(t *testing.T) {
 		must := require.New(t)

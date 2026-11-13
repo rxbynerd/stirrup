@@ -6302,7 +6302,9 @@ func validateExecutorRuntime(cfg ExecutorConfig, errs *[]string) {
 // executor.runtime value rules out, one message per violated rule, or nil.
 // ValidateRunConfig and the k8s executor constructor both call it, so a
 // caller that bypasses validation meets the same rules. sandboxIdentity
-// reports whether executor.sandboxIdentity or executor.gitProxy is set.
+// reports whether executor.sandboxIdentity or executor.gitProxy is set. A
+// non-finite cpus value is not reported here: NonFiniteCPUsError covers it
+// for every executor.
 //
 // Only "nitro-isolated" has requirements. Its guest VM is sized from the
 // CPU and memory requests at boot, the first supported shape is offline
@@ -6325,7 +6327,8 @@ func K8sRuntimeRequirementErrors(runtime string, network *NetworkConfig, resourc
 	if resources != nil {
 		r = *resources
 	}
-	if r.CPUs <= 0 || math.IsNaN(r.CPUs) {
+	// A non-finite value is validateResourceLimits's to report.
+	if NonFiniteCPUsError(r.CPUs) == "" && r.CPUs <= 0 {
 		errs = append(errs, fmt.Sprintf(
 			`executor.resources.cpus must be positive for executor.runtime="nitro-isolated" (got %v); the guest VM is sized from it at boot`,
 			r.CPUs))
@@ -6569,18 +6572,31 @@ func warnGitProxyAllowlistGap(config *RunConfig) {
 	)
 }
 
-// validateResourceLimits rejects negative resource bounds. A negative
-// value silently maps to "no limit" in both the container and k8s
-// executors (the mapping helpers guard on > 0), so an operator who typed
-// cpus:-2 would believe they had capped the workload while in fact the Pod
-// or container runs unbounded. Shared across executor types so the same
-// floor applies wherever Resources is honoured. A nil block is valid (the
-// executor inherits platform defaults).
+// NonFiniteCPUsError returns the message for a cpus value that is NaN or an
+// infinity, or "" for a finite one. The proto field is a double, so
+// stirrup job can carry either.
+func NonFiniteCPUsError(cpus float64) string {
+	if !math.IsNaN(cpus) && !math.IsInf(cpus, 0) {
+		return ""
+	}
+	return fmt.Sprintf("executor.resources.cpus must be a finite number (got %v)", cpus)
+}
+
+// validateResourceLimits rejects non-finite cpus and negative resource
+// bounds. A negative value silently maps to "no limit" in both the
+// container and k8s executors (the mapping helpers guard on > 0), so an
+// operator who typed cpus:-2 would believe they had capped the workload
+// while in fact the Pod or container runs unbounded. Shared across executor
+// types so the same floor applies wherever Resources is honoured. A nil
+// block is valid (the executor inherits platform defaults).
 func validateResourceLimits(r *ResourceLimits, errs *[]string) {
 	if r == nil {
 		return
 	}
-	if r.CPUs < 0 {
+	switch msg := NonFiniteCPUsError(r.CPUs); {
+	case msg != "":
+		*errs = append(*errs, msg)
+	case r.CPUs < 0:
 		*errs = append(*errs, fmt.Sprintf("executor.resources.cpus must not be negative (got %v)", r.CPUs))
 	}
 	if r.MemoryMB < 0 {
