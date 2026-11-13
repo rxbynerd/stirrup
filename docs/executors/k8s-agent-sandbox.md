@@ -317,18 +317,17 @@ rides the shared `pods/exec` path too.
 ## Dry-run preflight
 
 `stirrup harness --dry-run` never constructs this executor, so it creates
-no Sandbox, Pod, or NetworkPolicy. The `executor-probe` step asks the API
-server, through `SelfSubjectAccessReview`, whether the credentials hold
-`create`, `get` and `delete` on `sandboxes.agents.x-k8s.io`, `create` on
-`pods/exec`, and `create` and `delete` on `networkpolicies` in
-`executor.k8sNamespace`. Pod-create permission does not satisfy the check.
-It also confirms through API discovery that `agents.x-k8s.io/v1alpha1`
-serves `sandboxes` (a group that is not served fails the step) and reads the
-`gvisor` RuntimeClass (reported as *not checked* when the credentials may
-not read it). The full list, the permission the review itself needs, and
-what a dry run does not exercise (image pull, admission, readiness,
-in-sandbox tools) are described in
-[the `k8s` executor's dry-run section](k8s.md#dry-run-preflight).
+no Sandbox, Pod, or NetworkPolicy. The `executor-probe` step runs the
+read-only access check described in
+[the `k8s` executor's dry-run section](k8s.md#dry-run-preflight), which
+holds the authoritative permission table. For `k8s-sandbox` that table has
+`sandboxes.agents.x-k8s.io` verbs in place of the Pod verbs, so Pod-create
+permission does not satisfy it. The check also confirms through API
+discovery that `agents.x-k8s.io/v1alpha1` serves `sandboxes` (a group that
+is not served fails the step) and reads the `gvisor` RuntimeClass and the
+namespace (each reported as `not checked`, with the step still `ok`, when
+the credentials may not read it). Failure messages and fixes are in the
+[`k8s` troubleshooting table](k8s.md#troubleshooting).
 `--no-probe-executor` skips the check without contacting the API server.
 
 ## Configuration

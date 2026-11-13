@@ -171,7 +171,9 @@ NetworkPolicy, and instead asks the API server whether the configured
 credentials hold the permissions a run needs (see
 [Dry-run preflight](executors/k8s.md#dry-run-preflight)). Pass
 `--no-probe-executor` to suppress even that contact, recording the
-executor step as a `skip`.
+`executor-probe` step as a `skip`. The access check reports optional reads
+it could not make as `not checked` in the step detail while the step stays
+`ok`, and it does not probe the egress proxy URL.
 
 The trace probe is the one step that reaches a live backend: for
 `traceEmitter.type=otel` it exports a single throwaway span (tagged
@@ -193,8 +195,9 @@ The report lists each step with one of four statuses:
   `--no-probe-*` gate suppressed it.
 - `warn` — the step found a condition the run can proceed with: an
   optional MCP server that did not answer or does not advertise every
-  allowlisted tool, or a `tools.lazyLoading.eager` name that matches no
-  tool. A warning does not fail the report.
+  allowlisted tool, a `tools.lazyLoading.eager` name that matches no
+  tool, or a `k8s` executor with no `executor.runtime` (the
+  `executor-runtime` step). A warning does not fail the report.
 - `fail` — construction or a probe failed. The step names the component,
   carries the underlying error, and — where a concrete next step is
   known — a remediation hint.
@@ -239,7 +242,7 @@ fail the run:
 | `--no-probe-mcp` | The MCP `initialize` / `tools/list` handshake for every configured server. |
 | `--no-probe-trace` | The trace-emitter reachability probe (`otel` flush, `gcs` bucket check). |
 | `--no-probe-egress` | The egress-allowlist DNS resolution (container executor in `allowlist` network mode). |
-| `--no-probe-executor` | The container-engine probe (socket ping + image-present) for the `container` executor, and the cluster access check for the `k8s` and `k8s-sandbox` executors. The `executor-probe` step then records `skip`; no engine or API server is contacted. No effect on `local`/`api` executors, which construct without an engine. |
+| `--no-probe-executor` | The `executor-probe` step. For the `container` executor it is the engine probe (socket ping + image-present); for `k8s` and `k8s-sandbox` it is the cluster access check. The step then records `skip`; no engine or API server is contacted. No effect on `local`/`api` executors, which construct without an engine. |
 | `--dry-run-timeout` | Not a gate — bounds the total preflight wall-clock. Defaults to `30s`. |
 
 The egress-allowlist probe (`--no-probe-egress`) is DNS-only: it
