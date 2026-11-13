@@ -2114,11 +2114,6 @@ func TestValidateRunConfig_NitroIsolatedRequirements(t *testing.T) {
 			wantContains: []string{`executor.network.mode must be "none" for executor.runtime="nitro-isolated" (got "allowlist")`},
 		},
 		{
-			name:         "missing network rejected",
-			mutate:       func(c *RunConfig) { c.Executor.Network = nil },
-			wantContains: []string{`executor.network.mode must be "none" for executor.runtime="nitro-isolated" (executor.network is unset)`},
-		},
-		{
 			name:   "missing resources rejected",
 			mutate: func(c *RunConfig) { c.Executor.Resources = nil },
 			wantContains: []string{
@@ -2184,6 +2179,37 @@ func TestValidateRunConfig_NitroIsolatedIdentityReportedOnce(t *testing.T) {
 	err := ValidateRunConfig(c)
 	must.Error(err)
 	must.Equal(1, strings.Count(err.Error(), `executor.sandboxIdentity and executor.gitProxy must be unset`))
+}
+
+// TestValidateRunConfig_NitroIsolatedNetworkModeReportedOnce pins one
+// message per network defect: the runtime rule names only a valid mode it
+// does not support, and the k8s executor rules name a missing block or an
+// unknown mode.
+func TestValidateRunConfig_NitroIsolatedNetworkModeReportedOnce(t *testing.T) {
+	cases := []struct {
+		name    string
+		network *NetworkConfig
+		want    string
+	}{
+		{name: "missing network", want: `executor.network is required for executor.type="k8s" (set mode to "none" or "allowlist")`},
+		{name: "empty mode", network: &NetworkConfig{}, want: `executor.network.mode must be "none" or "allowlist" for executor.type="k8s" (got "")`},
+		{name: "unknown mode", network: &NetworkConfig{Mode: "bogus"}, want: `executor.network.mode must be "none" or "allowlist" for executor.type="k8s" (got "bogus")`},
+		{name: "allowlist mode", network: &NetworkConfig{Mode: "allowlist", Allowlist: []string{"example.com"}}, want: `executor.network.mode must be "none" for executor.runtime="nitro-isolated" (got "allowlist"); networked Nitro sandboxes are not supported`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			c := nitroIsolatedValidConfig()
+			c.Executor.Network = tc.network
+			if tc.network != nil && tc.network.Mode == "allowlist" {
+				c.Executor.K8sEgressProxyURL = "http://stirrup-egress-proxy:8080"
+			}
+
+			err := ValidateRunConfig(c)
+
+			must.EqualError(err, "RunConfig validation failed: "+tc.want)
+		})
+	}
 }
 
 func TestValidateRunConfig_NonFiniteCPUsReportedOnce(t *testing.T) {
