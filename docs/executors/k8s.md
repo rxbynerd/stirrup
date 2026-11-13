@@ -256,8 +256,8 @@ PodScheduled False (Unschedulable: 0/3 nodes are available: 3 Insufficient cpu.)
 context deadline exceeded
 ```
 
-Once the Pod is Ready, the executor waits for `pods/exec` to reach it
-before using it. On a node that has just joined the cluster, a Pod can
+Once the Pod is Ready, the `k8s` executor waits for `pods/exec` to
+reach it before using it; the `k8s-sandbox` executor has no such wait. On a node that has just joined the cluster, a Pod can
 be Ready before the kubelet's serving certificate is issued, and until
 then the API server cannot dial the kubelet, so every `exec` fails.
 *Measured* on the 2026-11-13 EKS run, a new node's certificate request
@@ -287,7 +287,7 @@ unable to upgrade connection: error dialing backend: remote error: tls: internal
 
 A cancellation or run deadline during the wait fails construction with
 `pod <ns>/<pod> exec reachability wait interrupted: <context error>`. The wait applies
-to every `k8s` runtime; for `nitro-isolated` it runs before the
+to every runtime of the `k8s` executor; for `nitro-isolated` it runs before the
 [runtime diagnostics](#runtime-diagnostics).
 
 The [`k8s-sandbox`](k8s-agent-sandbox.md) executor shares only the
