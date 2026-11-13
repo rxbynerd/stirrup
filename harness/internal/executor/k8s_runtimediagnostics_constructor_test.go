@@ -123,6 +123,7 @@ func TestNewK8sExecutor_NitroDiagnosticsRedactSecretShapedGuestValues(t *testing
 	_, err := newFakeK8sExecutorWithExec(context.Background(), cs, cfg, guestExec(dump, nil, &calls))
 
 	must.ErrorContains(err, "dmi_product_name")
+	must.NotContains(err.Error(), "sk-ant-", "the returned error carries the unredacted guest value")
 	must.NotContains(events.String(), "sk-ant-abc123_DEF-456")
 	var event security.SecurityEvent
 	must.NoError(json.Unmarshal(bytes.TrimSpace(events.Bytes()), &event))

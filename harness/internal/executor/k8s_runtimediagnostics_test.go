@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -299,16 +300,91 @@ func TestRunK8sRuntimeDiagnostics_NilSecurityStillFailsClosed(t *testing.T) {
 
 func TestRunK8sRuntimeDiagnostics_BoundsGuestValues(t *testing.T) {
 	must := require.New(t)
-	long := strings.Repeat("é", diagnosticValueMaxBytes)
+	long := strings.Repeat("é", 2*k8sClusterTextMax)
 	core, security, _ := fakeDiagnosticsCore(t, guestDump(text(long), text(procNetDevHeader+procNetDevLo), text(procNetRouteHeader)), nil)
 
 	err := runK8sRuntimeDiagnostics(context.Background(), "nitro-isolated", k8sRuntimeProfiles["nitro-isolated"], core)
 	must.Error(err)
 	must.Len(security.runtimeDiagnostics, 1)
 	name := security.runtimeDiagnostics[0].observed["dmiProductName"]
-	must.LessOrEqual(len(name), diagnosticValueMaxBytes)
+	must.Equal(k8sClusterTextMax+1, utf8.RuneCountInString(name), "the value is cut to k8sClusterTextMax runes plus the marker")
 	must.True(strings.HasSuffix(name, "…"), "a cut value is marked: %q", name)
-	must.Less(len(err.Error()), 2*diagnosticValueMaxBytes+200, "the error quotes the bounded value")
+	must.True(utf8.ValidString(name), "the observed value was cut inside a rune")
+	must.True(utf8.ValidString(err.Error()), "the error was cut inside a rune")
+	must.Less(utf8.RuneCountInString(err.Error()), k8sClusterTextMax+200, "the error quotes the bounded value")
+}
+
+// requireNoControlBytes fails when s holds a byte below 0x20 or 0x7f, which
+// a terminal or log reader would act on.
+func requireNoControlBytes(t *testing.T, s string) {
+	t.Helper()
+	must := require.New(t)
+	for i := 0; i < len(s); i++ {
+		must.False(s[i] < 0x20 || s[i] == 0x7f, "control byte %#x at %d in %q", s[i], i, s)
+	}
+}
+
+func TestRunK8sRuntimeDiagnostics_SanitisesGuestTextInTheError(t *testing.T) {
+	const escapes = "\x1b]0;x\a\x1b[2J"
+	const hostile = escapes + "\nforged"
+	cases := []struct {
+		name    string
+		stdout  string
+		execErr error
+	}{
+		{name: "interface name", stdout: guestDump(
+			text("m5d.enclave\n"),
+			text(procNetDevHeader+procNetDevLo+"eth0"+escapes+": 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"),
+			text(procNetRouteHeader),
+		)},
+		{name: "route field", stdout: guestDump(
+			text("m5d.enclave\n"),
+			text(procNetDevHeader+procNetDevLo),
+			text(procNetRouteHeader+"dummy0"+escapes+"\t00000000\t0\n"),
+		)},
+		{name: "unrecognised line", stdout: guestDump(
+			text("m5d.enclave\n"),
+			text(procNetDevHeader+"lo"+escapes+"\n"),
+			text(procNetRouteHeader),
+		)},
+		{name: "framing line", stdout: "begin /x" + escapes + "\n"},
+		{name: "stderr after a non-zero exit", execErr: utilexec.CodeExitError{Err: errors.New("command terminated with exit code 2"), Code: 2}},
+		{name: "transport error", execErr: errors.New("stream reset" + hostile)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			core, security, _ := fakeDiagnosticsCore(t, tc.stdout, tc.execErr)
+			inner := core.execFn
+			core.execFn = func(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error {
+				if _, err := io.WriteString(stderr, "sh: "+hostile); err != nil {
+					return err
+				}
+				return inner(ctx, command, stdin, stdout, stderr)
+			}
+
+			err := runK8sRuntimeDiagnostics(context.Background(), "nitro-isolated", k8sRuntimeProfiles["nitro-isolated"], core)
+
+			must.Error(err)
+			requireNoControlBytes(t, err.Error())
+			must.Len(security.runtimeDiagnostics, 1)
+			requireNoControlBytes(t, security.runtimeDiagnostics[0].reason)
+			for _, v := range security.runtimeDiagnostics[0].observed {
+				requireNoControlBytes(t, v)
+			}
+		})
+	}
+}
+
+func TestRunK8sRuntimeDiagnostics_KeepsTheExecErrorReachable(t *testing.T) {
+	must := require.New(t)
+	execErr := errors.New("stream reset\x1b[2J")
+	core, _, _ := fakeDiagnosticsCore(t, "", execErr)
+
+	err := runK8sRuntimeDiagnostics(context.Background(), "nitro-isolated", k8sRuntimeProfiles["nitro-isolated"], core)
+
+	must.ErrorIs(err, execErr)
+	requireNoControlBytes(t, err.Error())
 }
 
 func TestParseGuestFileDump_RequiresEachPathInOrder(t *testing.T) {

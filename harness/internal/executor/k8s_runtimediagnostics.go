@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 )
 
 // k8sRuntimeDiagnosticError is a failed runtime diagnostic. check names the
@@ -38,7 +37,7 @@ func runK8sRuntimeDiagnostics(ctx context.Context, runtime string, profile k8sRu
 	}
 	var diagErr *k8sRuntimeDiagnosticError
 	if !errors.As(err, &diagErr) {
-		diagErr = &k8sRuntimeDiagnosticError{check: diagnosticCheckExec, reason: err.Error(), err: err}
+		diagErr = &k8sRuntimeDiagnosticError{check: diagnosticCheckExec, reason: clusterText(err.Error()), err: err}
 	}
 	if core.Security != nil {
 		core.Security.SandboxRuntimeDiagnostic(runtime, false, diagErr.check, diagErr.reason, observed)
@@ -65,9 +64,6 @@ const (
 	// guestFileDumpOutputLimit bounds the diagnostic exec's stdout and
 	// stderr; the files read are a few hundred bytes on a sandbox guest.
 	guestFileDumpOutputLimit = 64 * 1024
-	// diagnosticValueMaxBytes bounds a guest-reported value quoted in an
-	// observed entry or a failure reason.
-	diagnosticValueMaxBytes = 128
 )
 
 // nitroIsolatedAllowedInterfaces are the interfaces a network-isolated Nitro
@@ -122,13 +118,13 @@ func readGuestFiles(ctx context.Context, core *podExecCore, paths ...string) (ma
 		if code, ok := extractExitCode(execErr); ok && code != 0 {
 			return nil, &k8sRuntimeDiagnosticError{
 				check:  diagnosticCheckExec,
-				reason: fmt.Sprintf("guest file read exited %d: %s", code, boundDiagnosticValue(strings.TrimSpace(stderr.String()))),
+				reason: fmt.Sprintf("guest file read exited %d: %s", code, clusterText(strings.TrimSpace(stderr.String()))),
 				err:    execErr,
 			}
 		}
 		return nil, &k8sRuntimeDiagnosticError{
 			check:  diagnosticCheckExec,
-			reason: fmt.Sprintf("guest file read failed: %v", execErr),
+			reason: "guest file read failed: " + clusterText(execErr.Error()),
 			err:    execErr,
 		}
 	}
@@ -159,12 +155,12 @@ func parseGuestFileDump(out []byte, paths []string) (map[string]guestFile, error
 				files[section] = current
 				section = ""
 			default:
-				return nil, fmt.Errorf("unexpected line %q inside the report for %s", boundDiagnosticValue(line), section)
+				return nil, fmt.Errorf("unexpected line %q inside the report for %s", clusterText(line), section)
 			}
 			continue
 		}
 		if next == len(paths) {
-			return nil, fmt.Errorf("unexpected line %q after the last report", boundDiagnosticValue(line))
+			return nil, fmt.Errorf("unexpected line %q after the last report", clusterText(line))
 		}
 		want := paths[next]
 		switch line {
@@ -174,7 +170,7 @@ func parseGuestFileDump(out []byte, paths []string) (map[string]guestFile, error
 		case "missing " + want:
 			files[want] = guestFile{}
 		default:
-			return nil, fmt.Errorf("unexpected line %q where the report for %s should start", boundDiagnosticValue(line), want)
+			return nil, fmt.Errorf("unexpected line %q where the report for %s should start", clusterText(line), want)
 		}
 		next++
 	}
@@ -222,11 +218,11 @@ func checkNitroDMIProductName(file guestFile, observed map[string]string) *k8sRu
 		return &k8sRuntimeDiagnosticError{check: diagnosticCheckDMI, reason: nitroDMIProductNamePath + " is absent, unreadable or not a regular file"}
 	}
 	name := strings.TrimSpace(strings.Join(file.lines, "\n"))
-	observed["dmiProductName"] = boundDiagnosticValue(name)
+	observed["dmiProductName"] = clusterText(name)
 	if !strings.HasSuffix(name, nitroGuestDMISuffix) {
 		return &k8sRuntimeDiagnosticError{
 			check:  diagnosticCheckDMI,
-			reason: fmt.Sprintf("DMI product name %q does not end in %q, so the Pod is not running in a Nitro Sandbox", boundDiagnosticValue(name), nitroGuestDMISuffix),
+			reason: fmt.Sprintf("DMI product name %q does not end in %q, so the Pod is not running in a Nitro Sandbox", clusterText(name), nitroGuestDMISuffix),
 		}
 	}
 	return nil
@@ -240,7 +236,7 @@ func checkIsolatedInterfaces(file guestFile, observed map[string]string) *k8sRun
 	if err != nil {
 		return &k8sRuntimeDiagnosticError{check: diagnosticCheckInterfaces, reason: err.Error(), err: err}
 	}
-	observed["interfaces"] = boundDiagnosticValue(strings.Join(names, ","))
+	observed["interfaces"] = clusterText(strings.Join(names, ","))
 	var unexpected []string
 	for _, name := range names {
 		if !nitroIsolatedAllowedInterfaces[name] {
@@ -251,7 +247,7 @@ func checkIsolatedInterfaces(file guestFile, observed map[string]string) *k8sRun
 		return &k8sRuntimeDiagnosticError{
 			check: diagnosticCheckInterfaces,
 			reason: fmt.Sprintf("the guest lists network interfaces %s beyond the allowed %s",
-				boundDiagnosticValue(strings.Join(unexpected, ",")), strings.Join(sortedSetMembers(nitroIsolatedAllowedInterfaces), ",")),
+				clusterText(strings.Join(unexpected, ",")), strings.Join(sortedSetMembers(nitroIsolatedAllowedInterfaces), ",")),
 		}
 	}
 	return nil
@@ -269,7 +265,7 @@ func checkEmptyRouteTable(file guestFile, observed map[string]string) *k8sRuntim
 	if len(routes) > 0 {
 		return &k8sRuntimeDiagnosticError{
 			check:  diagnosticCheckRoutes,
-			reason: fmt.Sprintf("the guest has %d IPv4 route entries (first: %s)", len(routes), boundDiagnosticValue(routes[0])),
+			reason: fmt.Sprintf("the guest has %d IPv4 route entries (first: %s)", len(routes), clusterText(routes[0])),
 		}
 	}
 	return nil
@@ -289,7 +285,7 @@ func parseProcNetDevInterfaces(lines []string) ([]string, error) {
 		name = strings.TrimSpace(name)
 		fields := strings.Fields(counters)
 		if !ok || name == "" || len(fields) != 16 || !allUnsigned(fields) {
-			return nil, fmt.Errorf("unrecognised %s line %q", procNetDevPath, boundDiagnosticValue(line))
+			return nil, fmt.Errorf("unrecognised %s line %q", procNetDevPath, clusterText(line))
 		}
 		names = append(names, name)
 	}
@@ -311,7 +307,7 @@ func parseProcNetRouteEntries(lines []string) ([]string, error) {
 	for _, line := range lines[1:] {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
-			return nil, fmt.Errorf("unrecognised %s line %q", procNetRoutePath, boundDiagnosticValue(line))
+			return nil, fmt.Errorf("unrecognised %s line %q", procNetRoutePath, clusterText(line))
 		}
 		entries = append(entries, fields[0]+" "+fields[1])
 	}
@@ -341,18 +337,4 @@ func sortedSetMembers(set map[string]bool) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-// boundDiagnosticValue cuts a guest-reported value to
-// diagnosticValueMaxBytes on a rune boundary.
-func boundDiagnosticValue(s string) string {
-	if len(s) <= diagnosticValueMaxBytes {
-		return s
-	}
-	const marker = "…"
-	cut := diagnosticValueMaxBytes - len(marker)
-	for cut > 0 && !utf8.RuneStart(s[cut]) {
-		cut--
-	}
-	return s[:cut] + marker
 }
