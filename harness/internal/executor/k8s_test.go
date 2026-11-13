@@ -40,6 +40,8 @@ import (
 //	STIRRUP_TEST_EGRESS_PROXY_URL allowlist proxy URL          (default the default-ns svc)
 //	STIRRUP_TEST_OUTPUT_CAP_TIMEOUT output-cap command timeout (default 30s)
 //	STIRRUP_TEST_EVIDENCE_DIR     evidence directory for the Nitro group (default none)
+//	STIRRUP_TEST_NITRO_INSTANCE_TYPE instance type for the Nitro tests (default "m5d.xlarge")
+//	STIRRUP_TEST_NITRO_ARCH       architecture for the Nitro tests (default "amd64")
 //
 // On a cluster whose only schedulable nodes are tainted for a sandbox
 // runtime, STIRRUP_TEST_RUNTIME_CLASS must name the sandbox runtime
