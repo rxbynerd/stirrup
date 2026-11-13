@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -10,8 +11,10 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	k8stypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
 	"k8s.io/utils/ptr"
@@ -23,26 +26,55 @@ import (
 // constructor tests.
 func constructorCfg(runtimeClass string) K8sExecutorConfig {
 	return K8sExecutorConfig{
-		Image:            "busybox",
-		Namespace:        testK8sNamespace,
-		RuntimeClassName: runtimeClass,
-		Network:          &types.NetworkConfig{Mode: "none"},
-		Lifecycle:        Lifecycle{RunID: testK8sRunID},
+		Image:     "busybox",
+		Namespace: testK8sNamespace,
+		Runtime:   runtimeClass,
+		Network:   &types.NetworkConfig{Mode: "none"},
+		Lifecycle: Lifecycle{RunID: testK8sRunID},
 	}
 }
 
-// admitPods makes the fake API server assign a UID to every created Pod, let
-// mutate rewrite it as admission might, and report it Running and Ready.
+// admitPods makes the fake API server assign a UID to every created Pod, add
+// the RuntimeClass marks a profile requires (as the RuntimeClass admission
+// plugin does for the platform's class), let mutate rewrite it as admission
+// might, and report it Running and Ready.
 func admitPods(cs *fake.Clientset, mutate func(pod *corev1.Pod)) {
 	cs.PrependReactor("create", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		pod := action.(clienttesting.CreateAction).GetObject().(*corev1.Pod)
 		pod.UID = "uid-1"
 		pod.Status = readyPod("uid-1").Status
+		applyRuntimeClassMarks(pod)
 		if mutate != nil {
 			mutate(pod)
 		}
 		return false, nil, nil
 	})
+}
+
+// applyRuntimeClassMarks adds the overhead and node-selector marks of the
+// profile whose RuntimeClass the Pod names.
+func applyRuntimeClassMarks(pod *corev1.Pod) {
+	if pod.Spec.RuntimeClassName == nil {
+		return
+	}
+	for _, profile := range k8sRuntimeProfiles {
+		if profile.runtimeClassName != *pod.Spec.RuntimeClassName {
+			continue
+		}
+		for _, name := range profile.requiredOverheadResources {
+			if pod.Spec.Overhead == nil {
+				pod.Spec.Overhead = corev1.ResourceList{}
+			}
+			pod.Spec.Overhead[name] = resource.MustParse("1")
+		}
+		for k, v := range profile.requiredNodeSelector {
+			if pod.Spec.NodeSelector == nil {
+				pod.Spec.NodeSelector = map[string]string{}
+			}
+			pod.Spec.NodeSelector[k] = v
+		}
+		return
+	}
 }
 
 // createdPodName returns the name of the Pod the constructor submitted.
@@ -65,8 +97,186 @@ func newFakeK8sExecutor(ctx context.Context, cs *fake.Clientset, cfg K8sExecutor
 // newLoggedFakeK8sExecutor is newFakeK8sExecutor that also returns the log.
 func newLoggedFakeK8sExecutor(ctx context.Context, cs *fake.Clientset, cfg K8sExecutorConfig) (*K8sExecutor, *syncBuffer, error) {
 	logger, logs := testLogger()
-	exec, err := newK8sExecutor(ctx, cfg, nil, cs, nil, fastK8sTiming, logger)
+	profile, proxyEnv, err := prepareK8sExecutor(cfg)
+	if err != nil {
+		return nil, logs, err
+	}
+	exec, err := newK8sExecutor(ctx, cfg, profile, proxyEnv, cs, nil, reachableExec, fastK8sTiming, logger)
 	return exec, logs, err
+}
+
+// newFakeK8sExecutorWithExec is newFakeK8sExecutor with pods/exec served by
+// execFn.
+func newFakeK8sExecutorWithExec(ctx context.Context, cs kubernetes.Interface, cfg K8sExecutorConfig, execFn podExecFunc) (*K8sExecutor, error) {
+	logger, _ := testLogger()
+	profile, proxyEnv, err := prepareK8sExecutor(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return newK8sExecutor(ctx, cfg, profile, proxyEnv, cs, nil, execFn, fastK8sTiming, logger)
+}
+
+// nitroCfg returns a k8s executor config that meets the nitro-isolated
+// runtime's requirements.
+func nitroCfg() K8sExecutorConfig {
+	cfg := constructorCfg("nitro-isolated")
+	cfg.Resources = &types.ResourceLimits{CPUs: 1, MemoryMB: 1024}
+	return cfg
+}
+
+func TestNewK8sExecutor_RejectsUnsupportedConfigBeforeAnyClusterCall(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(cfg *K8sExecutorConfig)
+		wantErr string
+	}{
+		{
+			name:    "runtime without a profile",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Runtime = "isolated-sandbox" },
+			wantErr: `unsupported executor.runtime "isolated-sandbox"`,
+		},
+		{
+			name:    "confidential runtime",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Runtime = "confidential-sandbox" },
+			wantErr: `unsupported executor.runtime "confidential-sandbox"`,
+		},
+		{
+			name: "nitro-isolated with allowlist egress",
+			mutate: func(cfg *K8sExecutorConfig) {
+				cfg.Network = &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"example.com"}}
+				cfg.EgressProxyURL = "http://stirrup-egress-proxy:8080"
+			},
+			wantErr: `executor.network.mode must be "none" for executor.runtime="nitro-isolated" (got "allowlist")`,
+		},
+		{
+			name:    "nitro-isolated without resources",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources = nil },
+			wantErr: `executor.resources.cpus must be positive`,
+		},
+		{
+			name:    "nitro-isolated without memory",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources.MemoryMB = 0 },
+			wantErr: `executor.resources.memoryMb must be positive`,
+		},
+		{
+			name:    "nitro-isolated with an empty network mode",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Network = &types.NetworkConfig{} },
+			wantErr: `unsupported network mode ""`,
+		},
+		{
+			name:    "nitro-isolated with an unknown network mode",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Network = &types.NetworkConfig{Mode: "bogus"} },
+			wantErr: `unsupported network mode "bogus"`,
+		},
+		{
+			name:    "nitro-isolated with negative cpus",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources.CPUs = -1 },
+			wantErr: `k8s executor: executor.resources.cpus must not be negative (got -1)`,
+		},
+		{
+			name:    "nitro-isolated with negative memory",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources.MemoryMB = -1 },
+			wantErr: `k8s executor: executor.resources.memoryMb must not be negative (got -1)`,
+		},
+		{
+			name:    "nitro-isolated with negative disk",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources.DiskMB = -1 },
+			wantErr: `k8s executor: executor.resources.diskMb must not be negative (got -1)`,
+		},
+		{
+			name:    "nitro-isolated with infinite cpus",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources.CPUs = math.Inf(1) },
+			wantErr: `executor.resources.cpus must be a finite number (got +Inf)`,
+		},
+		{
+			name: "gvisor with not-a-number cpus",
+			mutate: func(cfg *K8sExecutorConfig) {
+				cfg.Runtime = "gvisor"
+				cfg.Resources.CPUs = math.NaN()
+			},
+			wantErr: `executor.resources.cpus must be a finite number (got NaN)`,
+		},
+		{
+			name:    "nitro-isolated with a sandbox identity token",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.SandboxIdentityToken = true },
+			wantErr: `executor.sandboxIdentity and executor.gitProxy must be unset`,
+		},
+		{
+			name:    "nitro-isolated with identity environment",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.ExtraEnv = []EnvPair{{Name: "HAYBALE_TOKEN", Value: "x"}} },
+			wantErr: `executor.sandboxIdentity and executor.gitProxy must be unset`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cfg := nitroCfg()
+			tc.mutate(&cfg)
+			cs := fake.NewClientset()
+
+			_, err := newFakeK8sExecutor(context.Background(), cs, cfg)
+
+			must.ErrorContains(err, tc.wantErr)
+			must.Empty(cs.Actions(), "a rejected config reached the cluster")
+		})
+	}
+}
+
+func TestNewK8sExecutor_MissingNitroRuntimeClassNamesTheClassAndEKS(t *testing.T) {
+	must := require.New(t)
+	cs := fake.NewClientset()
+	failVerb(cs, "create", "pods", apierrors.NewForbidden(podsResource.GroupResource(), testK8sPodName,
+		errors.New(`pod rejected: RuntimeClass "isolated-sandbox" not found`)))
+
+	_, err := newFakeK8sExecutor(context.Background(), cs, nitroCfg())
+
+	must.ErrorContains(err, `RuntimeClass "isolated-sandbox" was rejected by the cluster`)
+	must.ErrorContains(err, K8sRuntimeClassMissingHint("nitro-isolated"))
+	must.False(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(createdPodName(t, cs))), "policy left behind")
+}
+
+func TestNewK8sExecutor_NegativeLimitReportedOnce(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(r *types.ResourceLimits)
+		want   string
+	}{
+		{name: "cpus", mutate: func(r *types.ResourceLimits) { r.CPUs = -1 }, want: "k8s executor: executor.resources.cpus must not be negative (got -1)"},
+		{name: "memoryMb", mutate: func(r *types.ResourceLimits) { r.MemoryMB = -1 }, want: "k8s executor: executor.resources.memoryMb must not be negative (got -1)"},
+		{name: "diskMb", mutate: func(r *types.ResourceLimits) { r.DiskMB = -1 }, want: "k8s executor: executor.resources.diskMb must not be negative (got -1)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cfg := nitroCfg()
+			tc.mutate(cfg.Resources)
+			cs := fake.NewClientset()
+
+			_, err := newFakeK8sExecutor(context.Background(), cs, cfg)
+
+			must.EqualError(err, tc.want)
+			must.Empty(cs.Actions())
+		})
+	}
+}
+
+// The public constructor applies the same checks before it builds a client,
+// so a rejected config never needs a reachable cluster or kubeconfig.
+func TestNewK8sExecutor_RejectsUnsupportedRuntimeBeforeBuildingAClient(t *testing.T) {
+	must := require.New(t)
+	cfg := nitroCfg()
+	cfg.Resources = nil
+	cfg.Kubeconfig = "/nonexistent/kubeconfig"
+
+	_, err := NewK8sExecutor(context.Background(), cfg)
+
+	must.ErrorContains(err, "executor.resources.cpus must be positive")
+	must.NotContains(err.Error(), "kube rest config")
+
+	cfg.Resources = &types.ResourceLimits{CPUs: math.Inf(1), MemoryMB: 1024}
+	_, err = NewK8sExecutor(context.Background(), cfg)
+	must.ErrorContains(err, "executor.resources.cpus must be a finite number (got +Inf)")
+	must.NotContains(err.Error(), "kube rest config")
 }
 
 // requireTornDown asserts the constructor deleted the Pod gracefully under

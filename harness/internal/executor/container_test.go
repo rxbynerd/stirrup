@@ -1588,6 +1588,9 @@ func (m *mockSecurityEmitter) OutputTruncated(_ string, _, _ int) {
 	m.outputTruncCount++
 }
 
+func (m *mockSecurityEmitter) SandboxRuntimeDiagnostic(_ string, _ bool, _, _ string, _ map[string]string) {
+}
+
 var _ SecurityEventEmitter = (*mockSecurityEmitter)(nil)
 
 // TestContainerExecutor_ExecStream_DemuxesUncappedOutput verifies the

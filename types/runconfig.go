@@ -1072,8 +1072,10 @@ type ExecutorConfig struct {
 
 	// Runtime selects the OCI sandbox runtime. Empty means "use the
 	// platform default". The closed set differs by executor Type — see
-	// docs/configuration.md (container: engine OCI runtime name; k8s: Pod
-	// RuntimeClassName, note "gvisor" not "runsc"; k8s-sandbox: gVisor-only).
+	// docs/configuration.md (container: engine OCI runtime name; k8s: a
+	// runtime value mapped to a Pod RuntimeClassName, note "gvisor" not
+	// "runsc", and "nitro-isolated" for AWS's "isolated-sandbox" class;
+	// k8s-sandbox: gVisor-only).
 	Runtime string `json:"runtime,omitempty"`
 
 	// RegistryAllowlist constrains which container image references the
@@ -2167,19 +2169,31 @@ var validContainerRuntimes = map[string]bool{
 	"kata-clh":  true,
 }
 
-// validK8sRuntimes is the closed set of RuntimeClass names the k8s
-// executor may select via Runtime. The empty string is accepted and
-// means "use the cluster default RuntimeClass" — the harness omits the
-// Pod's RuntimeClassName when empty. These are RuntimeClass names, not
-// OCI runtime names: gVisor's conventional RuntimeClass is "gvisor"
-// (its handler is runsc), so "runsc" is intentionally absent here.
+// validK8sRuntimes is the closed set of runtime values the k8s executor
+// may select via Runtime. Each value has a runtime profile in the executor
+// that maps it to a Pod RuntimeClassName; a test there pins the two sets
+// together. The empty string means "use the cluster default RuntimeClass"
+// and leaves the Pod's RuntimeClassName unset. Every value except
+// "nitro-isolated" is also its RuntimeClass name, so these follow
+// RuntimeClass conventions rather than OCI runtime names: gVisor's class
+// is "gvisor" (its handler is runsc), and "runsc" is absent here.
+// "nitro-isolated" selects AWS's "isolated-sandbox" class on EKS and
+// carries the extra requirements in K8sRuntimeRequirementErrors.
 var validK8sRuntimes = map[string]bool{
-	"":          true,
-	"runc":      true,
-	"gvisor":    true,
-	"kata-qemu": true,
-	"kata-fc":   true,
-	"kata-clh":  true,
+	"":               true,
+	"runc":           true,
+	"gvisor":         true,
+	"kata-qemu":      true,
+	"kata-fc":        true,
+	"kata-clh":       true,
+	"nitro-isolated": true,
+}
+
+// k8sRuntimeRejectionHints explains, after the generic "unsupported"
+// error, why a RuntimeClass name an operator is likely to try is refused.
+var k8sRuntimeRejectionHints = map[string]string{
+	"isolated-sandbox":     `this is the RuntimeClass name; set executor.runtime to "nitro-isolated", which selects it`,
+	"confidential-sandbox": "Nitro confidential sandboxes are not supported: the mode protects the workload from the node operator, and its default policy denies exec, the executor's only channel into the Pod (see docs/executors/k8s.md#eks-with-nitro-sandboxes)",
 }
 
 var validEditStrategyTypes = map[string]bool{
@@ -2793,7 +2807,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateK8sExecutor(config.Executor, &errs)
 	validateNoneExecutor(config.Executor, &errs)
 	validateVcsBackend(config.Executor.VcsBackend, &errs)
-	validateResourceLimits(config.Executor.Resources, &errs)
+	errs = append(errs, ResourceLimitErrors(config.Executor.Resources)...)
 	validateSandboxIdentity(config, &errs)
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
 	validateEditStrategyFuzzyThreshold(config.EditStrategy, &errs)
@@ -6247,7 +6261,8 @@ func validatePubSubResultSink(cfg *ResultSinkConfig, errs *[]string) {
 // sets differ; an empty runtime is always valid and any other Type
 // (local, api) rejects a non-empty runtime outright — silently dropping
 // it would let an operator believe they have sandbox isolation while the
-// workload runs on the host.
+// workload runs on the host. An accepted k8s runtime is then checked
+// against K8sRuntimeRequirementErrors.
 func validateExecutorRuntime(cfg ExecutorConfig, errs *[]string) {
 	if cfg.Runtime == "" {
 		return
@@ -6260,9 +6275,15 @@ func validateExecutorRuntime(cfg ExecutorConfig, errs *[]string) {
 		}
 	case "k8s":
 		if !validK8sRuntimes[cfg.Runtime] {
-			*errs = append(*errs, fmt.Sprintf(
-				"unsupported executor.runtime %q for executor.type=\"k8s\"", cfg.Runtime))
+			msg := fmt.Sprintf("unsupported executor.runtime %q for executor.type=\"k8s\"", cfg.Runtime)
+			if hint, ok := k8sRuntimeRejectionHints[cfg.Runtime]; ok {
+				msg += ": " + hint
+			}
+			*errs = append(*errs, msg)
+			return
 		}
+		*errs = append(*errs, K8sRuntimeRequirementErrors(
+			cfg.Runtime, cfg.Network, cfg.Resources, cfg.SandboxIdentity != nil || cfg.GitProxy != nil)...)
 	case "k8s-sandbox":
 		// The Agent Sandbox path is gVisor-only: GKE's secure-sandbox-policy
 		// admits nothing else and the executor forces it. Empty is allowed and
@@ -6275,6 +6296,53 @@ func validateExecutorRuntime(cfg ExecutorConfig, errs *[]string) {
 	default:
 		*errs = append(*errs, "executor.runtime is only valid when executor.type is \"container\", \"k8s\", or \"k8s-sandbox\"")
 	}
+}
+
+// K8sRuntimeRequirementErrors returns the executor settings a k8s
+// executor.runtime value rules out, one message per violated rule, or nil.
+// ValidateRunConfig and the k8s executor constructor both call it, so a
+// caller that bypasses validation meets the same rules. identityConfigured
+// reports whether executor.sandboxIdentity or executor.gitProxy is set.
+//
+// A nil network and an unknown network mode are not reported here:
+// ValidateRunConfig reports each once for the k8s executor family, and the
+// k8s constructor rejects each before any cluster call. A non-finite or
+// negative resource value is not reported here either: ResourceLimitErrors
+// reports it, and both ValidateRunConfig and the k8s constructor call that.
+//
+// Only "nitro-isolated" has requirements. The guest VM is sized from the CPU
+// and memory requests at boot, and the supported shape is offline (no guest
+// network interface beyond lo and dummy0). See
+// docs/executors/k8s.md#eks-with-nitro-sandboxes.
+func K8sRuntimeRequirementErrors(runtime string, network *NetworkConfig, resources *ResourceLimits, identityConfigured bool) []string {
+	if runtime != "nitro-isolated" {
+		return nil
+	}
+	var errs []string
+	// "allowlist" is the one valid mode this runtime does not support.
+	if network != nil && network.Mode == "allowlist" {
+		errs = append(errs, fmt.Sprintf(
+			`executor.network.mode must be "none" for executor.runtime="nitro-isolated" (got %q); networked Nitro sandboxes are not supported`,
+			network.Mode))
+	}
+	var r ResourceLimits
+	if resources != nil {
+		r = *resources
+	}
+	if r.CPUs == 0 {
+		errs = append(errs, fmt.Sprintf(
+			`executor.resources.cpus must be positive for executor.runtime="nitro-isolated" (got %v); the guest VM is sized from it at boot`,
+			r.CPUs))
+	}
+	if r.MemoryMB == 0 {
+		errs = append(errs, fmt.Sprintf(
+			`executor.resources.memoryMb must be positive for executor.runtime="nitro-isolated" (got %d); the guest VM is sized from it at boot`,
+			r.MemoryMB))
+	}
+	if identityConfigured {
+		errs = append(errs, `executor.sandboxIdentity and executor.gitProxy must be unset for executor.runtime="nitro-isolated"; no network service is reachable from the guest, so there is nothing to present the token to`)
+	}
+	return errs
 }
 
 // IsK8sFamily reports whether the executor Type runs the agent in a sandbox
@@ -6500,29 +6568,46 @@ func warnGitProxyAllowlistGap(config *RunConfig) {
 	)
 }
 
-// validateResourceLimits rejects negative resource bounds. A negative
-// value silently maps to "no limit" in both the container and k8s
+// nonFiniteCPUsError returns the message for a cpus value that is NaN or an
+// infinity, or "" for a finite one. The proto field is a double, so
+// stirrup job can carry either.
+func nonFiniteCPUsError(cpus float64) string {
+	if !math.IsNaN(cpus) && !math.IsInf(cpus, 0) {
+		return ""
+	}
+	return fmt.Sprintf("executor.resources.cpus must be a finite number (got %v)", cpus)
+}
+
+// ResourceLimitErrors returns one message per resource bound that no
+// executor accepts: a non-finite cpus value and any negative value. A
+// negative value silently maps to "no limit" in both the container and k8s
 // executors (the mapping helpers guard on > 0), so an operator who typed
 // cpus:-2 would believe they had capped the workload while in fact the Pod
-// or container runs unbounded. Shared across executor types so the same
-// floor applies wherever Resources is honoured. A nil block is valid (the
-// executor inherits platform defaults).
-func validateResourceLimits(r *ResourceLimits, errs *[]string) {
+// or container runs unbounded. ValidateRunConfig applies it to every
+// executor type and the k8s constructor applies it for callers that bypass
+// validation. A nil block is valid (the executor inherits platform
+// defaults).
+func ResourceLimitErrors(r *ResourceLimits) []string {
 	if r == nil {
-		return
+		return nil
 	}
-	if r.CPUs < 0 {
-		*errs = append(*errs, fmt.Sprintf("executor.resources.cpus must not be negative (got %v)", r.CPUs))
+	var errs []string
+	switch msg := nonFiniteCPUsError(r.CPUs); {
+	case msg != "":
+		errs = append(errs, msg)
+	case r.CPUs < 0:
+		errs = append(errs, fmt.Sprintf("executor.resources.cpus must not be negative (got %v)", r.CPUs))
 	}
 	if r.MemoryMB < 0 {
-		*errs = append(*errs, fmt.Sprintf("executor.resources.memoryMb must not be negative (got %d)", r.MemoryMB))
+		errs = append(errs, fmt.Sprintf("executor.resources.memoryMb must not be negative (got %d)", r.MemoryMB))
 	}
 	if r.DiskMB < 0 {
-		*errs = append(*errs, fmt.Sprintf("executor.resources.diskMb must not be negative (got %d)", r.DiskMB))
+		errs = append(errs, fmt.Sprintf("executor.resources.diskMb must not be negative (got %d)", r.DiskMB))
 	}
 	if r.PIDs < 0 {
-		*errs = append(*errs, fmt.Sprintf("executor.resources.pids must not be negative (got %d)", r.PIDs))
+		errs = append(errs, fmt.Sprintf("executor.resources.pids must not be negative (got %d)", r.PIDs))
 	}
+	return errs
 }
 
 // ExportRequired reports whether a failed workspace export fails the

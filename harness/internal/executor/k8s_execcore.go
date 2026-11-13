@@ -44,8 +44,22 @@ type podExecCore struct {
 	sandboxIdentity bool
 	// execFn replaces the pods/exec round trip when set; unit tests use it to
 	// observe the exec calls without a cluster.
-	execFn func(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error
+	execFn podExecFunc
+	// fileIOTimeout bounds each file read, write and listing exec, the
+	// sandbox identity token write and the runtime diagnostics read; zero
+	// means k8sFileIOTimeout.
+	fileIOTimeout time.Duration
 }
+
+func (e *podExecCore) fileIOBound() time.Duration {
+	if e.fileIOTimeout > 0 {
+		return e.fileIOTimeout
+	}
+	return k8sFileIOTimeout
+}
+
+// podExecFunc runs command in the agent container with the given streams.
+type podExecFunc func(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error
 
 // WriteSandboxIdentityToken delivers token to SandboxIdentityTokenPath over
 // the pods/exec subresource with the token on stdin (see
@@ -56,7 +70,7 @@ func (e *podExecCore) WriteSandboxIdentityToken(ctx context.Context, token strin
 		return fmt.Errorf("write sandbox identity token: pod was created without the sandbox identity volume")
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, k8sFileIOTimeout)
+	ctx, cancel := context.WithTimeout(ctx, e.fileIOBound())
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
@@ -118,7 +132,7 @@ func (e *podExecCore) ReadFile(ctx context.Context, filePath string) (string, er
 		return "", err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, k8sFileIOTimeout)
+	ctx, cancel := context.WithTimeout(ctx, e.fileIOBound())
 	defer cancel()
 
 	var stdout writeCapBuffer
@@ -172,7 +186,7 @@ func (e *podExecCore) WriteFile(ctx context.Context, filePath string, content st
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, k8sFileIOTimeout)
+	ctx, cancel := context.WithTimeout(ctx, e.fileIOBound())
 	defer cancel()
 
 	guardOut := writeCapBuffer{limit: workspaceWriteOutputLimit}
@@ -231,7 +245,7 @@ func (e *podExecCore) ListDirectory(ctx context.Context, dirPath string) ([]stri
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, k8sFileIOTimeout)
+	ctx, cancel := context.WithTimeout(ctx, e.fileIOBound())
 	defer cancel()
 
 	var stdout writeCapBuffer

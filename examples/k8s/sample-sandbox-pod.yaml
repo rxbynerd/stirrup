@@ -34,6 +34,11 @@ metadata:
     #                           LabelSelector, so the name is mirrored here).
     stirrup-sandbox: "true"
     stirrup.dev/pod: stirrup-0a1b2c3d4e5f
+  # annotations: none for the gvisor runtime shown here. For
+  # executor.runtime nitro-isolated the executor adds (k8s_runtimeprofile.go):
+  #   annotations:
+  #     sandbox.amazonaws.com/log-bandwidth: "20M"
+  #     sandbox.amazonaws.com/network-isolated: "true"   # network mode "none"
 spec:
   # RestartPolicy: Never (corev1.RestartPolicyNever). The Pod is a one-shot
   # sandbox; the executor deletes it on Close().
@@ -46,12 +51,20 @@ spec:
   # or "default" when unset. The sandbox needs NO API access — see the token
   # mount below — so the account is effectively just an identity.
   serviceAccountName: default
-  # ALWAYS false (ptr.To(false) in NewK8sExecutor, even when a ServiceAccount is
-  # named). A sandbox Pod must not be able to reach the Kubernetes API, so the
-  # token is never mounted. Do not rely on the orchestrator's RBAC leaking in.
+  # ALWAYS false (ptr.To(false) in buildSandboxPodSpec, even when a
+  # ServiceAccount is named). A sandbox Pod must not be able to reach the
+  # Kubernetes API, so the token is never mounted. Do not rely on the
+  # orchestrator's RBAC leaking in.
   automountServiceAccountToken: false
+  # ALWAYS false (buildSandboxPod). Service links would inject a
+  # <SERVICE>_SERVICE_HOST and _SERVICE_PORT variable for every Service in the
+  # namespace, exposing the namespace's service topology to the agent.
+  enableServiceLinks: false
   # runtimeClassName from executor.runtime, mapped through the closed set
-  # {runc, gvisor, kata-qemu, kata-fc, kata-clh}. OMITTED entirely when runtime
+  # {runc, gvisor, kata-qemu, kata-fc, kata-clh, nitro-isolated}; each value is
+  # its own class name except nitro-isolated, which maps to isolated-sandbox and
+  # also adds sandbox.amazonaws.com/* annotations under metadata (see
+  # docs/executors/k8s.md#eks-with-nitro-sandboxes). OMITTED entirely when runtime
   # is empty (optionalRuntimeClassName returns nil), which selects the
   # cluster-default RuntimeClass and logs an isolation warning. gvisor is shown
   # here as the recommended sandbox runtime — see examples/k8s/runtimeclass.yaml.
@@ -154,7 +167,7 @@ spec:
       #   cpus     -> requests.cpu AND limits.cpu (whole cores "2", fractional
       #               cores milli "500m")
       #   memoryMB -> requests.memory AND limits.memory (Mi)
-      #   diskMB   -> limits.ephemeral-storage ONLY (Mi); no request
+      #   diskMB   -> requests.ephemeral-storage AND limits.ephemeral-storage (Mi)
       #   pids     -> logged and IGNORED (per-Pod PID limits are a kubelet flag,
       #               not a container resource field)
       # The values shown are illustrative of a resources block with cpus=2,
@@ -163,6 +176,7 @@ spec:
         requests:
           cpu: "2"
           memory: 2048Mi
+          ephemeral-storage: 4096Mi
         limits:
           cpu: "2"
           memory: 2048Mi

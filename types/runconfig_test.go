@@ -1989,16 +1989,22 @@ func TestValidateRunConfig_RuntimeSetIsPerType(t *testing.T) {
 		image       string
 		k8sNS       string
 		network     *NetworkConfig
+		resources   *ResourceLimits
 		wantErr     bool
 		errContains string
 	}{
 		{name: "container accepts runsc", execType: "container", runtime: "runsc", image: "img", wantErr: false},
+		{name: "container rejects nitro-isolated", execType: "container", runtime: "nitro-isolated", image: "img", wantErr: true, errContains: "nitro-isolated"},
 		{name: "container accepts kata-clh", execType: "container", runtime: "kata-clh", image: "img", wantErr: false},
 		{name: "container rejects gvisor", execType: "container", runtime: "gvisor", image: "img", wantErr: true, errContains: "gvisor"},
 		{name: "k8s accepts gvisor", execType: "k8s", runtime: "gvisor", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: false},
 		{name: "k8s accepts kata-clh", execType: "k8s", runtime: "kata-clh", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: false},
 		{name: "k8s rejects runsc", execType: "k8s", runtime: "runsc", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: true, errContains: "runsc"},
 		{name: "k8s rejects kata bare", execType: "k8s", runtime: "kata", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: true, errContains: "kata"},
+		{name: "k8s accepts nitro-isolated", execType: "k8s", runtime: "nitro-isolated", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, resources: &ResourceLimits{CPUs: 1, MemoryMB: 1024}, wantErr: false},
+		{name: "k8s rejects isolated-sandbox", execType: "k8s", runtime: "isolated-sandbox", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: true, errContains: `unsupported executor.runtime "isolated-sandbox" for executor.type="k8s"`},
+		{name: "k8s rejects confidential-sandbox", execType: "k8s", runtime: "confidential-sandbox", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: true, errContains: `unsupported executor.runtime "confidential-sandbox" for executor.type="k8s"`},
+		{name: "k8s-sandbox rejects nitro-isolated", execType: "k8s-sandbox", runtime: "nitro-isolated", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, resources: &ResourceLimits{CPUs: 1, MemoryMB: 1024}, wantErr: true, errContains: "gvisor"},
 		{name: "k8s-sandbox accepts gvisor", execType: "k8s-sandbox", runtime: "gvisor", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: false},
 		{name: "k8s-sandbox rejects runc", execType: "k8s-sandbox", runtime: "runc", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: true, errContains: "gvisor"},
 		{name: "k8s-sandbox rejects kata-clh", execType: "k8s-sandbox", runtime: "kata-clh", image: "img", k8sNS: "ns", network: &NetworkConfig{Mode: "none"}, wantErr: true, errContains: "gvisor"},
@@ -2014,6 +2020,7 @@ func TestValidateRunConfig_RuntimeSetIsPerType(t *testing.T) {
 				Image:        tc.image,
 				K8sNamespace: tc.k8sNS,
 				Network:      tc.network,
+				Resources:    tc.resources,
 			}
 			err := ValidateRunConfig(c)
 			if tc.wantErr {
@@ -2026,6 +2033,281 @@ func TestValidateRunConfig_RuntimeSetIsPerType(t *testing.T) {
 			must.NoError(err)
 		})
 	}
+}
+
+// TestValidateRunConfig_K8sRuntimeRejectionHints pins the reason appended to
+// the unsupported-runtime error for the RuntimeClass names an operator is
+// likely to try in place of "nitro-isolated".
+func TestValidateRunConfig_K8sRuntimeRejectionHints(t *testing.T) {
+	cases := []struct {
+		runtime  string
+		wantHint string
+	}{
+		{runtime: "isolated-sandbox", wantHint: `set executor.runtime to "nitro-isolated"`},
+		{runtime: "confidential-sandbox", wantHint: "its default policy denies exec"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.runtime, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.Executor = ExecutorConfig{
+				Type:         "k8s",
+				Runtime:      tc.runtime,
+				Image:        "img",
+				K8sNamespace: "ns",
+				Network:      &NetworkConfig{Mode: "none"},
+				Resources:    &ResourceLimits{CPUs: 1, MemoryMB: 1024},
+			}
+			err := ValidateRunConfig(c)
+			must.ErrorContains(err, fmt.Sprintf("unsupported executor.runtime %q for executor.type=\"k8s\": ", tc.runtime))
+			must.ErrorContains(err, tc.wantHint)
+		})
+	}
+}
+
+// nitroIsolatedValidConfig is the smallest RunConfig that validates with
+// executor.runtime "nitro-isolated"; the requirement tests perturb it.
+func nitroIsolatedValidConfig() *RunConfig {
+	c := validConfig()
+	c.Executor = ExecutorConfig{
+		Type:         "k8s",
+		Runtime:      "nitro-isolated",
+		Image:        "img",
+		K8sNamespace: "ns",
+		Network:      &NetworkConfig{Mode: "none"},
+		Resources:    &ResourceLimits{CPUs: 1, MemoryMB: 1024},
+	}
+	return c
+}
+
+// TestValidateRunConfig_NitroIsolatedRequirements covers every rule
+// K8sRuntimeRequirementErrors applies to the "nitro-isolated" runtime when
+// it is reached through ValidateRunConfig.
+func TestValidateRunConfig_NitroIsolatedRequirements(t *testing.T) {
+	cases := []struct {
+		name         string
+		mutate       func(c *RunConfig)
+		wantContains []string
+	}{
+		{
+			name:   "minimal shape accepted",
+			mutate: func(*RunConfig) {},
+		},
+		{
+			name:   "fractional cpu accepted",
+			mutate: func(c *RunConfig) { c.Executor.Resources.CPUs = 0.5 },
+		},
+		{
+			name:   "node selector accepted",
+			mutate: func(c *RunConfig) { c.Executor.K8sNodeSelector = map[string]string{"kubernetes.io/arch": "amd64"} },
+		},
+		{
+			name:   "pids accepted",
+			mutate: func(c *RunConfig) { c.Executor.Resources.PIDs = 256 },
+		},
+		{
+			name: "allowlist rejected",
+			mutate: func(c *RunConfig) {
+				c.Executor.Network = &NetworkConfig{Mode: "allowlist", Allowlist: []string{"example.com"}}
+				c.Executor.K8sEgressProxyURL = "http://stirrup-egress-proxy:8080"
+			},
+			wantContains: []string{`executor.network.mode must be "none" for executor.runtime="nitro-isolated" (got "allowlist")`},
+		},
+		{
+			name:   "missing resources rejected",
+			mutate: func(c *RunConfig) { c.Executor.Resources = nil },
+			wantContains: []string{
+				`executor.resources.cpus must be positive for executor.runtime="nitro-isolated" (got 0)`,
+				`executor.resources.memoryMb must be positive for executor.runtime="nitro-isolated" (got 0)`,
+			},
+		},
+		{
+			name:         "zero cpu rejected",
+			mutate:       func(c *RunConfig) { c.Executor.Resources.CPUs = 0 },
+			wantContains: []string{`executor.resources.cpus must be positive`},
+		},
+		{
+			name:         "zero memory rejected",
+			mutate:       func(c *RunConfig) { c.Executor.Resources.MemoryMB = 0 },
+			wantContains: []string{`executor.resources.memoryMb must be positive`},
+		},
+		{
+			name:   "disk accepted",
+			mutate: func(c *RunConfig) { c.Executor.Resources.DiskMB = 2048 },
+		},
+		{
+			name: "sandbox identity rejected",
+			mutate: func(c *RunConfig) {
+				c.Transport = TransportConfig{Type: "grpc"}
+				c.Executor.SandboxIdentity = &SandboxIdentityConfig{Source: "control-plane"}
+			},
+			wantContains: []string{`executor.sandboxIdentity and executor.gitProxy must be unset for executor.runtime="nitro-isolated"`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			c := nitroIsolatedValidConfig()
+			tc.mutate(c)
+			err := ValidateRunConfig(c)
+			if len(tc.wantContains) == 0 {
+				must.NoError(err)
+				return
+			}
+			for _, want := range tc.wantContains {
+				must.ErrorContains(err, want)
+			}
+		})
+	}
+}
+
+// TestValidateRunConfig_NitroIsolatedIdentityReportedOnce pins that
+// sandboxIdentity and gitProxy together produce one runtime message, since
+// gitProxy cannot be set without sandboxIdentity.
+func TestValidateRunConfig_NitroIsolatedIdentityReportedOnce(t *testing.T) {
+	must := require.New(t)
+	c := nitroIsolatedValidConfig()
+	c.Transport = TransportConfig{Type: "grpc"}
+	c.Executor.SandboxIdentity = &SandboxIdentityConfig{Source: "control-plane"}
+	c.Executor.GitProxy = &GitProxyConfig{URL: "http://haybale.internal:8466", Hosts: []string{"github.com"}}
+	err := ValidateRunConfig(c)
+	must.Error(err)
+	must.Equal(1, strings.Count(err.Error(), `executor.sandboxIdentity and executor.gitProxy must be unset`))
+}
+
+// TestValidateRunConfig_NitroIsolatedNetworkModeReportedOnce pins one
+// message per network defect: the runtime rule names only a valid mode it
+// does not support, and the k8s executor rules name a missing block or an
+// unknown mode.
+func TestValidateRunConfig_NitroIsolatedNetworkModeReportedOnce(t *testing.T) {
+	cases := []struct {
+		name    string
+		network *NetworkConfig
+		want    string
+	}{
+		{name: "missing network", want: `executor.network is required for executor.type="k8s" (set mode to "none" or "allowlist")`},
+		{name: "empty mode", network: &NetworkConfig{}, want: `executor.network.mode must be "none" or "allowlist" for executor.type="k8s" (got "")`},
+		{name: "unknown mode", network: &NetworkConfig{Mode: "bogus"}, want: `executor.network.mode must be "none" or "allowlist" for executor.type="k8s" (got "bogus")`},
+		{name: "allowlist mode", network: &NetworkConfig{Mode: "allowlist", Allowlist: []string{"example.com"}}, want: `executor.network.mode must be "none" for executor.runtime="nitro-isolated" (got "allowlist"); networked Nitro sandboxes are not supported`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			c := nitroIsolatedValidConfig()
+			c.Executor.Network = tc.network
+			if tc.network != nil && tc.network.Mode == "allowlist" {
+				c.Executor.K8sEgressProxyURL = "http://stirrup-egress-proxy:8080"
+			}
+
+			err := ValidateRunConfig(c)
+
+			must.EqualError(err, "RunConfig validation failed: "+tc.want)
+		})
+	}
+}
+
+// TestValidateRunConfig_NitroIsolatedNegativeLimitsReportedOnce pins one
+// message per negative value: the shared rule reports it, the runtime rule
+// does not.
+func TestValidateRunConfig_NitroIsolatedNegativeLimitsReportedOnce(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(r *ResourceLimits)
+		want   string
+	}{
+		{name: "cpus", mutate: func(r *ResourceLimits) { r.CPUs = -1 }, want: "executor.resources.cpus must not be negative (got -1)"},
+		{name: "memoryMb", mutate: func(r *ResourceLimits) { r.MemoryMB = -1 }, want: "executor.resources.memoryMb must not be negative (got -1)"},
+		{name: "diskMb", mutate: func(r *ResourceLimits) { r.DiskMB = -1 }, want: "executor.resources.diskMb must not be negative (got -1)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			c := nitroIsolatedValidConfig()
+			tc.mutate(c.Executor.Resources)
+
+			must.EqualError(ValidateRunConfig(c), "RunConfig validation failed: "+tc.want)
+		})
+	}
+}
+
+func TestValidateRunConfig_NonFiniteCPUsReportedOnce(t *testing.T) {
+	configs := map[string]func() *RunConfig{
+		"k8s nitro-isolated": nitroIsolatedValidConfig,
+		"k8s gvisor": func() *RunConfig {
+			c := nitroIsolatedValidConfig()
+			c.Executor.Runtime = "gvisor"
+			return c
+		},
+		"container": func() *RunConfig {
+			c := validConfig()
+			c.Executor = ExecutorConfig{Type: "container", Image: "img", Resources: &ResourceLimits{CPUs: 1}}
+			return c
+		},
+	}
+	for name, build := range configs {
+		for _, cpus := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+			t.Run(fmt.Sprintf("%s cpus %v", name, cpus), func(t *testing.T) {
+				must := require.New(t)
+				c := build()
+				must.NoError(ValidateRunConfig(c), "the base config is valid")
+				c.Executor.Resources.CPUs = cpus
+
+				err := ValidateRunConfig(c)
+
+				must.Error(err)
+				must.Equal(1, strings.Count(err.Error(), "executor.resources.cpus"), err.Error())
+				must.ErrorContains(err, fmt.Sprintf("executor.resources.cpus must be a finite number (got %v)", cpus))
+			})
+		}
+	}
+	t.Run("fractional cpus accepted", func(t *testing.T) {
+		must := require.New(t)
+		c := nitroIsolatedValidConfig()
+		c.Executor.Resources.CPUs = 0.5
+		must.NoError(ValidateRunConfig(c))
+	})
+}
+
+// TestK8sRuntimeRequirementErrors_OnlyNitroIsolatedHasRequirements pins
+// that the shared requirement rules leave every other k8s runtime value to
+// the existing validation, including an offline-incompatible shape.
+func TestK8sRuntimeRequirementErrors_OnlyNitroIsolatedHasRequirements(t *testing.T) {
+	allowlist := &NetworkConfig{Mode: "allowlist"}
+	for _, runtime := range append([]string{""}, ValidK8sExecutorRuntimeValues()...) {
+		if runtime == "nitro-isolated" {
+			continue
+		}
+		t.Run(fmt.Sprintf("%q", runtime), func(t *testing.T) {
+			must := require.New(t)
+			must.Empty(K8sRuntimeRequirementErrors(runtime, allowlist, nil, true))
+		})
+	}
+}
+
+// TestK8sRuntimeRequirementErrors_NitroIsolated checks the shared rules
+// directly, as the executor constructor calls them.
+func TestK8sRuntimeRequirementErrors_NitroIsolated(t *testing.T) {
+	t.Run("valid shape has no errors", func(t *testing.T) {
+		must := require.New(t)
+		must.Empty(K8sRuntimeRequirementErrors("nitro-isolated", &NetworkConfig{Mode: "none"}, &ResourceLimits{CPUs: 0.25, MemoryMB: 512}, false))
+	})
+	t.Run("non-finite cpu left to the shared rule", func(t *testing.T) {
+		must := require.New(t)
+		for _, cpus := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+			must.Empty(K8sRuntimeRequirementErrors("nitro-isolated", &NetworkConfig{Mode: "none"}, &ResourceLimits{CPUs: cpus, MemoryMB: 512}, false), "cpus %v", cpus)
+		}
+	})
+	t.Run("negative values left to the shared rule", func(t *testing.T) {
+		must := require.New(t)
+		for _, r := range []ResourceLimits{{CPUs: -1, MemoryMB: 512}, {CPUs: 1, MemoryMB: -1}, {CPUs: 1, MemoryMB: 512, DiskMB: -1}} {
+			must.Empty(K8sRuntimeRequirementErrors("nitro-isolated", &NetworkConfig{Mode: "none"}, &r, false), "%+v", r)
+		}
+	})
+	t.Run("every violation reported", func(t *testing.T) {
+		must := require.New(t)
+		errs := K8sRuntimeRequirementErrors("nitro-isolated", &NetworkConfig{Mode: "allowlist"}, &ResourceLimits{}, true)
+		must.Len(errs, 4)
+	})
 }
 
 // TestValidateRunConfig_K8sExecutorFields exercises the type-"k8s"

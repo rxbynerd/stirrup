@@ -30,6 +30,15 @@ type k8sTiming struct {
 	// progressPeriod spaces the readiness wait's progress log lines; zero
 	// disables them.
 	progressPeriod time.Duration
+	// fileIOTimeout bounds each file I/O exec, the runtime diagnostics
+	// included; zero means k8sFileIOTimeout.
+	fileIOTimeout time.Duration
+	// execReachableTimeout bounds the wait for exec to reach the Pod after
+	// readiness; zero means k8sExecReachableTimeout.
+	execReachableTimeout time.Duration
+	// execProbeTimeout bounds each attempt of that wait; zero means
+	// k8sExecProbeTimeout.
+	execProbeTimeout time.Duration
 }
 
 var defaultK8sTiming = k8sTiming{

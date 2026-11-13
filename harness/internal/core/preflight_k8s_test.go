@@ -404,6 +404,31 @@ func TestPreflight_K8sExecutor_MissingRuntimeClassFailsStepWithRuntimeClassHint(
 	check.NotContains(hint, "reachable")
 }
 
+// On EKS the isolated-sandbox RuntimeClass comes from the platform, so the
+// hint points at the Nitro recipe rather than the self-managed manifest.
+func TestPreflight_K8sExecutor_MissingNitroRuntimeClassPointsAtTheNitroRecipe(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	api := newFakeKubeAPI(t)
+	api.runtimeClass = readMissing
+	cfg := k8sPreflightConfig(t, "k8s", api)
+	cfg.Executor.Runtime = "nitro-isolated"
+	cfg.Executor.Resources = &types.ResourceLimits{CPUs: 1, MemoryMB: 1024}
+
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+	must.NoError(err)
+
+	status, _ := stepStatus(report, "executor-probe")
+	check.Equal(PreflightFail, status)
+	detail, _ := stepDetail(report, "executor-probe")
+	check.Contains(detail, `RuntimeClass "isolated-sandbox" does not exist`)
+	hint := stepHint(report, "executor-probe")
+	check.Contains(hint, "installed by EKS Auto Mode")
+	check.Contains(hint, "docs/executors/k8s.md#eks-with-nitro-sandboxes")
+	check.NotContains(hint, "runtimeclass.yaml")
+}
+
 func TestPreflight_K8sExecutor_MissingNamespaceFailsStepWithNamespaceHint(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)

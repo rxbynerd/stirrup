@@ -96,7 +96,7 @@ The relevant executor flags are:
 |---|---|
 | `--executor` | `local` (default), `container`, `k8s`, `k8s-sandbox`, `api`, or `none`. |
 | `--image` | Sandbox container image (`container` / `k8s`). |
-| `--container-runtime` | OCI runtime (`container`) or Pod `RuntimeClassName` (`k8s`): `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh`, `runc`. |
+| `--container-runtime` | OCI runtime (`container`) or a runtime mapped to the Pod `RuntimeClassName` (`k8s`): `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh`, `runc`, or `nitro-isolated` (AWS Nitro Sandboxes on EKS, [offline only](docs/executors/k8s.md#network-mode-none-on-this-runtime)). |
 | `--k8s-namespace` | Namespace for the `k8s` sandbox Pod (required for `k8s`). |
 | `--k8s-kubeconfig` | Kubeconfig path; empty prefers in-cluster config then `$KUBECONFIG`. |
 | `--k8s-node-selector` | Repeatable `key=value` Pod `nodeSelector` constraint. |

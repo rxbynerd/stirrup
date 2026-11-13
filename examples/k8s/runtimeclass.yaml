@@ -4,7 +4,12 @@
 # the container executor) onto the Pod's spec.runtimeClassName. The accepted
 # names are a CLOSED set, enforced in types/runconfig.go (validK8sRuntimes):
 #
-#   runc | gvisor | kata-qemu | kata-fc | kata-clh
+#   runc | gvisor | kata-qemu | kata-fc | kata-clh | nitro-isolated
+#
+# Every value except nitro-isolated is also the RuntimeClass name defined
+# below. nitro-isolated selects AWS's isolated-sandbox RuntimeClass, which EKS
+# Auto Mode provides; this file does not define it (see
+# docs/executors/k8s.md#eks-with-nitro-sandboxes).
 #
 # An empty runtime leaves runtimeClassName unset, selecting the cluster-default
 # RuntimeClass — which may be plain runc with no sandbox isolation. The executor

@@ -15,7 +15,7 @@ every field shown here is cross-checked against it.
 |---|---|---|---|
 | `namespace.yaml` | Namespace | yes | The `stirrup-sandbox` namespace with sandbox/monitoring labels and `restricted` PodSecurity. |
 | `rbac.yaml` | ServiceAccount + Role + RoleBinding | yes | The `stirrup-orchestrator` identity and the pod / pods/exec / networkpolicy verbs the executor's lifecycle needs. |
-| `runtimeclass.yaml` | RuntimeClass ×5 | yes (per available runtime) | The closed set `runc / gvisor / kata-qemu / kata-fc / kata-clh`, with per-class node prerequisites. |
+| `runtimeclass.yaml` | RuntimeClass ×5 | yes (per available runtime) | The self-managed classes `runc / gvisor / kata-qemu / kata-fc / kata-clh`, with per-class node prerequisites. The sixth accepted runtime, `nitro-isolated`, uses the `isolated-sandbox` class that EKS Auto Mode provides; skip this file on EKS (see [EKS with Nitro Sandboxes](../../docs/executors/k8s.md#eks-with-nitro-sandboxes)). |
 | `taint-and-toleration.yaml` | (doc only) | no | The pattern for isolating sandbox nodes — and the note that the executor does not yet inject tolerations. |
 | `sample-sandbox-pod.yaml` | (doc only) | no | The exact Pod the executor produces, annotated field-by-field. The reference for "what a real sandbox Pod looks like". |
 | `egress-proxy/` | Deployment + Service + ConfigMap + NetworkPolicy | yes (allowlist mode) | The shared egress allowlist proxy. See its own [README](egress-proxy/README.md). |
@@ -36,7 +36,9 @@ kubectl apply -f examples/k8s/runtimeclass.yaml   # registered handlers only
 ```
 
 Register only the RuntimeClasses whose handlers are actually installed on the
-nodes — a RuntimeClass whose handler is missing makes Pod scheduling fail. The
+nodes — a RuntimeClass whose handler is missing on a node still lets the Pod
+schedule there, but its sandbox never starts and the Pod stays
+`ContainerCreating` until the readiness wait ends. The
 egress-proxy objects are applied separately and only when running in network
 mode `allowlist`; see [`egress-proxy/README.md`](egress-proxy/README.md).
 
@@ -78,8 +80,9 @@ namespace to match this workflow.
 
 The executor authenticates as `stirrup-orchestrator` (`rbac.yaml`), creates a
 sandbox Pod (`sample-sandbox-pod.yaml`) in the `stirrup-sandbox` namespace
-(`namespace.yaml`) with the RuntimeClass named by `executor.runtime`
-(`runtimeclass.yaml`), and installs a per-Pod egress NetworkPolicy before the
+(`namespace.yaml`) with the RuntimeClass `executor.runtime` selects
+(`runtimeclass.yaml`, except `isolated-sandbox`, which EKS Auto Mode
+installs), and installs a per-Pod egress NetworkPolicy before the
 Pod starts. In network mode `allowlist`, that policy confines the Pod to DNS and
 the egress proxy (`egress-proxy/`), and the executor injects `HTTP_PROXY` /
 `HTTPS_PROXY` pointing at the proxy.
@@ -92,11 +95,10 @@ fixed in the executor (`k8s_netpol.go`); the manifests here and under
 
 ## Enforcement caveat
 
-NetworkPolicy is only enforced by a CNI that implements it. kindnet — the
-default CNI for `kind` — accepts NetworkPolicy objects but does not enforce
-them, so on a stock kind cluster the sandbox retains cluster-default egress. A
-NetworkPolicy-enforcing CNI (Cilium, Calico) is required for the confinement to
-hold. See [`egress-proxy/README.md`](egress-proxy/README.md) for the full note.
+NetworkPolicy is only enforced by a CNI or platform that implements it; a
+cluster can accept the objects without enforcing them. Which clusters do, and
+what that means for each network mode, is described once in
+[`docs/executors/k8s.md`'s enforcement caveat](../../docs/executors/k8s.md#enforcement-caveat--networkpolicy-may-be-accepted-but-not-enforced).
 
 ## Out of scope
 

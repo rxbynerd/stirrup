@@ -2,8 +2,11 @@ package executor
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -33,11 +36,18 @@ var (
 
 // fastK8sTiming keeps cluster waits in unit tests to milliseconds.
 var fastK8sTiming = k8sTiming{
-	readyTimeout:    200 * time.Millisecond,
-	pollPeriod:      time.Millisecond,
-	teardownTimeout: 100 * time.Millisecond,
-	policyTimeout:   100 * time.Millisecond,
+	readyTimeout:         200 * time.Millisecond,
+	pollPeriod:           time.Millisecond,
+	teardownTimeout:      100 * time.Millisecond,
+	policyTimeout:        100 * time.Millisecond,
+	execReachableTimeout: 200 * time.Millisecond,
 }
+
+// reachableExec serves every pods/exec call with a clean exit and no output.
+func reachableExec(context.Context, []string, io.Reader, io.Writer, io.Writer) error { return nil }
+
+// isExecProbe reports whether command is the constructor's reachability probe.
+func isExecProbe(command []string) bool { return slices.Equal(execProbeCommand, command) }
 
 // syncBuffer is a goroutine-safe log sink.
 type syncBuffer struct {

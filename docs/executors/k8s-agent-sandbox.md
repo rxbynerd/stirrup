@@ -106,7 +106,9 @@ The provisioning sequence
    Sandbox not Ready, and the run fails only at the 5-minute ceiling
    with `sandbox <ns>/<name> not ready: <wait error>`. The backing Pod's
    labels and RuntimeClass are not compared with what was submitted;
-   they rest on the controller and the GKE admission policy.
+   they rest on the controller and the GKE admission policy. The `k8s`
+   executor's wait for `exec` to reach a Ready Pod (see
+   [Readiness](k8s.md#readiness)) is not applied here.
 4. **Resolve the backing Pod and bind.** The Pod name is read from the
    Sandbox status; on the cold-create path it equals the Sandbox name.
    Command execution and file I/O then ride the shared `pods/exec` core.
@@ -167,14 +169,18 @@ GKE cluster, as admission would reject the unknown shape.
 The shared hardened Pod spec (`buildSandboxPodSpec`) already satisfies
 most of GKE's `secure-sandbox-policy` ValidatingAdmissionPolicy: drop-ALL
 capabilities, `runAsNonRoot`, `automountServiceAccountToken: false`, and
-the no-hostPath/hostNetwork/privileged requirements. On top of that,
+the no-hostPath/hostNetwork/privileged requirements. Unlike the `k8s`
+executor's Pod, the Sandbox's Pod template does not set
+`enableServiceLinks: false`, so the namespace's Service variables
+(`<SERVICE>_SERVICE_HOST` and `<SERVICE>_SERVICE_PORT`) are present in
+the sandbox environment. On top of that,
 [`applyAgentSandboxAdmissionDeltas`](../../harness/internal/executor/agentsandbox.go)
 injects four gVisor-specific fields the policy additionally mandates,
 *before* the spec is embedded in the Sandbox CR:
 
 | Delta | Value | Why |
 |---|---|---|
-| `runtimeClassName` | `gvisor` (forced) | The Agent Sandbox path is gVisor-only. Any caller-supplied runtime is overridden, and a non-empty, non-`gvisor` runtime logs a warning so the override is visible rather than silent. |
+| `runtimeClassName` | `gvisor` (forced) | The Agent Sandbox path is gVisor-only. `executor.runtime` must be empty or `gvisor`: validation rejects any other value, and the constructor rejects it too, before any cluster call, for callers that bypass validation. |
 | CPU + memory limits | per container, default `500m` / `512Mi` | The policy requires explicit CPU **and** memory limits on every container. A container missing either limit has both that limit and the matching request filled with the package default; a caller-set value (via `executor.resources`) is preserved — only gaps are filled. |
 | `nodeSelector` | `sandbox.gke.io/runtime: gvisor` | Pins the Pod to a gVisor node pool. Merged into any caller `nodeSelector`, never clobbering existing entries. |
 | toleration | `sandbox.gke.io/runtime=gvisor:NoSchedule` | GKE taints the gVisor pool `NoSchedule`; without this toleration the Pod cannot land there. Appended idempotently. |
@@ -215,7 +221,7 @@ delete by another actor, apply here too.
 Enforcement still depends on the cluster CNI: a `NetworkPolicy`-enforcing
 CNI (GKE Dataplane V2, Cilium, Calico) is required for the policy to bite.
 This is the same caveat as the `k8s` executor — see
-[`k8s.md`](k8s.md#enforcement-caveat--kindnet-does-not-enforce-networkpolicy).
+[`k8s.md`](k8s.md#enforcement-caveat--networkpolicy-may-be-accepted-but-not-enforced).
 
 ## The controller-owned TTL GC backstop
 
@@ -344,8 +350,8 @@ unchanged. See the [configuration reference in
 The one difference is the runtime field. The `k8s-sandbox` executor is
 **gVisor-only**: leave `--container-runtime` / `executor.runtime` empty,
 or set it to `gvisor`. Any other value is rejected by validation
-(`ValidateRunConfig`); a non-empty, non-`gvisor` runtime that somehow
-reaches the executor is overridden to `gvisor` with a warning. A run that
+(`ValidateRunConfig`); a non-empty, non-`gvisor` runtime that reaches the
+constructor is rejected before any cluster call. A run that
 needs `runc` or a Kata backend must use the `k8s` executor.
 
 ```sh

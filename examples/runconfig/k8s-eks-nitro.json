@@ -1,0 +1,38 @@
+{
+  "runId": "k8s-eks-nitro-example",
+  "mode": "execution",
+  "prompt": "Replace this prompt with the task you want the harness to run.",
+  "provider": {
+    "type": "anthropic",
+    "apiKeyRef": "secret://ANTHROPIC_API_KEY"
+  },
+  "modelRouter": {
+    "type": "static",
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6"
+  },
+  "promptBuilder": { "type": "default" },
+  "contextStrategy": { "type": "sliding-window", "maxTokens": 200000 },
+  "executor": {
+    "type": "k8s",
+    "image": "public.ecr.aws/docker/library/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4",
+    "k8sNamespace": "stirrup-sandbox",
+    "k8sKubeconfig": "",
+    "k8sNodeSelector": {
+      "kubernetes.io/arch": "amd64",
+      "node.kubernetes.io/instance-type": "m5d.xlarge"
+    },
+    "runtime": "nitro-isolated",
+    "network": { "mode": "none" },
+    "resources": { "cpus": 1, "memoryMb": 1024 }
+  },
+  "editStrategy": { "type": "multi" },
+  "verifier": { "type": "none" },
+  "permissionPolicy": { "type": "allow-all" },
+  "gitStrategy": { "type": "none" },
+  "transport": { "type": "stdio" },
+  "traceEmitter": { "type": "jsonl" },
+  "maxTurns": 20,
+  "timeout": 300,
+  "logLevel": "info"
+}
