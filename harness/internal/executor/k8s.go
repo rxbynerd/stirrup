@@ -17,7 +17,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8stypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -35,11 +34,13 @@ const (
 	// the container executor's tmpfs and counts against the Pod's memory.
 	k8sSandboxIdentityVolume     = "sandbox-identity"
 	k8sSandboxIdentityVolumeSize = "64Ki"
-	k8sReadyTimeout              = 60 * time.Second
-	k8sReadyPollPeriod           = 1 * time.Second
-	k8sCloseTimeout              = 30 * time.Second
-	k8sAPITimeout                = 30 * time.Second
-	k8sPodNameRandBytes          = 6
+	// k8sReadyTimeout covers a Pod that waits for an autoscaler to provision
+	// a node, still capped by the caller's context.
+	k8sReadyTimeout     = 5 * time.Minute
+	k8sReadyPollPeriod  = 1 * time.Second
+	k8sCloseTimeout     = 30 * time.Second
+	k8sAPITimeout       = 30 * time.Second
+	k8sPodNameRandBytes = 6
 	// k8sRunAsUserUID matches the distroless "nonroot" convention (65532),
 	// letting RunAsNonRoot be enforced without the image declaring its own USER.
 	k8sRunAsUserUID int64 = 65532
@@ -220,8 +221,8 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev
 			"namespace", cfg.Namespace, "pod", podName, "runtimeClassName", clusterText(*created.Spec.RuntimeClassName))
 	}
 
-	if err := waitForPodReady(ctx, clientset, cfg.Namespace, podName); err != nil {
-		return nil, withTeardownErr(fmt.Errorf("pod %s/%s not ready: %w", cfg.Namespace, podName, err), teardown.run())
+	if _, err := waitForPodReady(ctx, clientset, cfg.Namespace, podName, admission, timing, logger); err != nil {
+		return nil, withTeardownErr(fmt.Errorf("pod %s/%s: %w", cfg.Namespace, podName, err), teardown.run())
 	}
 
 	return &K8sExecutor{
@@ -552,27 +553,6 @@ func cpuQuantity(cpus float64) resource.Quantity {
 		milli = 1
 	}
 	return resource.MustParse(fmt.Sprintf("%dm", milli))
-}
-
-// waitForPodReady polls until the Pod's phase is Running AND the agent
-// container's Ready condition is true, or returns an error on timeout or
-// ctx cancellation.
-func waitForPodReady(ctx context.Context, clientset kubernetes.Interface, namespace, name string) error {
-	return wait.PollUntilContextTimeout(ctx, k8sReadyPollPeriod, k8sReadyTimeout, true, func(ctx context.Context) (bool, error) {
-		pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			return false, err
-		}
-		if pod.Status.Phase != corev1.PodRunning {
-			return false, nil
-		}
-		for _, cs := range pod.Status.ContainerStatuses {
-			if cs.Name == k8sAgentContainer && cs.Ready {
-				return true, nil
-			}
-		}
-		return false, nil
-	})
 }
 
 // deleteNetworkPolicyBestEffort attempts to delete the egress NetworkPolicy,

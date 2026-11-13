@@ -163,6 +163,49 @@ func TestNewK8sExecutor_LogsDefaultedRuntimeClass(t *testing.T) {
 	must.NoError(exec.Close())
 }
 
+func TestNewK8sExecutor_TearsDownWhenUIDChangesBeforeReady(t *testing.T) {
+	must := require.New(t)
+	cs := fake.NewClientset()
+	admitPods(cs, nil)
+	// Reactors run under the fake's lock, so they track state themselves
+	// rather than reading cs.Actions().
+	deleted := false
+	cs.PrependReactor("delete", "pods", func(clienttesting.Action) (bool, runtime.Object, error) {
+		deleted = true
+		return false, nil, nil
+	})
+	cs.PrependReactor("get", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if deleted {
+			return false, nil, nil
+		}
+		replaced := readyPod("uid-2")
+		replaced.Name = action.(clienttesting.GetAction).GetName()
+		replaced.Labels = podLabels(replaced.Name, testK8sRunID)
+		return true, replaced, nil
+	})
+
+	_, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
+
+	must.ErrorIs(err, errPodNotReady)
+	must.ErrorContains(err, "metadata.uid: expected uid-1, observed uid-2")
+	requireTornDown(t, cs)
+}
+
+func TestNewK8sExecutor_TearsDownOnReadinessFailure(t *testing.T) {
+	must := require.New(t)
+	cs := fake.NewClientset()
+	admitPods(cs, func(pod *corev1.Pod) {
+		pod.Status.Phase = corev1.PodFailed
+		pod.Status.Reason = "Evicted"
+	})
+
+	_, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
+
+	must.ErrorIs(err, errPodNotReady)
+	must.ErrorContains(err, "pod phase Failed (Evicted")
+	requireTornDown(t, cs)
+}
+
 func TestNewK8sExecutor_CleansUpAfterCallerCancellation(t *testing.T) {
 	must := require.New(t)
 	cs := fake.NewClientset()
