@@ -166,7 +166,7 @@ func (sl *SecurityLogger) OutputTruncated(command string, originalSize, limit in
 // failure reason in a sandbox runtime diagnostic event.
 const sandboxDiagnosticValueMaxBytes = 256
 
-// SandboxRuntimeDiagnostic emits the outcome of the guest-side checks the
+// SandboxRuntimeDiagnostic emits the outcome of the runtime diagnostics the
 // k8s executor runs for a runtime after the sandbox Pod is Ready:
 // sandbox_runtime_diagnostic_passed at info, or
 // sandbox_runtime_diagnostic_failed at error with the failing check and

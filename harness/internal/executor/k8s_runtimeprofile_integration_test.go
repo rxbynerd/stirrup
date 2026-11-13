@@ -13,7 +13,7 @@ import (
 )
 
 // TestK8sRuntimeDiagnostics_NitroIsolatedFailsOnNonNitroPod runs the
-// nitro-isolated guest diagnostics over the real pods/exec path of a Pod
+// nitro-isolated runtime diagnostics over the real pods/exec path of a Pod
 // that is not a Nitro Sandbox. The guest files must parse, and the DMI
 // check must fail closed. Gated on STIRRUP_TEST_KUBECONFIG like the rest of
 // this suite; STIRRUP_TEST_RUNTIME_CLASS must not select a Nitro class.
