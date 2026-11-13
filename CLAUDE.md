@@ -220,8 +220,8 @@ Quick map for "I need to change X" lookups:
 | Cedar load-time lint (dead clauses, wildcard hosts) | `harness/internal/permission/policylint.go`; registry wiring in `core/factory.go::toolSchemaIndex` (operator doc: `docs/safety-rings.md#load-time-policy-lint`) |
 | Rule-of-Two runtime classifier (detector / monitor+latch / gate) | `harness/internal/security/sensitivepatterns.go`, `harness/internal/ruleoftwo/`, `harness/internal/permission/ruleoftwogate.go` (arming in `core/factory.go`; operator doc: `docs/safety-rings.md`) |
 | Container runtime / network mode wiring | `harness/internal/executor/container*.go` |
-| K8s executor (Pod-per-run) + egress NetworkPolicy | `harness/internal/executor/k8s.go`, `k8s_netpol.go` (operator doc: `docs/executors/k8s.md`) |
-| `k8s-sandbox` executor (Agent Sandbox CRD: `agents.x-k8s.io/v1alpha1` Sandbox → controller-created Pod) | `harness/internal/executor/agentsandbox.go`, `agentsandbox_api.go` (operator doc: `docs/executors/k8s-agent-sandbox.md`) |
+| K8s executor (Pod-per-run) + egress NetworkPolicy | `harness/internal/executor/k8s.go`, `k8s_netpol.go`; readiness wait `k8s_readiness.go`, admission check `k8s_admission.go`, teardown and create-error reconciliation `k8s_teardown.go` (operator doc: `docs/executors/k8s.md`) |
+| `k8s-sandbox` executor (Agent Sandbox CRD: `agents.x-k8s.io/v1alpha1` Sandbox → controller-created Pod) | `harness/internal/executor/agentsandbox.go` (the constructor rolls back through `Close`, which shares the policy removal and retention reporting in `k8s_teardown.go`), `agentsandbox_api.go` (operator doc: `docs/executors/k8s-agent-sandbox.md`) |
 | `--k8s-*` CLI flags (`--k8s-namespace`, `--k8s-kubeconfig`, `--k8s-node-selector`, `--k8s-service-account`, `--k8s-egress-proxy-url`; serve both `k8s` and `k8s-sandbox`) | `harness/cmd/stirrup/cmd/runconfigflags.go` (defs), `harness.go` (mapping) |
 | `stirrup egress-proxy` subcommand | `harness/cmd/stirrup/cmd/egress_proxy.go` |
 | Egress proxy | `harness/internal/executor/egressproxy/` |

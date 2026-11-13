@@ -13,7 +13,15 @@ points at live under [`examples/k8s/`](../../examples/k8s/) and the
 local development cluster under [`scripts/dev/`](../../scripts/dev/).
 The executor implementation is
 [`harness/internal/executor/k8s.go`](../../harness/internal/executor/k8s.go)
-and [`k8s_netpol.go`](../../harness/internal/executor/k8s_netpol.go);
+and [`k8s_netpol.go`](../../harness/internal/executor/k8s_netpol.go),
+with the [sandbox lifecycle](#sandbox-lifecycle) in
+[`k8s_readiness.go`](../../harness/internal/executor/k8s_readiness.go)
+(readiness wait),
+[`k8s_admission.go`](../../harness/internal/executor/k8s_admission.go)
+(admission check) and
+[`k8s_teardown.go`](../../harness/internal/executor/k8s_teardown.go)
+(teardown and create-error reconciliation, shared with the
+`k8s-sandbox` executor, whose constructor rolls back through `Close`);
 every flag, field, and label documented here is cross-checked against
 those files.
 
