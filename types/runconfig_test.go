@@ -2132,9 +2132,8 @@ func TestValidateRunConfig_NitroIsolatedRequirements(t *testing.T) {
 			wantContains: []string{`executor.resources.memoryMb must be positive`},
 		},
 		{
-			name:         "disk rejected",
-			mutate:       func(c *RunConfig) { c.Executor.Resources.DiskMB = 2048 },
-			wantContains: []string{`executor.resources.diskMb must be unset for executor.runtime="nitro-isolated" (got 2048)`},
+			name:   "disk accepted",
+			mutate: func(c *RunConfig) { c.Executor.Resources.DiskMB = 2048 },
 		},
 		{
 			name: "sandbox identity rejected",
@@ -2307,7 +2306,7 @@ func TestK8sRuntimeRequirementErrors_NitroIsolated(t *testing.T) {
 	t.Run("every violation reported", func(t *testing.T) {
 		must := require.New(t)
 		errs := K8sRuntimeRequirementErrors("nitro-isolated", &NetworkConfig{Mode: "allowlist"}, &ResourceLimits{DiskMB: 64}, true)
-		must.Len(errs, 5)
+		must.Len(errs, 4)
 	})
 }
 

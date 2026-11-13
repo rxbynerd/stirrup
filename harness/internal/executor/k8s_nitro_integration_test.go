@@ -4,7 +4,9 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -45,19 +47,16 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 
 	security := &recordingSecurityEmitter{}
 	execCfg := K8sExecutorConfig{
-		Image:      cfg.image,
-		Namespace:  cfg.namespace,
-		Kubeconfig: cfg.kubeconfig,
-		NodeSelector: map[string]string{
-			"kubernetes.io/arch":               envOr("STIRRUP_TEST_NITRO_ARCH", "amd64"),
-			"node.kubernetes.io/instance-type": envOr("STIRRUP_TEST_NITRO_INSTANCE_TYPE", "m5d.xlarge"),
-		},
-		Runtime:    "nitro-isolated",
-		Resources:  &types.ResourceLimits{CPUs: 1, MemoryMB: 1024},
-		Network:    &types.NetworkConfig{Mode: "none"},
-		Security:   security,
-		Lifecycle:  Lifecycle{RunID: "nitro-end-to-end", MaxLifetime: k8sReadyTimeout + budget},
-		HarnessPod: &HarnessPod{Namespace: cfg.namespace, Name: owner.Name, UID: string(owner.UID)},
+		Image:        cfg.image,
+		Namespace:    cfg.namespace,
+		Kubeconfig:   cfg.kubeconfig,
+		NodeSelector: nitroNodeSelector(),
+		Runtime:      "nitro-isolated",
+		Resources:    &types.ResourceLimits{CPUs: 1, MemoryMB: 1024},
+		Network:      &types.NetworkConfig{Mode: "none"},
+		Security:     security,
+		Lifecycle:    Lifecycle{RunID: "nitro-end-to-end", MaxLifetime: k8sReadyTimeout + budget},
+		HarnessPod:   &HarnessPod{Namespace: cfg.namespace, Name: owner.Name, UID: string(owner.UID)},
 	}
 	record := &podCreateRecord{}
 	exec, err := newRecordedK8sExecutor(ctx, execCfg, record)
@@ -126,6 +125,61 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 	t.Run("teardown observed", func(t *testing.T) {
 		assertCloseRemovesPolicyAfterPodIsGone(t, ctx, clientset, exec)
 	})
+}
+
+// TestK8sNitroIsolated_DiskMbBoundsTheGuestDisk declares resources.diskMb
+// and checks that the guest's workspace is about that size and refuses a
+// write beyond it. Gated like TestK8sNitroIsolated_EndToEnd.
+func TestK8sNitroIsolated_DiskMbBoundsTheGuestDisk(t *testing.T) {
+	cfg := testK8sEnv(t)
+	if os.Getenv("STIRRUP_TEST_NITRO_ISOLATED") == "" {
+		t.Skip("STIRRUP_TEST_NITRO_ISOLATED not set; this test needs an EKS cluster with Nitro Sandboxes")
+	}
+	must := require.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
+	defer cancel()
+
+	const diskMB = 1024
+	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
+		Image:        cfg.image,
+		Namespace:    cfg.namespace,
+		Kubeconfig:   cfg.kubeconfig,
+		NodeSelector: nitroNodeSelector(),
+		Runtime:      "nitro-isolated",
+		Resources:    &types.ResourceLimits{CPUs: 1, MemoryMB: 1024, DiskMB: diskMB},
+		Network:      &types.NetworkConfig{Mode: "none"},
+		Lifecycle:    Lifecycle{RunID: "nitro-disk", MaxLifetime: k8sIntegrationTimeout},
+	})
+	must.NoError(err, "NewK8sExecutor with resources.diskMb")
+	t.Cleanup(func() { _ = exec.Close() })
+
+	res, err := exec.Exec(ctx, "df -k /workspace | tail -1", nitroProbeTimeout)
+	must.NoError(err)
+	t.Logf("workspace with diskMb=%d: %s", diskMB, strings.TrimSpace(res.Stdout))
+	fields := strings.Fields(res.Stdout)
+	must.GreaterOrEqual(len(fields), 2, "df output %q", res.Stdout)
+	totalKiB, err := strconv.ParseInt(fields[1], 10, 64)
+	must.NoError(err, "df output %q", res.Stdout)
+	must.LessOrEqual(totalKiB, int64(diskMB)*1024, "the workspace is no larger than the declared size")
+	must.Greater(totalKiB, int64(diskMB)*1024*3/4, "the workspace is close to the declared size")
+
+	res, err = exec.Exec(ctx, fmt.Sprintf("dd if=/dev/zero of=/workspace/fill bs=1M count=%d", diskMB+256), 2*time.Minute)
+	must.NoError(err)
+	must.NotEqual(0, res.ExitCode, "a write beyond the declared size fails")
+	must.Contains(res.Stderr, "No space left on device")
+
+	res, err = exec.Exec(ctx, "rm /workspace/fill && : > /workspace/after && echo ok", nitroProbeTimeout)
+	must.NoError(err)
+	must.Equal("ok", strings.TrimSpace(res.Stdout), "the sandbox stays usable after the disk filled: stderr %q", res.Stderr)
+}
+
+// nitroNodeSelector pins a Nitro test Pod to the architecture and instance
+// type under test.
+func nitroNodeSelector() map[string]string {
+	return map[string]string{
+		"kubernetes.io/arch":               envOr("STIRRUP_TEST_NITRO_ARCH", "amd64"),
+		"node.kubernetes.io/instance-type": envOr("STIRRUP_TEST_NITRO_INSTANCE_TYPE", "m5d.xlarge"),
+	}
 }
 
 // nitroProbeTimeout bounds the group's own network and capacity probes.

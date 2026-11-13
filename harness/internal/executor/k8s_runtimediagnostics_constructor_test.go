@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 	utilexec "k8s.io/client-go/util/exec"
 	"k8s.io/utils/ptr"
@@ -50,6 +52,25 @@ func TestNewK8sExecutor_NitroDiagnosticsPassReturnsExecutor(t *testing.T) {
 		observed: map[string]string{"dmiProductName": "m5d.enclave", "interfaces": "lo,dummy0", "routeEntries": "0"},
 	}}, recorder.runtimeDiagnostics)
 	must.Empty(podDeletes(cs), "a passing run keeps its Pod")
+	must.NoError(exec.Close())
+}
+
+func TestNewK8sExecutor_NitroDiskSizeIsSubmittedAsRequestAndLimit(t *testing.T) {
+	must := require.New(t)
+	cs := fake.NewClientset()
+	admitPods(cs, nil)
+	cfg, _ := nitroConstructorCfg()
+	cfg.Resources.DiskMB = 2048
+	calls := 0
+
+	exec, err := newFakeK8sExecutorWithExec(context.Background(), cs, cfg, guestExec(isolatedGuestDump, nil, &calls))
+
+	must.NoError(err, "the whole-Pod admission check accepts a declared disk size")
+	pod, err := cs.CoreV1().Pods(testK8sNamespace).Get(context.Background(), exec.podName, metav1.GetOptions{})
+	must.NoError(err)
+	resources := pod.Spec.Containers[0].Resources
+	requireQuantity(t, resources.Requests, corev1.ResourceEphemeralStorage, "2048Mi")
+	requireQuantity(t, resources.Limits, corev1.ResourceEphemeralStorage, "2048Mi")
 	must.NoError(exec.Close())
 }
 
