@@ -58,8 +58,8 @@ func TestK8sSandboxIdentityToken_RoundTrip(t *testing.T) {
 	must.Equal("600 65532", lines[0], "token file mode and uid (output %q)", res.Stdout)
 	must.NotContains(res.Stdout, ".token.tmp", "staging file left behind after rename")
 
-	// The token directory must be a memory-backed mount under every
-	// runtime; /proc/mounts is read with shell builtins only.
+	// The token directory must be a tmpfs mount wherever the guest can see
+	// its backing; /proc/mounts is read with shell builtins only.
 	mounts, err := exec.Exec(ctx, `while IFS= read -r l || [ -n "$l" ]; do printf '%s\n' "$l"; done < /proc/mounts`, 30*time.Second)
 	must.NoError(err, "read /proc/mounts")
 	must.Zero(mounts.ExitCode, "read /proc/mounts result %+v", mounts)
@@ -69,7 +69,13 @@ func TestK8sSandboxIdentityToken_RoundTrip(t *testing.T) {
 			fsType = fields[2]
 		}
 	}
-	must.Equal("tmpfs", fsType, "filesystem of %s in /proc/mounts:\n%s", SandboxIdentityTokenDir, mounts.Stdout)
+	if cfg.runtimeClass == "gvisor" {
+		// gVisor serves the node-side tmpfs into the sandbox through its
+		// gofer, so the guest sees 9p and cannot show the backing.
+		t.Logf("%s is %q inside gVisor; the memory backing is not observable from the guest", SandboxIdentityTokenDir, fsType)
+	} else {
+		must.Equal("tmpfs", fsType, "filesystem of %s in /proc/mounts:\n%s", SandboxIdentityTokenDir, mounts.Stdout)
+	}
 
 	_, err = exec.ReadFile(ctx, SandboxIdentityTokenPath)
 	must.Error(err, "ReadFile reached the token through the workspace-scoped file API")
