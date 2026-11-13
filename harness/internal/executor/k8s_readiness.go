@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"time"
@@ -178,3 +179,58 @@ func agentContainerStatus(pod *corev1.Pod) *corev1.ContainerStatus {
 	}
 	return nil
 }
+
+// execProbeCommand is a no-op every image under the image contract can run.
+var execProbeCommand = []string{"/bin/sh", "-c", ":"}
+
+// execBackendUnreachableText marks a pods/exec error in which the API server
+// could not open a connection to the Pod's kubelet. Neither exec transport
+// gives that failure a type, so the text is the only signal.
+const execBackendUnreachableText = "error dialing backend"
+
+// waitForExecReachable runs a no-op exec until the API server can reach the
+// Pod's kubelet, for at most timing.execReachableTimeout. A Pod can be Ready
+// on a new node before the kubelet's serving certificate is issued, and until
+// then every exec fails in the API server's dial. Only that failure and an
+// attempt that times out are retried; any other outcome ends the wait
+// without an error, leaving the first real exec to report it.
+func waitForExecReachable(ctx context.Context, core *podExecCore, timing k8sTiming, logger *slog.Logger) error {
+	bound := timing.execReachableTimeout
+	if bound <= 0 {
+		bound = k8sExecReachableTimeout
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, bound)
+	defer cancel()
+
+	for attempt := 1; ; attempt++ {
+		attemptCtx, cancelAttempt := context.WithTimeout(waitCtx, k8sExecProbeTimeout)
+		err := core.streamExec(attemptCtx, execProbeCommand, nil, io.Discard, io.Discard)
+		attemptTimedOut := attemptCtx.Err() != nil
+		cancelAttempt()
+		if err == nil {
+			return nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return fmt.Errorf("exec reachability wait interrupted: %w", ctxErr)
+		}
+		if !attemptTimedOut && !strings.Contains(err.Error(), execBackendUnreachableText) {
+			logger.Debug("k8s executor exec probe failed; leaving the failure to the first exec", "namespace", core.namespace, "pod", core.podName, "err", clusterText(err.Error()))
+			return nil
+		}
+		if attempt == 1 {
+			logger.Info("k8s executor waiting for exec to reach the sandbox pod", "namespace", core.namespace, "pod", core.podName, "timeout", bound, "err", clusterText(err.Error()))
+		}
+		select {
+		case <-waitCtx.Done():
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return fmt.Errorf("exec reachability wait interrupted: %w", ctxErr)
+			}
+			return fmt.Errorf("%w within %s: %s", errExecUnreachable, bound, clusterText(err.Error()))
+		case <-time.After(timing.pollPeriod):
+		}
+	}
+}
+
+// errExecUnreachable marks a Ready Pod whose kubelet the API server could
+// not reach for exec within the bound.
+var errExecUnreachable = errors.New("is not reachable for exec")
