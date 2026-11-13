@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -117,14 +118,9 @@ var strictContainerFields = map[string]admissionField{
 // strictAdmissionChecks are the whole-Pod admission checks a runtime profile
 // with strictAdmission adds at both admission stages.
 func strictAdmissionChecks(profile k8sRuntimeProfile) []admissionCheck {
-	keys := make([]string, 0, len(profile.noNetworkAnnotations))
-	for k := range profile.noNetworkAnnotations {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
 	return []admissionCheck{
 		func(expected, observed *corev1.Pod) []admissionMismatch {
-			return checkAnnotationsKept(keys, expected, observed)
+			return checkGovernedAnnotations(profile.governedAnnotationPrefix, profile.retunableAnnotations, expected, observed)
 		},
 		func(_, observed *corev1.Pod) []admissionMismatch {
 			return checkPlatformMarks(profile.requiredOverheadResources, profile.requiredNodeSelector, observed)
@@ -162,24 +158,35 @@ func checkPlatformMarks(overhead []corev1.ResourceName, nodeSelector map[string]
 	return out
 }
 
-// checkAnnotationsKept requires each named annotation the expected Pod
-// carries to be present on the observed Pod with the same value.
-func checkAnnotationsKept(keys []string, expected, observed *corev1.Pod) []admissionMismatch {
+// checkGovernedAnnotations compares the annotations under prefix: each must
+// be on the observed Pod exactly as on the expected Pod, absent included,
+// except a retunable key, which may be added or given another value but not
+// removed. Annotations outside prefix are not compared.
+func checkGovernedAnnotations(prefix string, retunable []string, expected, observed *corev1.Pod) []admissionMismatch {
+	if prefix == "" {
+		return nil
+	}
+	keys := map[string]bool{}
+	for _, annotations := range []map[string]string{expected.Annotations, observed.Annotations} {
+		for k := range annotations {
+			if strings.HasPrefix(k, prefix) {
+				keys[k] = true
+			}
+		}
+	}
 	var out []admissionMismatch
-	for _, key := range keys {
-		want, ok := expected.Annotations[key]
-		if !ok {
-			continue
-		}
+	for _, key := range sortedSetMembers(keys) {
+		want, wantOK := expected.Annotations[key]
 		got, gotOK := observed.Annotations[key]
-		if gotOK && got == want {
-			continue
+		field := "metadata.annotations[" + clusterText(key) + "]"
+		switch {
+		case slices.Contains(retunable, key):
+			if wantOK && !gotOK {
+				out = append(out, admissionMismatch{field: field, expected: "present with any value", observed: "absent"})
+			}
+		case want != got || wantOK != gotOK:
+			out = append(out, admissionMismatch{field: field, expected: labelValue(want, wantOK), observed: labelValue(got, gotOK)})
 		}
-		out = append(out, admissionMismatch{
-			field:    "metadata.annotations[" + key + "]",
-			expected: labelValue(want, true),
-			observed: labelValue(got, gotOK),
-		})
 	}
 	return out
 }

@@ -88,9 +88,6 @@ func TestPodAdmission_StrictAcceptsAdmittedNitroPodFixture(t *testing.T) {
 	submitted := buildSandboxPod(nitroFixtureCfg(), profile, testK8sPodName, nil)
 	admitted := decodeAdmittedNitroPod(t)
 
-	// The fixture carries what EKS and API defaulting add: 1Gi for the
-	// submitted 1024Mi, a retuned log-bandwidth, topology labels, a merged
-	// node selector, default tolerations, overhead and scheduling fields.
 	must.NotEqual(submitted.Spec.Containers[0].Resources, admitted.Spec.Containers[0].Resources,
 		"the fixture's quantities must differ structurally so the comparison is shown to be semantic")
 	must.Empty(admitted.Spec.Volumes[0].Projected, "no service-account token volume is injected")
@@ -323,6 +320,83 @@ func TestNewK8sExecutor_StrictAdmissionRechecksDuringReadiness(t *testing.T) {
 			requireRemovedAfterRelease(t, lingering)
 			must.Len(security.runtimeDiagnostics, 1)
 			must.Equal("admitted_pod", security.runtimeDiagnostics[0].check)
+		})
+	}
+}
+
+// syntheticAdmittedNitroPod returns the nitro-isolated Pod as submitted and a
+// copy with a UID and the RuntimeClass marks added; no read-back underlies
+// the copy.
+func syntheticAdmittedNitroPod() (*corev1.Pod, *corev1.Pod) {
+	submitted := buildSandboxPod(nitroFixtureCfg(), k8sRuntimeProfiles["nitro-isolated"], testK8sPodName, nil)
+	admitted := admittedCopy(submitted)
+	applyRuntimeClassMarks(admitted)
+	return submitted, admitted
+}
+
+func TestPodAdmission_StrictSyntheticSandboxAnnotationRules(t *testing.T) {
+	cases := []struct {
+		name      string
+		mutate    func(pod *corev1.Pod)
+		wantField string
+	}{
+		{name: "throttle value retuned", mutate: func(p *corev1.Pod) { p.Annotations["sandbox.amazonaws.com/log-bandwidth"] = "40M" }},
+		{name: "throttle key added", mutate: func(p *corev1.Pod) { p.Annotations["sandbox.amazonaws.com/overlay-disk-iops"] = "3000" }},
+		{name: "annotation outside the prefix added", mutate: func(p *corev1.Pod) { p.Annotations["example.com/injected"] = "true" }},
+		{name: "submitted throttle key removed", mutate: func(p *corev1.Pod) { delete(p.Annotations, "sandbox.amazonaws.com/log-bandwidth") }, wantField: "metadata.annotations[sandbox.amazonaws.com/log-bandwidth]: expected present with any value, observed absent"},
+		{name: "unknown sandbox key added", mutate: func(p *corev1.Pod) { p.Annotations["sandbox.amazonaws.com/policy"] = "permissive" }, wantField: `metadata.annotations[sandbox.amazonaws.com/policy]: expected absent, observed "permissive"`},
+		{name: "no-network annotation changed", mutate: func(p *corev1.Pod) { p.Annotations["sandbox.amazonaws.com/network-isolated"] = "false" }, wantField: `metadata.annotations[sandbox.amazonaws.com/network-isolated]: expected "true", observed "false"`},
+	}
+	profile := k8sRuntimeProfiles["nitro-isolated"]
+	for _, tc := range cases {
+		t.Run(tc.name+" at creation", func(t *testing.T) {
+			must := require.New(t)
+			submitted, admitted := syntheticAdmittedNitroPod()
+			tc.mutate(admitted)
+
+			err := newPodAdmission(submitted, admitted, profile).checkCreate()
+
+			if tc.wantField == "" {
+				must.NoError(err)
+				return
+			}
+			must.ErrorContains(err, tc.wantField)
+		})
+		t.Run(tc.name+" during the readiness wait", func(t *testing.T) {
+			must := require.New(t)
+			submitted, admitted := syntheticAdmittedNitroPod()
+			admission := newPodAdmission(submitted, admitted, profile)
+			must.NoError(admission.checkCreate())
+			observed := admitted.DeepCopy()
+			tc.mutate(observed)
+
+			err := admission.checkPoll(observed)
+
+			if tc.wantField == "" {
+				must.NoError(err)
+				return
+			}
+			must.ErrorContains(err, tc.wantField)
+		})
+	}
+}
+
+func TestK8sRuntimeProfiles_StrictProfileAnnotationsAreGoverned(t *testing.T) {
+	for runtime, profile := range k8sRuntimeProfiles {
+		if !profile.strictAdmission {
+			continue
+		}
+		t.Run(runtime, func(t *testing.T) {
+			must := require.New(t)
+			must.NotEmpty(profile.governedAnnotationPrefix)
+			for _, annotations := range []map[string]string{profile.podAnnotations, profile.noNetworkAnnotations} {
+				for key := range annotations {
+					must.True(strings.HasPrefix(key, profile.governedAnnotationPrefix), "%s is not under %s, so admission could change it unnoticed", key, profile.governedAnnotationPrefix)
+				}
+			}
+			for key := range profile.noNetworkAnnotations {
+				must.NotContains(profile.retunableAnnotations, key, "a no-network annotation must keep its value")
+			}
 		})
 	}
 }

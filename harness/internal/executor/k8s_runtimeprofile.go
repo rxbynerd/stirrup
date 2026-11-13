@@ -35,6 +35,13 @@ type k8sRuntimeProfile struct {
 	// Checked only under strictAdmission.
 	requiredOverheadResources []corev1.ResourceName
 	requiredNodeSelector      map[string]string
+	// governedAnnotationPrefix names the annotations the platform acts on.
+	// Under strictAdmission every annotation with this prefix must keep its
+	// submitted presence and value, except retunableAnnotations, which
+	// admission may add or change but not remove. The profile's own
+	// annotations all carry the prefix, so they are covered.
+	governedAnnotationPrefix string
+	retunableAnnotations     []string
 	// verify runs guest diagnostics after readiness and returns what the
 	// guest reported; nil means the runtime has none. A failed check is a
 	// *k8sRuntimeDiagnosticError.
@@ -59,7 +66,22 @@ var k8sRuntimeProfiles = map[string]k8sRuntimeProfile{
 		strictAdmission:           true,
 		requiredOverheadResources: []corev1.ResourceName{"eks.amazonaws.com/nitro-sandbox"},
 		requiredNodeSelector:      map[string]string{"eks.amazonaws.com/nitro-sandbox": "true"},
-		verify:                    verifyNitroIsolatedGuest,
+		governedAnnotationPrefix:  "sandbox.amazonaws.com/",
+		// The throttle keys AWS documents for Nitro Sandboxes.
+		retunableAnnotations: []string{
+			"sandbox.amazonaws.com/log-bandwidth",
+			"sandbox.amazonaws.com/ingress-bandwidth",
+			"sandbox.amazonaws.com/egress-bandwidth",
+			"sandbox.amazonaws.com/ingress-packets-per-second",
+			"sandbox.amazonaws.com/egress-packets-per-second",
+			"sandbox.amazonaws.com/dns-packets-per-second",
+			"sandbox.amazonaws.com/overlay-disk-bandwidth",
+			"sandbox.amazonaws.com/overlay-disk-iops",
+			"sandbox.amazonaws.com/rootfs-disk-bandwidth",
+			"sandbox.amazonaws.com/rootfs-disk-iops",
+			"sandbox.amazonaws.com/conntrack-limit",
+		},
+		verify: verifyNitroIsolatedGuest,
 	},
 }
 
