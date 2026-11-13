@@ -404,6 +404,38 @@ func TestK8sRuntimeProfiles_StrictProfileAnnotationsAreGoverned(t *testing.T) {
 	}
 }
 
+// A readiness failure that is not an admission mismatch is an ordinary
+// start failure, not a runtime diagnostic.
+func TestNewK8sExecutor_StrictReadinessFailureEmitsNoDiagnostic(t *testing.T) {
+	cases := []struct {
+		name string
+		ctx  func() (context.Context, context.CancelFunc)
+	}{
+		{name: "readiness timeout", ctx: func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) }},
+		{name: "caller cancels during the wait", ctx: func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx, cancel
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cs := fake.NewClientset()
+			admitPods(cs, func(p *corev1.Pod) { p.Status = corev1.PodStatus{Phase: corev1.PodPending} })
+			cfg, security := nitroConstructorCfg()
+			ctx, cancel := tc.ctx()
+			defer cancel()
+
+			_, err := newFakeK8sExecutor(ctx, cs, cfg)
+
+			must.ErrorIs(err, errPodNotReady)
+			must.Empty(security.runtimeDiagnostics)
+			requireTornDown(t, cs)
+		})
+	}
+}
+
 func TestK8sRuntimeProfiles_PlatformMarksOnlyForNitroIsolated(t *testing.T) {
 	must := require.New(t)
 	nitro := k8sRuntimeProfiles["nitro-isolated"]

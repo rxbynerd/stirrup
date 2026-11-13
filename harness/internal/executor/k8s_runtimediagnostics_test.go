@@ -184,6 +184,83 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 			wantObserved: map[string]string{"dmiProductName": "m5d.enclave", "interfaces": "lo"},
 		},
 		{
+			name: "missing interface table",
+			stdout: guestDump(
+				text("m5d.enclave\n"),
+				nil,
+				text(procNetRouteHeader),
+			),
+			wantCheck:    "network_interfaces",
+			wantReason:   "/proc/net/dev is absent, unreadable or not a regular file",
+			wantObserved: map[string]string{"dmiProductName": "m5d.enclave", "routeEntries": "0"},
+		},
+		{
+			name: "route table without its header",
+			stdout: guestDump(
+				text("m5d.enclave\n"),
+				text(procNetDevHeader+procNetDevLo),
+				text(procNetRouteDflt),
+			),
+			wantCheck:    "route_table",
+			wantReason:   "/proc/net/route does not start with its header line",
+			wantObserved: map[string]string{"dmiProductName": "m5d.enclave", "interfaces": "lo"},
+		},
+		{
+			name: "malformed route line",
+			stdout: guestDump(
+				text("m5d.enclave\n"),
+				text(procNetDevHeader+procNetDevLo),
+				text(procNetRouteHeader+"dummy0\n"),
+			),
+			wantCheck:    "route_table",
+			wantReason:   `unrecognised /proc/net/route line "dummy0"`,
+			wantObserved: map[string]string{"dmiProductName": "m5d.enclave", "interfaces": "lo"},
+		},
+		{
+			name: "interface table with a wrong first header line",
+			stdout: guestDump(
+				text("m5d.enclave\n"),
+				text("Inter|   Receive\n"+strings.SplitAfter(procNetDevHeader, "\n")[1]+procNetDevLo),
+				text(procNetRouteHeader),
+			),
+			wantCheck:    "network_interfaces",
+			wantReason:   "/proc/net/dev does not start with its two header lines",
+			wantObserved: map[string]string{"dmiProductName": "m5d.enclave", "routeEntries": "0"},
+		},
+		{
+			name: "interface table with a wrong second header line",
+			stdout: guestDump(
+				text("m5d.enclave\n"),
+				text(strings.SplitAfter(procNetDevHeader, "\n")[0]+" face bytes\n"+procNetDevLo),
+				text(procNetRouteHeader),
+			),
+			wantCheck:    "network_interfaces",
+			wantReason:   "/proc/net/dev does not start with its two header lines",
+			wantObserved: map[string]string{"dmiProductName": "m5d.enclave", "routeEntries": "0"},
+		},
+		{
+			name: "interface table with headers only",
+			stdout: guestDump(
+				text("m5d.enclave\n"),
+				text(procNetDevHeader),
+				text(procNetRouteHeader),
+			),
+			wantCheck:    "network_interfaces",
+			wantReason:   "/proc/net/dev lists no interfaces",
+			wantObserved: map[string]string{"dmiProductName": "m5d.enclave", "routeEntries": "0"},
+		},
+		{
+			name: "non-numeric interface counters",
+			stdout: guestDump(
+				text("m5d.enclave\n"),
+				text(procNetDevHeader+"    lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 x\n"),
+				text(procNetRouteHeader),
+			),
+			wantCheck:    "network_interfaces",
+			wantReason:   `unrecognised /proc/net/dev line`,
+			wantObserved: map[string]string{"dmiProductName": "m5d.enclave", "routeEntries": "0"},
+		},
+		{
 			name: "malformed interface line",
 			stdout: guestDump(
 				text("m5d.enclave\n"),
@@ -409,6 +486,24 @@ func TestRunK8sRuntimeDiagnostics_SanitisesGuestTextInTheError(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunK8sRuntimeDiagnostics_FailsOnStderrOverflow(t *testing.T) {
+	must := require.New(t)
+	core, security, _ := fakeDiagnosticsCore(t, isolatedGuestDump, nil)
+	inner := core.execFn
+	core.execFn = func(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error {
+		if _, err := io.WriteString(stderr, strings.Repeat("e", guestFileDumpOutputLimit+1)); err != nil {
+			return err
+		}
+		return inner(ctx, command, stdin, stdout, stderr)
+	}
+
+	err := runK8sRuntimeDiagnostics(context.Background(), "nitro-isolated", k8sRuntimeProfiles["nitro-isolated"], core)
+
+	must.ErrorContains(err, fmt.Sprintf("diagnostic_output: guest file read produced more than %d bytes", guestFileDumpOutputLimit))
+	must.Len(security.runtimeDiagnostics, 1)
+	must.Equal("diagnostic_output", security.runtimeDiagnostics[0].check)
 }
 
 func TestRunK8sRuntimeDiagnostics_KeepsTheExecErrorReachable(t *testing.T) {
