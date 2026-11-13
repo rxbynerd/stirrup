@@ -174,7 +174,7 @@ injects four gVisor-specific fields the policy additionally mandates,
 
 | Delta | Value | Why |
 |---|---|---|
-| `runtimeClassName` | `gvisor` (forced) | The Agent Sandbox path is gVisor-only. Any caller-supplied runtime is overridden, and a non-empty, non-`gvisor` runtime logs a warning so the override is visible rather than silent. |
+| `runtimeClassName` | `gvisor` (forced) | The Agent Sandbox path is gVisor-only. `executor.runtime` must be empty or `gvisor`: validation rejects any other value, and the constructor rejects it too, before any cluster call, for callers that bypass validation. |
 | CPU + memory limits | per container, default `500m` / `512Mi` | The policy requires explicit CPU **and** memory limits on every container. A container missing either limit has both that limit and the matching request filled with the package default; a caller-set value (via `executor.resources`) is preserved — only gaps are filled. |
 | `nodeSelector` | `sandbox.gke.io/runtime: gvisor` | Pins the Pod to a gVisor node pool. Merged into any caller `nodeSelector`, never clobbering existing entries. |
 | toleration | `sandbox.gke.io/runtime=gvisor:NoSchedule` | GKE taints the gVisor pool `NoSchedule`; without this toleration the Pod cannot land there. Appended idempotently. |
