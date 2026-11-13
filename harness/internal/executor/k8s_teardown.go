@@ -25,12 +25,16 @@ type k8sTiming struct {
 	// termination; the NetworkPolicy delete that follows gets its own
 	// k8sAPITimeout.
 	teardownTimeout time.Duration
+	// progressPeriod spaces the readiness wait's progress log lines; zero
+	// disables them.
+	progressPeriod time.Duration
 }
 
 var defaultK8sTiming = k8sTiming{
 	readyTimeout:    k8sReadyTimeout,
 	pollPeriod:      k8sReadyPollPeriod,
 	teardownTimeout: k8sCloseTimeout,
+	progressPeriod:  k8sReadyProgressPeriod,
 }
 
 // podTeardown removes a sandbox Pod and then its egress NetworkPolicy. The

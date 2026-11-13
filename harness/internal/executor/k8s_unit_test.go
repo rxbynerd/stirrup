@@ -656,7 +656,30 @@ func TestClusterText_ScrubsBeforeTruncating(t *testing.T) {
 }
 
 func containsHint(err error) bool {
-	return strings.Contains(err.Error(), "kubectl get runtimeclass")
+	return strings.Contains(err.Error(), "was rejected by the cluster —")
+}
+
+func TestClassifyPodCreateError_GivesAdvicePerRejection(t *testing.T) {
+	pods := schema.GroupResource{Resource: "pods"}
+	t.Run("not found", func(t *testing.T) {
+		must := require.New(t)
+		err := classifyPodCreateError("gvisor", apierrors.NewForbidden(pods, "stirrup-x", errors.New(`pod rejected: RuntimeClass "gvisor" not found`)))
+		must.ErrorContains(err, `create pod: RuntimeClass "gvisor" was rejected by the cluster — no RuntimeClass with that name is registered (kubectl get runtimeclass)`)
+		must.NotContains(err.Error(), "permitted")
+	})
+
+	t.Run("invalid name keeps the field cause", func(t *testing.T) {
+		must := require.New(t)
+		cause := "a lowercase RFC 1123 subdomain must consist of lower case alphanumeric characters"
+		padding := strings.Repeat("z", 2*k8sClusterTextMax)
+		err := classifyPodCreateError("Bad_Name", apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, "stirrup-x", field.ErrorList{
+			field.Invalid(field.NewPath("metadata", "annotations"), padding, "too long"),
+			field.Invalid(field.NewPath("spec", "runtimeClassName"), "Bad_Name", cause),
+		}))
+		must.ErrorContains(err, `create pod: RuntimeClass "Bad_Name" was rejected by the cluster — the name is not valid for spec.runtimeClassName (`)
+		must.ErrorContains(err, cause, "truncating the API message hid the field cause")
+		must.NotContains(err.Error(), "kubectl get runtimeclass")
+	})
 }
 
 // recordingExecCore returns a podExecCore whose exec calls are appended to

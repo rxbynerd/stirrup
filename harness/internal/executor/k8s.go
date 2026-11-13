@@ -38,11 +38,13 @@ const (
 	k8sSandboxIdentityVolumeSize = "64Ki"
 	// k8sReadyTimeout covers a Pod that waits for an autoscaler to provision
 	// a node, still capped by the caller's context.
-	k8sReadyTimeout     = 5 * time.Minute
-	k8sReadyPollPeriod  = 1 * time.Second
-	k8sCloseTimeout     = 30 * time.Second
-	k8sAPITimeout       = 30 * time.Second
-	k8sPodNameRandBytes = 6
+	k8sReadyTimeout    = 5 * time.Minute
+	k8sReadyPollPeriod = 1 * time.Second
+	// k8sReadyProgressPeriod spaces the readiness wait's progress log lines.
+	k8sReadyProgressPeriod = 30 * time.Second
+	k8sCloseTimeout        = 30 * time.Second
+	k8sAPITimeout          = 30 * time.Second
+	k8sPodNameRandBytes    = 6
 	// k8sTerminationGracePeriod is the sandbox Pod's termination grace
 	// period and the grace period the k8s executor deletes it with. It is
 	// non-zero so the API object outlives the workload until the kubelet
@@ -227,7 +229,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev
 	}
 
 	if _, err := waitForPodReady(ctx, clientset, cfg.Namespace, podName, admission, timing, logger); err != nil {
-		return nil, withTeardownErr(fmt.Errorf("pod %s/%s: %w", cfg.Namespace, podName, err), teardown.run())
+		return nil, withTeardownErr(fmt.Errorf("pod %s/%s %w", cfg.Namespace, podName, err), teardown.run())
 	}
 
 	return &K8sExecutor{
@@ -427,42 +429,55 @@ func buildRESTConfig(kubeconfig string) (*rest.Config, error) {
 
 // classifyPodCreateError wraps a Pod-create failure with its message
 // length-capped, adding a RuntimeClass hint only when the response names the
-// requested class (see createErrorNamesRuntimeClass). The original error stays
+// requested class (see runtimeClassRejection). The original error stays
 // reachable through errors.As.
 func classifyPodCreateError(runtimeClass string, err error) error {
-	if runtimeClass != "" && createErrorNamesRuntimeClass(runtimeClass, err) {
-		return fmt.Errorf(
-			"create pod: RuntimeClass %q was rejected by the cluster — confirm a RuntimeClass with that name is registered and permitted (kubectl get runtimeclass): %w",
-			runtimeClass, boundClusterErr(err),
-		)
+	if runtimeClass != "" {
+		switch notFound, invalidCause := runtimeClassRejection(runtimeClass, err); {
+		case notFound:
+			return fmt.Errorf(
+				"create pod: RuntimeClass %q was rejected by the cluster — no RuntimeClass with that name is registered (kubectl get runtimeclass): %w",
+				runtimeClass, boundClusterErr(err),
+			)
+		case invalidCause != "":
+			return fmt.Errorf(
+				"create pod: RuntimeClass %q was rejected by the cluster — the name is not valid for spec.runtimeClassName (%s): %w",
+				runtimeClass, clusterText(invalidCause), boundClusterErr(err),
+			)
+		}
 	}
 	return fmt.Errorf("create pod: %w", boundClusterErr(err))
 }
 
-// createErrorNamesRuntimeClass matches an Invalid cause on
-// spec.runtimeClassName, or the RuntimeClass admission plugin's Forbidden
-// "RuntimeClass %q not found"; Forbidden responses carry no field causes.
-func createErrorNamesRuntimeClass(runtimeClass string, err error) bool {
+// runtimeClassRejection reports whether the RuntimeClass admission plugin
+// answered Forbidden "RuntimeClass %q not found" for the requested class, or
+// returns the message of an Invalid cause on spec.runtimeClassName.
+// Forbidden responses carry no field causes, so the plugin's message is
+// matched.
+func runtimeClassRejection(runtimeClass string, err error) (notFound bool, invalidCause string) {
 	var status apierrors.APIStatus
 	if !errors.As(err, &status) {
-		return false
+		return false, ""
 	}
 	st := status.Status()
 	switch {
 	case apierrors.IsInvalid(err):
 		if st.Details == nil {
-			return false
+			return false, ""
 		}
 		for _, cause := range st.Details.Causes {
 			if cause.Field == "spec.runtimeClassName" {
-				return true
+				msg := cause.Message
+				if msg == "" {
+					msg = "no detail"
+				}
+				return false, msg
 			}
 		}
-		return false
 	case apierrors.IsForbidden(err):
-		return strings.Contains(st.Message, fmt.Sprintf("RuntimeClass %q not found", runtimeClass))
+		return strings.Contains(st.Message, fmt.Sprintf("RuntimeClass %q not found", runtimeClass)), ""
 	}
-	return false
+	return false, ""
 }
 
 // clusterError bounds the text of an API error while keeping the error

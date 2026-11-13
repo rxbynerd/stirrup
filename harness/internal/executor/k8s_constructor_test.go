@@ -214,7 +214,7 @@ func TestNewK8sExecutor_TearsDownOnReadinessFailure(t *testing.T) {
 	_, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
 
 	must.ErrorIs(err, errPodNotReady)
-	must.ErrorContains(err, "pod phase Failed (Evicted")
+	must.ErrorContains(err, "pod "+testK8sNamespace+"/"+createdPodName(t, cs)+" not ready: pod phase Failed (Evicted")
 	requireTornDown(t, cs)
 	requireRemovedAfterRelease(t, lingering)
 }

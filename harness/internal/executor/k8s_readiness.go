@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,7 +24,7 @@ var permanentWaitingReasons = map[string]bool{
 
 // errPodNotReady wraps every readiness failure so callers can tell it from a
 // teardown error joined onto it.
-var errPodNotReady = errors.New("pod not ready")
+var errPodNotReady = errors.New("not ready")
 
 // podReadiness tracks what the readiness wait last observed, for the error
 // reported when the wait ends without a Ready Pod.
@@ -38,12 +39,15 @@ type podReadiness struct {
 // waitForPodReady polls until the Pod is Running with the agent container
 // Ready, re-checking the admission contract on every observation. A terminal
 // state, a mismatch, a missing Pod or an RBAC denial fails at once; other API
-// errors are retried until timing.readyTimeout or ctx ends.
+// errors are retried until timing.readyTimeout or ctx ends. It logs when it
+// starts and every timing.progressPeriod while it waits.
 func waitForPodReady(ctx context.Context, clientset kubernetes.Interface, namespace, name string, admission podAdmission, timing k8sTiming, logger *slog.Logger) (*corev1.Pod, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, timing.readyTimeout)
 	defer cancel()
 
+	logger.Info("k8s executor waiting for sandbox pod readiness", "namespace", namespace, "pod", name, "timeout", timing.readyTimeout)
 	var seen podReadiness
+	nextProgress := time.Now().Add(timing.progressPeriod)
 	for {
 		pod, err := clientset.CoreV1().Pods(namespace).Get(waitCtx, name, metav1.GetOptions{})
 		switch {
@@ -59,12 +63,20 @@ func waitForPodReady(ctx context.Context, clientset kubernetes.Interface, namesp
 				return pod, nil
 			}
 		case apierrors.IsNotFound(err):
-			return nil, fmt.Errorf("%w: the pod was deleted during the readiness wait", errPodNotReady)
+			if seen.sawPod {
+				return nil, fmt.Errorf("%w: the pod was deleted during the readiness wait", errPodNotReady)
+			}
+			return nil, fmt.Errorf("%w: the pod was not found", errPodNotReady)
 		case apierrors.IsForbidden(err), apierrors.IsUnauthorized(err):
 			return nil, fmt.Errorf("%w: get pod: %w", errPodNotReady, boundClusterErr(err))
 		case waitCtx.Err() == nil:
 			seen.lastAPIErr = err
 			logger.Debug("transient error polling pod readiness, retrying", "namespace", namespace, "pod", name, "err", err)
+		}
+
+		if timing.progressPeriod > 0 && !time.Now().Before(nextProgress) {
+			logger.Info("k8s executor still waiting for sandbox pod readiness", "namespace", namespace, "pod", name, "status", seen.summary())
+			nextProgress = time.Now().Add(timing.progressPeriod)
 		}
 
 		if !sleepCtx(waitCtx, timing.pollPeriod) {
