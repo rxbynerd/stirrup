@@ -163,9 +163,9 @@ func buildSandboxObject(namespace, name, runID string, podSpec corev1.PodSpec, s
 // fail-closed ordering: validate config and compute the proxy env before any
 // cluster op, install the egress NetworkPolicy BEFORE the Sandbox so the Pod
 // never runs with unrestricted egress, then create the Sandbox and wait for the
-// controller to report it Ready. On any failure the partially created objects
-// (NetworkPolicy and/or Sandbox) are deleted best-effort before the error is
-// returned.
+// controller to report it Ready. A failure before the Sandbox may exist
+// deletes the policy; a later one, or an ambiguous Sandbox create, tears down
+// through Close, which removes the policy only once the Sandbox is gone.
 func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*AgentSandboxExecutor, error) {
 	if cfg.Image == "" {
 		return nil, fmt.Errorf("agent sandbox executor requires an image")
@@ -227,9 +227,25 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
 		return nil, fmt.Errorf("build sandbox object: %w", err)
 	}
+	// rollback tears a partial construction down through Close, so the
+	// policy outlives every Sandbox that might still back a running Pod.
+	partial := &AgentSandboxExecutor{
+		podExecCore:       podExecCore{clientset: clientset, namespace: cfg.Namespace, podName: name, logger: logger},
+		dynamicClient:     dyn,
+		sandboxName:       name,
+		networkPolicyName: policy.Name,
+	}
+	rollback := func(cause error) error {
+		return withTeardownErr(cause, partial.Close())
+	}
+
 	if _, err := dyn.Resource(sandboxGVR).Namespace(cfg.Namespace).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
+		createErr := fmt.Errorf("create sandbox %s/%s: %w", cfg.Namespace, name, err)
+		if podCreateOutcomeAmbiguous(err) {
+			return nil, rollback(createErr)
+		}
 		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
-		return nil, fmt.Errorf("create sandbox %s/%s: %w", cfg.Namespace, name, err)
+		return nil, createErr
 	}
 
 	var ready *metav1unstructured.Unstructured
@@ -248,11 +264,9 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 		return sandboxReady(got), nil
 	})
 	if err != nil {
-		deleteSandboxBestEffort(dyn, cfg.Namespace, name, logger)
-		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
 		// Duration omitted: readiness can end on k8sReadyTimeout or a shorter
 		// caller deadline, and a hardcoded value would misreport the latter.
-		return nil, fmt.Errorf("sandbox %s/%s not ready: %w", cfg.Namespace, name, err)
+		return nil, rollback(fmt.Errorf("sandbox %s/%s not ready: %w", cfg.Namespace, name, err))
 	}
 
 	podName := resolveSandboxPodName(ready)
@@ -261,12 +275,10 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 	// match, and the per-pod egress NetworkPolicy would bind to nothing. See
 	// docs/executors/k8s-agent-sandbox.md.
 	if podName != name {
-		deleteSandboxBestEffort(dyn, cfg.Namespace, name, logger)
-		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
-		return nil, fmt.Errorf(
+		return nil, rollback(fmt.Errorf(
 			"sandbox %s/%s resolved to backing pod %q: warm-pool adoption is not supported by the agent sandbox executor (its per-pod egress policy would not bind)",
-			cfg.Namespace, name, podName,
-		)
+			cfg.Namespace, name, clusterText(podName),
+		))
 	}
 
 	return &AgentSandboxExecutor{
@@ -329,17 +341,6 @@ func (e *AgentSandboxExecutor) Close() error {
 		e.logger.Warn("agent sandbox executor networkpolicy delete failed", "namespace", e.namespace, "networkpolicy", e.networkPolicyName, "err", npErr)
 	}
 	return nil
-}
-
-// deleteSandboxBestEffort deletes the Sandbox CR, logging (not returning)
-// any error. Used on constructor error paths to undo a partial create.
-func deleteSandboxBestEffort(dyn dynamic.Interface, namespace, name string, logger *slog.Logger) {
-	ctx, cancel := context.WithTimeout(context.Background(), k8sCloseTimeout)
-	defer cancel()
-	err := dyn.Resource(sandboxGVR).Namespace(namespace).Delete(ctx, name, metav1.DeleteOptions{})
-	if err != nil && !apierrors.IsNotFound(err) {
-		logger.Warn("agent sandbox executor cleanup sandbox delete failed", "namespace", namespace, "sandbox", name, "err", err)
-	}
 }
 
 var _ Executor = (*AgentSandboxExecutor)(nil)

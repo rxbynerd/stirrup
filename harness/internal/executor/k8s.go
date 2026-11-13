@@ -16,6 +16,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -109,17 +110,20 @@ type K8sExecutorConfig struct {
 // K8sExecutorConfig.Image for the required shell/tar/ls.
 type K8sExecutor struct {
 	podExecCore
+	podUID k8stypes.UID
 	// networkPolicyName is empty only on a zero-value executor (unit
-	// tests); NewK8sExecutor always installs one. Close() deletes it
-	// best-effort.
+	// tests); NewK8sExecutor always installs one. Close() deletes it once
+	// the Pod's termination is established.
 	networkPolicyName string
+	runID             string
+	timing            k8sTiming
 }
 
 // NewK8sExecutor builds a kubernetes clientset, installs the egress
 // NetworkPolicy, creates a sandbox Pod, and waits for it to become Ready.
 // The policy is installed BEFORE the Pod so the Pod never runs with
-// unrestricted egress. On any failure the partially created objects are
-// deleted best-effort before the error is returned.
+// unrestricted egress. Any failure after the Pod create tears down through
+// the same contract as Close.
 func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, error) {
 	if cfg.Image == "" {
 		return nil, fmt.Errorf("k8s executor requires an image")
@@ -148,6 +152,11 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		return nil, fmt.Errorf("build kube clientset: %w", err)
 	}
 
+	return newK8sExecutor(ctx, cfg, proxyEnv, clientset, restCfg, defaultK8sTiming)
+}
+
+// newK8sExecutor is NewK8sExecutor after the clientset is built.
+func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, clientset kubernetes.Interface, restCfg *rest.Config, timing k8sTiming) (*K8sExecutor, error) {
 	logger := slog.Default()
 
 	// An empty RuntimeClassName selects the cluster-default RuntimeClass,
@@ -179,18 +188,31 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		return nil, fmt.Errorf("install egress NetworkPolicy for pod %s/%s: %w", cfg.Namespace, podName, err)
 	}
 
-	created, err := clientset.CoreV1().Pods(cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
-	if err != nil {
-
-		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
-		return nil, classifyPodCreateError(cfg.RuntimeClassName, err)
+	teardown := podTeardown{
+		clientset:  clientset,
+		namespace:  cfg.Namespace,
+		podName:    podName,
+		policyName: policy.Name,
+		runID:      cfg.Lifecycle.RunID,
+		logger:     logger,
+		timing:     timing,
 	}
 
-	if err := waitForPodReady(ctx, clientset, cfg.Namespace, created.Name); err != nil {
-		deletePodBestEffort(clientset, cfg.Namespace, created.Name, logger)
-		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)
+	created, err := clientset.CoreV1().Pods(cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
+	if err != nil {
+		createErr := classifyPodCreateError(cfg.RuntimeClassName, err)
+		var cleanupErr error
+		if podCreateOutcomeAmbiguous(err) {
+			cleanupErr = teardown.reconcileAmbiguousCreate(pod.Labels)
+		} else {
+			cleanupErr = teardown.removePolicy()
+		}
+		return nil, withTeardownErr(createErr, cleanupErr)
+	}
+	teardown.podUID = created.UID
 
-		return nil, fmt.Errorf("pod %s/%s not ready: %w", cfg.Namespace, created.Name, err)
+	if err := waitForPodReady(ctx, clientset, cfg.Namespace, podName); err != nil {
+		return nil, withTeardownErr(fmt.Errorf("pod %s/%s not ready: %w", cfg.Namespace, podName, err), teardown.run())
 	}
 
 	return &K8sExecutor{
@@ -198,14 +220,26 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 			clientset:       clientset,
 			restConfig:      restCfg,
 			namespace:       cfg.Namespace,
-			podName:         created.Name,
+			podName:         podName,
 			network:         cfg.Network,
 			Security:        cfg.Security,
 			logger:          logger,
 			sandboxIdentity: cfg.SandboxIdentityToken,
 		},
+		podUID:            created.UID,
 		networkPolicyName: policy.Name,
+		runID:             cfg.Lifecycle.RunID,
+		timing:            timing,
 	}, nil
+}
+
+// withTeardownErr appends a cleanup failure to the error that caused the
+// cleanup, keeping both reachable through errors.Is and errors.As.
+func withTeardownErr(cause, teardownErr error) error {
+	if teardownErr == nil {
+		return cause
+	}
+	return fmt.Errorf("%w; cleanup: %w", cause, teardownErr)
 }
 
 // buildSandboxPod builds the k8s executor's sandbox Pod. Beyond the shared
@@ -311,37 +345,22 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraE
 	}
 }
 
-// Close deletes the sandbox Pod with zero grace period, then the egress
-// NetworkPolicy, using its own background context so cleanup proceeds even
-// if the caller's context is already cancelled. A NotFound result is
-// treated as success (idempotent).
-//
-// The Pod is deleted first so the policy isn't removed while it is still
-// terminating (which would reopen unrestricted egress); the policy delete
-// is best-effort and never blocks Pod removal.
+// Close deletes the sandbox Pod gracefully under a UID precondition, waits
+// until its termination is established, and only then deletes the egress
+// NetworkPolicy. It uses its own bounded context, so cleanup proceeds even if
+// the caller's context is cancelled, and is idempotent. When termination
+// cannot be established the policy is retained and the error names it.
 func (e *K8sExecutor) Close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), k8sCloseTimeout)
-	defer cancel()
-
-	podErr := e.clientset.CoreV1().Pods(e.namespace).Delete(ctx, e.podName, metav1.DeleteOptions{
-		GracePeriodSeconds: ptr.To(int64(0)),
-	})
-
-	if e.networkPolicyName != "" {
-		npErr := e.clientset.NetworkingV1().NetworkPolicies(e.namespace).Delete(ctx, e.networkPolicyName, metav1.DeleteOptions{})
-		if npErr != nil && !apierrors.IsNotFound(npErr) {
-			e.logger.Warn("k8s executor networkpolicy delete failed", "namespace", e.namespace, "networkpolicy", e.networkPolicyName, "err", npErr)
-		}
-	}
-
-	if podErr != nil {
-		if apierrors.IsNotFound(podErr) {
-			e.logger.Debug("k8s executor pod already gone", "namespace", e.namespace, "pod", e.podName)
-			return nil
-		}
-		return fmt.Errorf("delete pod: %w", podErr)
-	}
-	return nil
+	return podTeardown{
+		clientset:  e.clientset,
+		namespace:  e.namespace,
+		podName:    e.podName,
+		podUID:     e.podUID,
+		policyName: e.networkPolicyName,
+		runID:      e.runID,
+		logger:     e.logger,
+		timing:     e.timing,
+	}.run()
 }
 
 // buildRESTConfig resolves an in-cluster config when possible, falling back
@@ -547,24 +566,9 @@ func waitForPodReady(ctx context.Context, clientset kubernetes.Interface, namesp
 	})
 }
 
-// deletePodBestEffort attempts to delete a Pod with zero grace, logging
-// (but not returning) any error. Used on error paths inside the
-// constructor where the original error is what the caller cares about.
-func deletePodBestEffort(clientset kubernetes.Interface, namespace, name string, logger *slog.Logger) {
-	ctx, cancel := context.WithTimeout(context.Background(), k8sCloseTimeout)
-	defer cancel()
-	err := clientset.CoreV1().Pods(namespace).Delete(ctx, name, metav1.DeleteOptions{
-		GracePeriodSeconds: ptr.To(int64(0)),
-	})
-	if err != nil && !apierrors.IsNotFound(err) {
-		logger.Warn("k8s executor cleanup delete failed", "namespace", namespace, "pod", name, "err", err)
-	}
-}
-
 // deleteNetworkPolicyBestEffort attempts to delete the egress NetworkPolicy,
-// logging (but not returning) any error. Used on constructor error paths to
-// undo a policy that was installed before the Pod-create / readiness step
-// failed, so a failed construction leaves no orphaned policy behind.
+// logging (but not returning) any error. It is only for constructor failures
+// after which no workload the policy selects can exist.
 func deleteNetworkPolicyBestEffort(clientset kubernetes.Interface, namespace, name string, logger *slog.Logger) {
 	ctx, cancel := context.WithTimeout(context.Background(), k8sCloseTimeout)
 	defer cancel()
