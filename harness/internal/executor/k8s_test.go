@@ -172,10 +172,17 @@ func TestK8sExecutor_CloseRemovesPolicyAfterPodIsGone(t *testing.T) {
 	policies := clientset.NetworkingV1().NetworkPolicies(cfg.namespace)
 	policyName := networkPolicyName(sandbox.podName)
 
+	admitted, err := pods.Get(ctx, sandbox.podName, metav1.GetOptions{})
+	must.NoError(err, "read the sandbox pod")
+	must.NotNil(admitted.Spec.TerminationGracePeriodSeconds, "terminationGracePeriodSeconds")
+	must.Equal(k8sTerminationGracePeriod, *admitted.Spec.TerminationGracePeriodSeconds)
+
 	// Each sample reads the policy before the Pod, so a sample that finds the
-	// policy gone and the Pod present proves the Pod outlived the policy.
+	// policy gone and the Pod present proves the Pod outlived the policy. A
+	// sample that finds the Pod terminating with a non-zero grace period shows
+	// the kubelet was left to confirm the containers stopped.
 	var violations []string
-	samples := 0
+	samples, terminating := 0, 0
 	stop := make(chan struct{})
 	sampled := make(chan struct{})
 	go func() {
@@ -184,6 +191,10 @@ func TestK8sExecutor_CloseRemovesPolicyAfterPodIsGone(t *testing.T) {
 			_, policyErr := policies.Get(ctx, policyName, metav1.GetOptions{})
 			pod, podErr := pods.Get(ctx, sandbox.podName, metav1.GetOptions{})
 			samples++
+			if podErr == nil && pod.UID == sandbox.podUID && pod.DeletionTimestamp != nil &&
+				pod.DeletionGracePeriodSeconds != nil && *pod.DeletionGracePeriodSeconds > 0 {
+				terminating++
+			}
 			if apierrors.IsNotFound(policyErr) && podErr == nil && pod.UID == sandbox.podUID {
 				violations = append(violations, fmt.Sprintf("policy absent while pod present (deletionTimestamp=%v)", pod.DeletionTimestamp))
 			}
@@ -201,9 +212,10 @@ func TestK8sExecutor_CloseRemovesPolicyAfterPodIsGone(t *testing.T) {
 	close(stop)
 	<-sampled
 	must.NoError(closeErr, "Close")
-	t.Logf("Close took %s over %d samples", elapsed.Round(time.Millisecond), samples)
+	t.Logf("Close took %s over %d samples, %d with the pod terminating", elapsed.Round(time.Millisecond), samples, terminating)
 
 	check.Empty(violations, "egress policy was removed before the sandbox pod was gone")
+	check.Positive(terminating, "no sample saw the pod terminating gracefully before it was gone")
 	_, err = pods.Get(ctx, sandbox.podName, metav1.GetOptions{})
 	check.True(apierrors.IsNotFound(err), "pod still present after Close returned: %v", err)
 	_, err = policies.Get(ctx, policyName, metav1.GetOptions{})
