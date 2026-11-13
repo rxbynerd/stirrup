@@ -375,10 +375,14 @@ the `ask-upstream` permission-response timeout. For the initial
 exchange a response that arrives late, or not at all, aborts the run
 before the sandbox is created; the run ends with
 `done{stop_reason:"error"}` rather than leaving a
-partially-provisioned, tokenless sandbox behind. For a refresh the
-same outcomes — and an explicit `is_error` — stop refreshing and
-emit a `warning` event naming the expiry of the token still in the
-sandbox; the run itself continues.
+partially-provisioned, tokenless sandbox behind. When sandbox startup
+took the first token past its refresh point, one more request precedes
+the first delivery of the token file; a late or missing response, an
+explicit `is_error`, or a fresh token that has already expired aborts
+construction, the harness tears the sandbox down, and the run ends the
+same way. For a refresh after delivery the same outcomes — and an
+explicit `is_error` — stop refreshing and emit a `warning` event naming
+the expiry of the token still in the sandbox; the run itself continues.
 
 **Token lifetime.** Haybale recommends an `exp` of 15 minutes or
 less, and the harness decouples that lifetime from the run's
@@ -392,7 +396,9 @@ must therefore be prepared to answer up to eight requests per stream,
 each minted for the same run identity; the initial token's
 environment-variable copy is never updated, only the file. A token
 that reaches its refresh point while the sandbox is still starting is
-replaced by a second request before the file is first written. Leaving
+replaced by a second request before the file is first written; the
+environment-variable copy keeps the first token, which may then already
+be past its refresh point. Leaving
 `expires_at` unset disables refresh, in which case `exp` must cover
 the run's configured wall-clock budget plus slack, since nothing
 inside the sandbox can recover from an expired token.

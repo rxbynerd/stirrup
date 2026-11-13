@@ -1092,11 +1092,15 @@ relative to a `Secret`-backed credential:
   before the Pod is created, and [readiness](#readiness) can take up to
   5 minutes. Before writing the token file (and so before any lifecycle
   hook), the harness checks the token against the same refresh point
-  the refresher uses (80% of the lifetime it was issued with). A token
-  past that point, or expired, is re-exchanged and the fresh token is
-  delivered; the refresher then schedules from the fresh token's
-  expiry. A failed re-exchange fails construction and tears the sandbox
-  down. The Pod's environment variable still carries the first token.
+  the refresher uses (80% of the token's remaining lifetime, measured
+  from when the harness received it). A token past that point, or
+  expired, is re-exchanged and the fresh token is delivered; the
+  refresher then schedules from the fresh token's expiry. A failed
+  re-exchange, or a fresh token that has already expired, fails
+  construction and tears the sandbox down under the
+  [teardown](#teardown) rules. The Pod's environment variable still
+  carries the first token, which may already be past its refresh
+  point.
 
 Operators running `sandboxIdentity`-configured jobs should scope
 `pods`/`get` and `pods`/`list` in the affected namespace as tightly as

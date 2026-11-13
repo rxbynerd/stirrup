@@ -2059,12 +2059,21 @@ point. When `expires_at` is absent no refresh is scheduled and the
 token as issued stands for the whole run.
 
 The token is exchanged before the sandbox exists, and a sandbox can be
-slow to start (the `k8s` executor waits up to 5 minutes for its Pod).
-If the token has reached its refresh point, or expired, by the time the
-sandbox is up, the harness sends another `sandbox_token_request` before
-writing the file and delivers the fresh token instead; that request
-counts toward the eight. A failed re-exchange fails the run's
-construction and removes the sandbox.
+slow to start (the Kubernetes executors wait up to 5 minutes for it).
+If, by the time the sandbox is up, the token has passed its refresh
+point (80% of the token's remaining lifetime, measured from when the
+harness received it) or expired, the harness sends another
+`sandbox_token_request` before writing the file and delivers the fresh
+token instead. That request counts toward the eight and waits up to 60
+seconds inside the run's deadline. A 15-minute token reaches its
+refresh point 12 minutes after receipt, so only tokens shorter than
+about 6 minutes can reach it during a 5-minute startup. A failed
+re-exchange, or a fresh token that has already expired, fails the run's
+construction and tears the sandbox down (on `k8s`, under the
+[teardown rules](executors/k8s.md#teardown), which can retain its egress
+policy). The sandbox's environment variable keeps the first token,
+which may already be past its refresh point; only the file holds the
+replacement.
 
 The 20% of lifetime left after the scheduled refresh is working
 slack: a refresh whose request times out or cannot be sent is retried
