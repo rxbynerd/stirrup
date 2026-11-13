@@ -51,7 +51,10 @@ spec:
   # token is never mounted. Do not rely on the orchestrator's RBAC leaking in.
   automountServiceAccountToken: false
   # runtimeClassName from executor.runtime, mapped through the closed set
-  # {runc, gvisor, kata-qemu, kata-fc, kata-clh}. OMITTED entirely when runtime
+  # {runc, gvisor, kata-qemu, kata-fc, kata-clh, nitro-isolated}; each value is
+  # its own class name except nitro-isolated, which maps to isolated-sandbox and
+  # also adds sandbox.amazonaws.com/* annotations under metadata (see
+  # docs/executors/k8s.md#eks-with-nitro-sandboxes). OMITTED entirely when runtime
   # is empty (optionalRuntimeClassName returns nil), which selects the
   # cluster-default RuntimeClass and logs an isolation warning. gvisor is shown
   # here as the recommended sandbox runtime — see examples/k8s/runtimeclass.yaml.
