@@ -145,6 +145,13 @@ type K8sExecutor struct {
 // Pod never runs with unrestricted egress. Any failure after the Pod create
 // tears down through the same contract as Close.
 func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, error) {
+	return newK8sExecutorWithClient(ctx, cfg, nil)
+}
+
+// newK8sExecutorWithClient is NewK8sExecutor with the built clientset passed
+// through wrap when wrap is non-nil; the gated integration tests use it to
+// record the Pod create.
+func newK8sExecutorWithClient(ctx context.Context, cfg K8sExecutorConfig, wrap func(kubernetes.Interface) kubernetes.Interface) (*K8sExecutor, error) {
 	if cfg.Image == "" {
 		return nil, fmt.Errorf("k8s executor requires an image")
 	}
@@ -170,7 +177,11 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		return nil, fmt.Errorf("build kube clientset: %w", err)
 	}
 
-	return newK8sExecutor(ctx, cfg, profile, proxyEnv, clientset, restCfg, nil, defaultK8sTiming, slog.Default())
+	var client kubernetes.Interface = clientset
+	if wrap != nil {
+		client = wrap(clientset)
+	}
+	return newK8sExecutor(ctx, cfg, profile, proxyEnv, client, restCfg, nil, defaultK8sTiming, slog.Default())
 }
 
 // prepareK8sExecutor checks everything about cfg that needs no cluster: the

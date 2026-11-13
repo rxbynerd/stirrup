@@ -4,7 +4,6 @@ package executor
 
 import (
 	"context"
-	"log/slog"
 	"os"
 	"strings"
 	"testing"
@@ -119,20 +118,10 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 	})
 }
 
-// newRecordedK8sExecutor runs the same sequence as NewK8sExecutor with the
-// clientset's Pod creates recorded in record.
+// newRecordedK8sExecutor is NewK8sExecutor with the clientset's Pod creates
+// recorded in record.
 func newRecordedK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, record *podCreateRecord) (*K8sExecutor, error) {
-	profile, proxyEnv, err := prepareK8sExecutor(cfg)
-	if err != nil {
-		return nil, err
-	}
-	restCfg, err := buildRESTConfig(cfg.Kubeconfig)
-	if err != nil {
-		return nil, err
-	}
-	clientset, err := kubernetes.NewForConfig(restCfg)
-	if err != nil {
-		return nil, err
-	}
-	return newK8sExecutor(ctx, cfg, profile, proxyEnv, recordingClientset{Interface: clientset, record: record}, restCfg, nil, defaultK8sTiming, slog.Default())
+	return newK8sExecutorWithClient(ctx, cfg, func(c kubernetes.Interface) kubernetes.Interface {
+		return recordingClientset{Interface: c, record: record}
+	})
 }
