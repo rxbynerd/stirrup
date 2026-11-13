@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -202,6 +203,28 @@ func TestPodTeardown_RetainsPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestK8sExecutor_CloseRetainsPolicyAndNamesIt(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cs := fake.NewClientset(readyPod("uid-1"), testPolicy())
+	ignorePodDeletes(cs)
+	logger, logs := testLogger()
+	exec := &K8sExecutor{
+		podExecCore:       podExecCore{clientset: cs, namespace: testK8sNamespace, podName: testK8sPodName, logger: logger},
+		podUID:            "uid-1",
+		networkPolicyName: networkPolicyName(testK8sPodName),
+		runID:             testK8sRunID,
+		timing:            fastK8sTiming,
+	}
+
+	err := exec.Close()
+
+	must.ErrorContains(err, fmt.Sprintf("tear down pod %s/%s (run ID %q)", testK8sNamespace, testK8sPodName, testK8sRunID))
+	must.ErrorContains(err, "retained egress NetworkPolicy "+testK8sNamespace+"/"+networkPolicyName(testK8sPodName))
+	check.Contains(logs.String(), "sandbox teardown incomplete; retaining the egress NetworkPolicy (fail closed)")
+	check.True(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(testK8sPodName)))
 }
 
 func TestK8sExecutor_CloseRetriesAfterRetaining(t *testing.T) {
