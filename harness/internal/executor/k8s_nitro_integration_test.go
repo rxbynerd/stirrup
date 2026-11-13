@@ -36,7 +36,7 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 
 	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
 	must.NoError(err, "build verification clientset")
-	owner := createStandInOwnerPod(t, ctx, clientset, cfg.namespace, cfg.image, "")
+	owner := createStandInOwnerPod(t, ctx, clientset, cfg.namespace, cfg.image)
 
 	security := &recordingSecurityEmitter{}
 	execCfg := K8sExecutorConfig{
