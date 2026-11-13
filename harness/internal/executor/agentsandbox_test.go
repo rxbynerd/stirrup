@@ -283,7 +283,7 @@ func TestBuildSandboxObject_EmitsSandboxCR(t *testing.T) {
 func TestBuildSandboxPodSpec_SetsShortTerminationGracePeriod(t *testing.T) {
 	t.Run("k8s pod", func(t *testing.T) {
 		must := require.New(t)
-		pod := buildSandboxPod(baseSandboxCfg(), "stirrup-abc", nil)
+		pod := buildSandboxPod(baseSandboxCfg(), k8sRuntimeProfiles[""], "stirrup-abc", nil)
 		must.NotNil(pod.Spec.TerminationGracePeriodSeconds)
 		must.Equal(k8sTerminationGracePeriod, *pod.Spec.TerminationGracePeriodSeconds)
 	})

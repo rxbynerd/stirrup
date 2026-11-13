@@ -25,11 +25,11 @@ func TestK8sRuntimeDiagnostics_NitroIsolatedFailsOnNonNitroPod(t *testing.T) {
 	defer cancel()
 
 	exec, err := NewK8sExecutor(ctx, K8sExecutorConfig{
-		Image:            cfg.image,
-		Namespace:        cfg.namespace,
-		Kubeconfig:       cfg.kubeconfig,
-		RuntimeClassName: cfg.runtimeClass,
-		Network:          &types.NetworkConfig{Mode: "none"},
+		Image:      cfg.image,
+		Namespace:  cfg.namespace,
+		Kubeconfig: cfg.kubeconfig,
+		Runtime:    cfg.runtimeClass,
+		Network:    &types.NetworkConfig{Mode: "none"},
 	})
 	must.NoError(err, "NewK8sExecutor")
 	t.Cleanup(func() { _ = exec.Close() })

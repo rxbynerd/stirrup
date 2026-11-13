@@ -213,10 +213,10 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 // newAgentSandboxExecutor is NewAgentSandboxExecutor after the clients are
 // built.
 func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, clientset kubernetes.Interface, dyn dynamic.Interface, restCfg *rest.Config, timing k8sTiming, logger *slog.Logger) (*AgentSandboxExecutor, error) {
-	if cfg.RuntimeClassName != "" && cfg.RuntimeClassName != gkeSandboxRuntimeValue {
+	if cfg.Runtime != "" && cfg.Runtime != gkeSandboxRuntimeValue {
 		logger.Warn(
 			"agent sandbox executor: overriding executor.runtime with gvisor — the Agent Sandbox path is gVisor-only",
-			"requested", cfg.RuntimeClassName,
+			"requested", cfg.Runtime,
 		)
 	}
 

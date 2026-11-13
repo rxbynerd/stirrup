@@ -80,11 +80,13 @@ type K8sExecutorConfig struct {
 	// and `readlink` on PATH: command execution runs `/bin/sh -c`, file I/O
 	// streams `tar` over the pods/exec subresource, and workspace reads and
 	// writes resolve the real path with `readlink -f` first.
-	Image              string
-	Namespace          string
-	Kubeconfig         string
-	NodeSelector       map[string]string
-	RuntimeClassName   string
+	Image        string
+	Namespace    string
+	Kubeconfig   string
+	NodeSelector map[string]string
+	// Runtime is executor.runtime; its runtime profile supplies the Pod
+	// RuntimeClassName and any runtime-specific Pod settings.
+	Runtime            string
 	ServiceAccountName string
 	Resources          *types.ResourceLimits
 	Network            *types.NetworkConfig
@@ -151,9 +153,7 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 	if cfg.Network == nil {
 		return nil, fmt.Errorf("k8s executor requires a network config (set executor.network.mode to \"none\" or \"allowlist\")")
 	}
-	// Validate the allowlist→URL requirement before creating any cluster
-	// objects, so a misconfigured run fails without an orphaned Pod.
-	proxyEnv, err := proxyEnvFor(cfg.Network, cfg.EgressProxyURL)
+	profile, proxyEnv, err := prepareK8sExecutor(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -168,16 +168,38 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		return nil, fmt.Errorf("build kube clientset: %w", err)
 	}
 
-	return newK8sExecutor(ctx, cfg, proxyEnv, clientset, restCfg, defaultK8sTiming, slog.Default())
+	return newK8sExecutor(ctx, cfg, profile, proxyEnv, clientset, restCfg, defaultK8sTiming, slog.Default())
 }
 
-// newK8sExecutor is NewK8sExecutor after the clientset is built.
-func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, clientset kubernetes.Interface, restCfg *rest.Config, timing k8sTiming, logger *slog.Logger) (*K8sExecutor, error) {
+// prepareK8sExecutor checks everything about cfg that needs no cluster: the
+// runtime has a profile, the settings meet the runtime's requirements (the
+// same rules ValidateRunConfig applies, for callers that bypass it), and the
+// network mode yields a proxy environment.
+func prepareK8sExecutor(cfg K8sExecutorConfig) (k8sRuntimeProfile, []corev1.EnvVar, error) {
+	profile, err := k8sRuntimeProfileFor(cfg.Runtime)
+	if err != nil {
+		return k8sRuntimeProfile{}, nil, err
+	}
+	// ExtraEnv carries only the sandbox identity and git-proxy environment.
+	identity := cfg.SandboxIdentityToken || len(cfg.ExtraEnv) > 0
+	if errs := types.K8sRuntimeRequirementErrors(cfg.Runtime, cfg.Network, cfg.Resources, identity); len(errs) > 0 {
+		return k8sRuntimeProfile{}, nil, fmt.Errorf("k8s executor: %s", strings.Join(errs, "; "))
+	}
+	// Validate the allowlist→URL requirement before creating any cluster
+	// objects, so a misconfigured run fails without an orphaned Pod.
+	proxyEnv, err := proxyEnvFor(cfg.Network, cfg.EgressProxyURL)
+	if err != nil {
+		return k8sRuntimeProfile{}, nil, err
+	}
+	return profile, proxyEnv, nil
+}
 
-	// An empty RuntimeClassName selects the cluster-default RuntimeClass,
-	// which may be plain runc with no sandbox isolation. Warn so the
-	// opt-out is visible.
-	if cfg.RuntimeClassName == "" {
+// newK8sExecutor is NewK8sExecutor after prepareK8sExecutor and the clientset.
+func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRuntimeProfile, proxyEnv []corev1.EnvVar, clientset kubernetes.Interface, restCfg *rest.Config, timing k8sTiming, logger *slog.Logger) (*K8sExecutor, error) {
+
+	// An empty runtime selects the cluster-default RuntimeClass, which may be
+	// plain runc with no sandbox isolation. Warn so the opt-out is visible.
+	if profile.runtimeClassName == "" {
 		logger.Warn(K8sDefaultRuntimeClassWarning, "namespace", cfg.Namespace)
 	}
 
@@ -186,7 +208,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev
 		return nil, fmt.Errorf("generate pod name: %w", err)
 	}
 
-	pod := buildSandboxPod(cfg, podName, proxyEnv)
+	pod := buildSandboxPod(cfg, profile, podName, proxyEnv)
 
 	// Install the egress NetworkPolicy BEFORE creating the Pod: installing
 	// after readiness would leave a Running Pod with unrestricted egress in
@@ -212,7 +234,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev
 
 	created, err := clientset.CoreV1().Pods(cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
-		return nil, withTeardownErr(classifyPodCreateError(cfg.RuntimeClassName, err), teardown.reconcileFailedCreate(pod.Labels, err))
+		return nil, withTeardownErr(classifyPodCreateError(profile.runtimeClassName, err), teardown.reconcileFailedCreate(pod.Labels, err))
 	}
 	teardown.podUID = created.UID
 
@@ -220,7 +242,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev
 	if err := admission.checkCreate(); err != nil {
 		return nil, withTeardownErr(err, teardown.run())
 	}
-	if cfg.RuntimeClassName == "" && created.Spec.RuntimeClassName != nil {
+	if profile.runtimeClassName == "" && created.Spec.RuntimeClassName != nil {
 		logger.Info("k8s executor pod admitted with a cluster-assigned RuntimeClass",
 			"namespace", cfg.Namespace, "pod", podName, "runtimeClassName", clusterText(*created.Spec.RuntimeClassName))
 	}
@@ -257,11 +279,12 @@ func withTeardownErr(cause, teardownErr error) error {
 }
 
 // buildSandboxPod builds the k8s executor's sandbox Pod. Beyond the shared
-// spec it carries the run-ID label, the lifetime bound as
-// activeDeadlineSeconds, and an owner reference to the harness pod when that
-// pod shares the sandbox's namespace.
-func buildSandboxPod(cfg K8sExecutorConfig, podName string, proxyEnv []corev1.EnvVar) *corev1.Pod {
+// spec it carries the profile's RuntimeClass, the run-ID label, the lifetime
+// bound as activeDeadlineSeconds, and an owner reference to the harness pod
+// when that pod shares the sandbox's namespace.
+func buildSandboxPod(cfg K8sExecutorConfig, profile k8sRuntimeProfile, podName string, proxyEnv []corev1.EnvVar) *corev1.Pod {
 	spec := buildSandboxPodSpec(cfg, proxyEnv, cfg.ExtraEnv)
+	spec.RuntimeClassName = optionalRuntimeClassName(profile.runtimeClassName)
 	if secs, ok := cfg.Lifecycle.seconds(); ok {
 		spec.ActiveDeadlineSeconds = &secs
 	}
@@ -277,7 +300,8 @@ func buildSandboxPod(cfg K8sExecutorConfig, podName string, proxyEnv []corev1.En
 }
 
 // buildSandboxPodSpec builds the hardened agent Pod spec shared by the k8s and
-// k8s-sandbox executors. proxyEnv is the already-computed HTTP(S)_PROXY env;
+// k8s-sandbox executors; each sets the RuntimeClass itself. proxyEnv is the
+// already-computed HTTP(S)_PROXY env;
 // extraEnv is appended after it: a sandbox identity token and, when
 // configured, the git-proxy GIT_CONFIG_* pairs.
 func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraEnv []EnvPair) corev1.PodSpec {
@@ -323,7 +347,6 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraE
 		// ServiceAccountName is caller-provided.
 		AutomountServiceAccountToken: ptr.To(false),
 		NodeSelector:                 cfg.NodeSelector,
-		RuntimeClassName:             optionalRuntimeClassName(cfg.RuntimeClassName),
 		// FSGroup makes the /workspace emptyDir group-writable for the
 		// non-root UID the agent runs as; otherwise a kubelet-auto-created
 		// workspace dir is root-owned and every WriteFile/mkdir fails EACCES.

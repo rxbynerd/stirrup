@@ -63,11 +63,11 @@ func TestAgentSandbox_Lifecycle(t *testing.T) {
 	defer cancel()
 
 	exec, err := NewAgentSandboxExecutor(ctx, K8sExecutorConfig{
-		Image:            cfg.image,
-		Namespace:        namespace,
-		Kubeconfig:       cfg.kubeconfig,
-		RuntimeClassName: "gvisor",
-		Network:          &types.NetworkConfig{Mode: "none"},
+		Image:      cfg.image,
+		Namespace:  namespace,
+		Kubeconfig: cfg.kubeconfig,
+		Runtime:    "gvisor",
+		Network:    &types.NetworkConfig{Mode: "none"},
 	})
 	must.NoError(err, "create agent sandbox executor")
 
@@ -156,11 +156,11 @@ func TestAgentSandbox_CommandOutputSpill(t *testing.T) {
 	defer cancelProvision()
 
 	exec, err := NewAgentSandboxExecutor(provisionCtx, K8sExecutorConfig{
-		Image:            cfg.image,
-		Namespace:        cfg.namespace,
-		Kubeconfig:       cfg.kubeconfig,
-		RuntimeClassName: "gvisor",
-		Network:          &types.NetworkConfig{Mode: "none"},
+		Image:      cfg.image,
+		Namespace:  cfg.namespace,
+		Kubeconfig: cfg.kubeconfig,
+		Runtime:    "gvisor",
+		Network:    &types.NetworkConfig{Mode: "none"},
 	})
 	must.NoError(err, "create agent sandbox executor")
 	t.Cleanup(func() { _ = exec.Close() })
@@ -232,12 +232,12 @@ func TestAgentSandbox_AllowlistEnforced(t *testing.T) {
 	}
 
 	exec, err := NewAgentSandboxExecutor(ctx, K8sExecutorConfig{
-		Image:            cfg.image,
-		Namespace:        cfg.namespace,
-		Kubeconfig:       cfg.kubeconfig,
-		RuntimeClassName: "gvisor",
-		Network:          &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"github.com"}},
-		EgressProxyURL:   cfg.proxyURL,
+		Image:          cfg.image,
+		Namespace:      cfg.namespace,
+		Kubeconfig:     cfg.kubeconfig,
+		Runtime:        "gvisor",
+		Network:        &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"github.com"}},
+		EgressProxyURL: cfg.proxyURL,
 	})
 	must.NoError(err, "create agent sandbox executor")
 	t.Cleanup(func() { _ = exec.Close() })
