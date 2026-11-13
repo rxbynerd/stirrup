@@ -254,6 +254,7 @@ func TestPreflight_K8sExecutors_ReadOnly(t *testing.T) {
 			k8sTestNamespace + " create sandboxes.agents.x-k8s.io",
 			k8sTestNamespace + " delete networkpolicies.networking.k8s.io",
 			k8sTestNamespace + " delete sandboxes.agents.x-k8s.io",
+			k8sTestNamespace + " get pods",
 			k8sTestNamespace + " get sandboxes.agents.x-k8s.io",
 		}},
 	}
@@ -276,7 +277,7 @@ func TestPreflight_K8sExecutors_ReadOnly(t *testing.T) {
 			must.True(found, "no executor-probe step")
 			detail, _ = stepDetail(report, "executor-probe")
 			check.Equal(PreflightOK, status, "executor-probe detail: %s", detail)
-			check.Contains(detail, "6 required permissions granted")
+			check.Contains(detail, fmt.Sprintf("%d required permissions granted", len(tt.wantReviews)))
 
 			status, found = stepStatus(report, "git-strategy-probe")
 			must.True(found, "no git-strategy-probe step")

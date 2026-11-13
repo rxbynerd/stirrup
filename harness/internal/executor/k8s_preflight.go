@@ -97,7 +97,8 @@ var k8sNetworkPolicyAccess = []k8sAccess{
 // k8sRequiredAccess returns the namespaced permissions the selected executor
 // uses at run time: the calls NewK8sExecutor, Close and the pods/exec streams
 // make for "k8s", and the Sandbox calls in NewAgentSandboxExecutor and Close
-// for "k8s-sandbox". Any other type has none.
+// plus the teardown read of the backing Pod for "k8s-sandbox". Any other type
+// has none.
 func k8sRequiredAccess(executorType string) []k8sAccess {
 	var workload []k8sAccess
 	switch executorType {
@@ -112,6 +113,7 @@ func k8sRequiredAccess(executorType string) []k8sAccess {
 			{group: sandboxGVR.Group, resource: sandboxGVR.Resource, verb: "create"},
 			{group: sandboxGVR.Group, resource: sandboxGVR.Resource, verb: "get"},
 			{group: sandboxGVR.Group, resource: sandboxGVR.Resource, verb: "delete"},
+			{resource: "pods", verb: "get"},
 		}
 	default:
 		return nil

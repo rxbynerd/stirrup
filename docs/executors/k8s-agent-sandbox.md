@@ -321,8 +321,9 @@ no Sandbox, Pod, or NetworkPolicy. The `executor-probe` step runs the
 read-only access check described in
 [the `k8s` executor's dry-run section](k8s.md#dry-run-preflight), which
 holds the authoritative permission table. For `k8s-sandbox` that table has
-`sandboxes.agents.x-k8s.io` verbs in place of the Pod verbs, so Pod-create
-permission does not satisfy it. The check also confirms through API
+`sandboxes.agents.x-k8s.io` verbs in place of Pod create and delete, plus
+the `pods` `get` that teardown uses, so Pod-create permission does not
+satisfy it. The check also confirms through API
 discovery that `agents.x-k8s.io/v1alpha1` serves `sandboxes` (a group that
 is not served fails the step) and reads the `gvisor` RuntimeClass and the
 namespace (each reported as `not checked`, with the step still `ok`, when

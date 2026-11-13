@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -116,7 +117,7 @@ func TestProbeK8sAccess_AllGrantedReportsOK(t *testing.T) {
 			detail, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: executorType, Namespace: probeTestNamespace, RuntimeClassName: "gvisor"})
 
 			must.NoError(err)
-			check.Contains(detail, "6 required permissions granted")
+			check.Contains(detail, fmt.Sprintf("%d required permissions granted", len(k8sRequiredAccess(executorType))))
 			check.Contains(detail, `namespace "stirrup-sandbox" exists`)
 			check.Empty(unexpectedActions(kube), "the probe must only review access and make the documented reads")
 		})
@@ -134,7 +135,7 @@ func TestProbeK8sAccess_ReviewsEveryRequiredVerbInTheNamespace(t *testing.T) {
 		}},
 		{"k8s-sandbox", []string{
 			"create sandboxes.agents.x-k8s.io", "get sandboxes.agents.x-k8s.io", "delete sandboxes.agents.x-k8s.io",
-			"create pods/exec",
+			"get pods", "create pods/exec",
 			"create networkpolicies.networking.k8s.io", "delete networkpolicies.networking.k8s.io",
 		}},
 	}
@@ -527,7 +528,6 @@ func TestK8sRequiredAccess_MatchesReferenceRoles(t *testing.T) {
 		{"k8s-sandbox", filepath.Join("agent-sandbox", "rbac-agent-sandbox.yaml"), map[string]string{
 			"list sandboxes.agents.x-k8s.io":  "the executor gets and deletes its own Sandbox by name and never lists",
 			"watch sandboxes.agents.x-k8s.io": "readiness is polled with get, not watched",
-			"get pods":                        "the executor never reads the controller-created Pod; it only execs into it",
 		}},
 	}
 	for _, tt := range tests {

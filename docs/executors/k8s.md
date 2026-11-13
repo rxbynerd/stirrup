@@ -1239,7 +1239,7 @@ executors:
 | Executor | Permissions checked |
 |---|---|
 | `k8s` | `pods`: `create`, `get`, `delete`; `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
-| `k8s-sandbox` | `sandboxes.agents.x-k8s.io`: `create`, `get`, `delete`; `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
+| `k8s-sandbox` | `sandboxes.agents.x-k8s.io`: `create`, `get`, `delete`; `pods`: `get` (teardown reads the controller-created Pod until it is gone); `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
 
 Every denied permission is listed in one failure, with the API server's
 reason in parentheses when it gives one. Holding Pod-create permission does
@@ -1248,8 +1248,8 @@ call, and a test pins it to the reference Roles
 ([`rbac.yaml`](../../examples/k8s/rbac.yaml),
 [`rbac-agent-sandbox.yaml`](../../examples/k8s/agent-sandbox/rbac-agent-sandbox.yaml)):
 the permissions those Roles grant beyond the list (`pods/log` `get`;
-`sandboxes` `list` and `watch`; `pods` `get` for `k8s-sandbox`) are not
-used by the executor and are not checked.
+`sandboxes` `list` and `watch`) are not used by the executors and are not
+checked.
 
 `pods/exec` is checked as `create`, which is correct on every Kubernetes
 version: SPDY exec is a POST authorised as `create`, and the WebSocket path
