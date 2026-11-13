@@ -266,6 +266,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 			logger:          logger,
 			sandboxIdentity: cfg.SandboxIdentityToken,
 			execFn:          execFn,
+			fileIOTimeout:   timing.fileIOTimeout,
 		},
 		podUID:            created.UID,
 		networkPolicyName: policy.Name,

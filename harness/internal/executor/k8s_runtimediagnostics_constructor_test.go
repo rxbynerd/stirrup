@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"k8s.io/client-go/kubernetes/fake"
@@ -90,6 +91,75 @@ func TestNewK8sExecutor_NitroDiagnosticsFailureTearsDown(t *testing.T) {
 			must.Equal(tc.wantCheck, recorder.runtimeDiagnostics[0].check)
 		})
 	}
+}
+
+// blockingGuestExec blocks every pods/exec call until its ctx ends, after
+// calling onStart, and returns the ctx error.
+func blockingGuestExec(onStart func()) podExecFunc {
+	return func(ctx context.Context, _ []string, _ io.Reader, _, _ io.Writer) error {
+		if onStart != nil {
+			onStart()
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+}
+
+func TestNewK8sExecutor_InterruptedDiagnosticsReportNoFailure(t *testing.T) {
+	cases := []struct {
+		name    string
+		ctx     func() (context.Context, context.CancelFunc)
+		cancel  bool
+		wantErr error
+	}{
+		{name: "caller cancels", ctx: func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) }, cancel: true, wantErr: context.Canceled},
+		{name: "caller deadline passes", ctx: func() (context.Context, context.CancelFunc) {
+			return context.WithTimeout(context.Background(), 500*time.Millisecond)
+		}, wantErr: context.DeadlineExceeded},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cs := fake.NewClientset()
+			admitPods(cs, nil)
+			cfg, recorder := nitroConstructorCfg()
+			ctx, cancel := tc.ctx()
+			defer cancel()
+			var onStart func()
+			if tc.cancel {
+				onStart = cancel
+			}
+
+			exec, err := newFakeK8sExecutorWithExec(ctx, cs, cfg, blockingGuestExec(onStart))
+
+			must.Nil(exec)
+			must.ErrorIs(err, tc.wantErr)
+			must.ErrorContains(err, `runtime diagnostics for executor.runtime "nitro-isolated" interrupted`)
+			must.Empty(recorder.runtimeDiagnostics, "an interrupted run is not a runtime diagnostic failure")
+			requireTornDown(t, cs)
+		})
+	}
+}
+
+func TestNewK8sExecutor_DiagnosticsTimeoutWithLiveCallerIsAFailure(t *testing.T) {
+	must := require.New(t)
+	cs := fake.NewClientset()
+	admitPods(cs, nil)
+	cfg, recorder := nitroConstructorCfg()
+	profile, proxyEnv, err := prepareK8sExecutor(cfg)
+	must.NoError(err)
+	timing := fastK8sTiming
+	timing.fileIOTimeout = 50 * time.Millisecond
+	logger, _ := testLogger()
+
+	exec, err := newK8sExecutor(context.Background(), cfg, profile, proxyEnv, cs, nil, blockingGuestExec(nil), timing, logger)
+
+	must.Nil(exec)
+	must.ErrorContains(err, `runtime diagnostics for executor.runtime "nitro-isolated" failed: diagnostic_exec: `)
+	must.ErrorIs(err, context.DeadlineExceeded)
+	must.Len(recorder.runtimeDiagnostics, 1)
+	must.Equal("diagnostic_exec", recorder.runtimeDiagnostics[0].check)
+	requireTornDown(t, cs)
 }
 
 func TestNewK8sExecutor_RuntimeWithoutDiagnosticsRunsNoExec(t *testing.T) {
