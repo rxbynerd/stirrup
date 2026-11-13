@@ -22,6 +22,9 @@ import (
 func TestK8sSandboxIdentityToken_RoundTrip(t *testing.T) {
 	must := require.New(t)
 	cfg := testK8sEnv(t)
+	if cfg.runtimeClass == "nitro-isolated" {
+		t.Skip("nitro-isolated rejects executor.sandboxIdentity")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -54,6 +57,19 @@ func TestK8sSandboxIdentityToken_RoundTrip(t *testing.T) {
 	must.GreaterOrEqual(len(lines), 2, "stat output %q", res.Stdout)
 	must.Equal("600 65532", lines[0], "token file mode and uid (output %q)", res.Stdout)
 	must.NotContains(res.Stdout, ".token.tmp", "staging file left behind after rename")
+
+	// The token directory must be a memory-backed mount under every
+	// runtime; /proc/mounts is read with shell builtins only.
+	mounts, err := exec.Exec(ctx, `while IFS= read -r l || [ -n "$l" ]; do printf '%s\n' "$l"; done < /proc/mounts`, 30*time.Second)
+	must.NoError(err, "read /proc/mounts")
+	must.Zero(mounts.ExitCode, "read /proc/mounts result %+v", mounts)
+	fsType := ""
+	for _, line := range strings.Split(mounts.Stdout, "\n") {
+		if fields := strings.Fields(line); len(fields) >= 3 && fields[1] == SandboxIdentityTokenDir {
+			fsType = fields[2]
+		}
+	}
+	must.Equal("tmpfs", fsType, "filesystem of %s in /proc/mounts:\n%s", SandboxIdentityTokenDir, mounts.Stdout)
 
 	_, err = exec.ReadFile(ctx, SandboxIdentityTokenPath)
 	must.Error(err, "ReadFile reached the token through the workspace-scoped file API")
