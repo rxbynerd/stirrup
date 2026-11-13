@@ -51,9 +51,10 @@ spec:
   # or "default" when unset. The sandbox needs NO API access — see the token
   # mount below — so the account is effectively just an identity.
   serviceAccountName: default
-  # ALWAYS false (ptr.To(false) in NewK8sExecutor, even when a ServiceAccount is
-  # named). A sandbox Pod must not be able to reach the Kubernetes API, so the
-  # token is never mounted. Do not rely on the orchestrator's RBAC leaking in.
+  # ALWAYS false (ptr.To(false) in buildSandboxPodSpec, even when a
+  # ServiceAccount is named). A sandbox Pod must not be able to reach the
+  # Kubernetes API, so the token is never mounted. Do not rely on the
+  # orchestrator's RBAC leaking in.
   automountServiceAccountToken: false
   # ALWAYS false (buildSandboxPod). Service links would inject a
   # <SERVICE>_SERVICE_HOST and _SERVICE_PORT variable for every Service in the

@@ -167,7 +167,11 @@ GKE cluster, as admission would reject the unknown shape.
 The shared hardened Pod spec (`buildSandboxPodSpec`) already satisfies
 most of GKE's `secure-sandbox-policy` ValidatingAdmissionPolicy: drop-ALL
 capabilities, `runAsNonRoot`, `automountServiceAccountToken: false`, and
-the no-hostPath/hostNetwork/privileged requirements. On top of that,
+the no-hostPath/hostNetwork/privileged requirements. Unlike the `k8s`
+executor's Pod, the Sandbox's Pod template does not set
+`enableServiceLinks: false`, so the namespace's Service variables
+(`<SERVICE>_SERVICE_HOST` and `_PORT`) are present in the sandbox
+environment. On top of that,
 [`applyAgentSandboxAdmissionDeltas`](../../harness/internal/executor/agentsandbox.go)
 injects four gVisor-specific fields the policy additionally mandates,
 *before* the spec is embedded in the Sandbox CR:
