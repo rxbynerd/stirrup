@@ -134,6 +134,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		sandboxExtraEnv  []executor.EnvPair
 		sandboxExchanger *sandboxidentity.Exchanger
 		sandboxToken     sandboxidentity.Result
+		sandboxIssuedAt  time.Time
 	)
 	if si := config.Executor.SandboxIdentity; si != nil {
 		// The exchange must complete before the executor is built, so it
@@ -151,6 +152,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			return nil, fmt.Errorf("executor.sandboxIdentity: %w", exchErr)
 		}
 		sandboxToken = result
+		sandboxIssuedAt = time.Now()
 
 		composed, composeErr := sandboxidentity.ComposeEnv(si.EffectiveEnvVar(), result.Token, executor.SandboxIdentityTokenPath, config.Executor.GitProxy)
 		if composeErr != nil {
@@ -183,6 +185,16 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		if !ok {
 			cleanup()
 			return nil, fmt.Errorf("executor.sandboxIdentity: executor type %q cannot deliver a sandbox identity token", config.Executor.Type)
+		}
+		// A slow sandbox start can use up a short-lived token's lifetime, so
+		// a token past its refresh point is replaced before first delivery.
+		if sandboxidentity.DueForRefresh(time.Now(), sandboxIssuedAt, sandboxToken.ExpiresAt) {
+			fresh, exchErr := sandboxExchanger.Exchange(ctx, config.Executor.SandboxIdentity.Audience, 0)
+			if exchErr != nil {
+				cleanup()
+				return nil, fmt.Errorf("executor.sandboxIdentity: token neared expiry during sandbox startup and could not be re-exchanged: %w", exchErr)
+			}
+			sandboxToken = fresh
 		}
 		if err := writer.WriteSandboxIdentityToken(ctx, sandboxToken.Token); err != nil {
 			cleanup()
