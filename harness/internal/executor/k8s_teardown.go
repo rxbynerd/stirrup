@@ -184,30 +184,63 @@ func (t podTeardown) getPod(ctx context.Context) (*corev1.Pod, error) {
 }
 
 // removePolicy deletes the egress NetworkPolicy; NotFound counts as success.
-func (t podTeardown) removePolicy() error {
-	if t.policyName == "" {
+func (t podTeardown) removePolicy() error { return t.egress().removePolicy() }
+
+// retain logs and reports a teardown that left the policy in place.
+func (t podTeardown) retain(cause error) error { return t.egress().retain(cause) }
+
+func (t podTeardown) egress() sandboxEgress {
+	return sandboxEgress{
+		clientset:  t.clientset,
+		kind:       "pod",
+		namespace:  t.namespace,
+		name:       t.podName,
+		policyName: t.policyName,
+		runID:      t.runID,
+		logger:     t.logger,
+	}
+}
+
+// sandboxEgress removes a sandbox's egress NetworkPolicy and reports its
+// retention in the one warning and error form both Kubernetes executors use.
+type sandboxEgress struct {
+	clientset kubernetes.Interface
+	// kind names the object torn down ahead of the policy: "pod" or
+	// "sandbox". name is that object's name, which is also the Pod name on
+	// both executors' cold-create path.
+	kind       string
+	namespace  string
+	name       string
+	policyName string
+	runID      string
+	logger     *slog.Logger
+}
+
+// removePolicy makes one delete attempt under k8sAPITimeout; NotFound counts
+// as success and a failure is reported through retain.
+func (e sandboxEgress) removePolicy() error {
+	if e.policyName == "" {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), k8sAPITimeout)
 	defer cancel()
-	err := t.clientset.NetworkingV1().NetworkPolicies(t.namespace).Delete(ctx, t.policyName, metav1.DeleteOptions{})
+	err := e.clientset.NetworkingV1().NetworkPolicies(e.namespace).Delete(ctx, e.policyName, metav1.DeleteOptions{})
 	if err == nil || apierrors.IsNotFound(err) {
 		return nil
 	}
-	t.logger.Warn("k8s executor networkpolicy delete failed; the policy is retained",
-		"namespace", t.namespace, "pod", t.podName, "networkpolicy", t.policyName, "runID", t.runID, "err", err)
-	return fmt.Errorf("delete egress NetworkPolicy %s/%s (run ID %q): %w", t.namespace, t.policyName, t.runID, boundClusterErr(err))
+	return e.retain(fmt.Errorf("delete egress NetworkPolicy: %w", boundClusterErr(err)))
 }
 
-// retain logs and reports a teardown that left the policy in place.
-func (t podTeardown) retain(cause error) error {
-	t.logger.Warn("k8s executor could not establish sandbox pod termination; retaining its egress NetworkPolicy (fail closed)",
-		"namespace", t.namespace, "pod", t.podName, "networkpolicy", t.policyName, "runID", t.runID, "err", cause)
-	if t.policyName == "" {
-		return fmt.Errorf("tear down pod %s/%s (run ID %q): %w", t.namespace, t.podName, t.runID, cause)
+// retain logs a warning and returns an error naming the retained policy.
+// cause carries only bounded cluster text.
+func (e sandboxEgress) retain(cause error) error {
+	e.logger.Warn("sandbox teardown incomplete; retaining the egress NetworkPolicy (fail closed)",
+		"namespace", e.namespace, "pod", e.name, "networkpolicy", e.policyName, "runId", e.runID, "err", cause)
+	if e.policyName == "" {
+		return fmt.Errorf("tear down %s %s/%s (run ID %q): %w", e.kind, e.namespace, e.name, e.runID, cause)
 	}
-	return fmt.Errorf("tear down pod %s/%s (run ID %q): %w; retained egress NetworkPolicy %s/%s",
-		t.namespace, t.podName, t.runID, cause, t.namespace, t.policyName)
+	return fmt.Errorf("tear down %s %s/%s (run ID %q): %w; retained egress NetworkPolicy %s/%s",
+		e.kind, e.namespace, e.name, e.runID, cause, e.namespace, e.policyName)
 }
 
 // podCreateRejectedDefinitively reports whether a Pod create error is a

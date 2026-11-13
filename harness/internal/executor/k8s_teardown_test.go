@@ -197,7 +197,7 @@ func TestPodTeardown_RetainsPolicy(t *testing.T) {
 					check.Positive(*d.GracePeriodSeconds, "an unconfirmed termination escalated to a zero-grace delete")
 				}
 			}
-			for _, want := range []string{"level=WARN", "namespace=" + testK8sNamespace, "pod=" + testK8sPodName, "networkpolicy=" + policyName, "runID=" + testK8sRunID} {
+			for _, want := range []string{"level=WARN", "namespace=" + testK8sNamespace, "pod=" + testK8sPodName, "networkpolicy=" + policyName, "runId=" + testK8sRunID} {
 				check.Contains(logs.String(), want)
 			}
 		})
@@ -290,10 +290,12 @@ func TestPodTeardown_ReturnsPolicyDeleteFailure(t *testing.T) {
 	cs := fake.NewClientset(readyPod("uid-1"), testPolicy())
 	failVerb(cs, "delete", "networkpolicies", errors.New("etcd unavailable"))
 
-	logger, _ := testLogger()
+	logger, logs := testLogger()
 	err := testTeardown(cs, "uid-1", logger).run()
-	must.ErrorContains(err, "delete egress NetworkPolicy "+testK8sNamespace+"/"+networkPolicyName(testK8sPodName))
-	must.ErrorContains(err, "etcd unavailable")
+	must.ErrorContains(err, "tear down pod "+testK8sNamespace+"/"+testK8sPodName+` (run ID "`+testK8sRunID+`"): delete egress NetworkPolicy: etcd unavailable`)
+	must.ErrorContains(err, "retained egress NetworkPolicy "+testK8sNamespace+"/"+networkPolicyName(testK8sPodName))
+	must.Contains(logs.String(), "retaining the egress NetworkPolicy (fail closed)")
+	must.Contains(logs.String(), "runId="+testK8sRunID)
 }
 
 func TestPodTeardown_ReconcileFailedCreate(t *testing.T) {
@@ -470,4 +472,17 @@ func TestPodCreateRejectedDefinitively_ClassifiesErrors(t *testing.T) {
 			must.Equal(tc.want, podCreateRejectedDefinitively(tc.err))
 		})
 	}
+}
+
+func TestK8sExecutor_CloseUsesDefaultTimingWhenUnset(t *testing.T) {
+	must := require.New(t)
+	cs := fake.NewClientset(readyPod("uid-1"), testPolicy())
+	logger, _ := testLogger()
+	exec := &K8sExecutor{
+		podExecCore:       podExecCore{clientset: cs, namespace: testK8sNamespace, podName: testK8sPodName, logger: logger},
+		podUID:            "uid-1",
+		networkPolicyName: networkPolicyName(testK8sPodName),
+	}
+	must.NoError(exec.Close())
+	must.False(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(testK8sPodName)))
 }

@@ -373,6 +373,10 @@ func (e *K8sExecutor) Close() error {
 	if e.closed {
 		return nil
 	}
+	timing := e.timing
+	if timing == (k8sTiming{}) {
+		timing = defaultK8sTiming
+	}
 	err := podTeardown{
 		clientset:  e.clientset,
 		namespace:  e.namespace,
@@ -381,7 +385,7 @@ func (e *K8sExecutor) Close() error {
 		policyName: e.networkPolicyName,
 		runID:      e.runID,
 		logger:     e.logger,
-		timing:     e.timing,
+		timing:     timing,
 	}.run()
 	e.closed = err == nil
 	return err
