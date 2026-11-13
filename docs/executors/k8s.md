@@ -261,9 +261,10 @@ reach it before using it; the `k8s-sandbox` executor has no such wait. On a node
 be Ready before the kubelet's serving certificate is issued, and until
 then the API server cannot dial the kubelet, so every `exec` fails.
 *Measured* on the 2026-11-13 EKS run, a new node's certificate request
-was approved about 15 s after the node registered (26 s in one of seven
-samples), and `exec` was refused for up to 7.9 s after a Pod on a new
-node was Ready.
+was approved about 15 s after the request was created (26 s in one of
+seven samples; the node itself was Ready within 3 s of registering), and
+`exec` was refused for up to 7.9 s after a Pod on a new node was Ready,
+on 7 of 12 new nodes.
 
 The wait runs a no-op command, `/bin/sh -c :`, with no stdin. It retries
 only while an attempt fails because the API server could not dial the
@@ -460,7 +461,7 @@ What the check leaves open:
   `priority: 0`, `preemptionPolicy` and `overhead`; `imagePullSecrets`,
   `priorityClassName`, `schedulingGates`, `readinessGates` and
   `affinity` were absent at creation and at readiness; and the
-  cluster's three mutating webhooks (`pod-identity-webhook`,
+  us-east-1 cluster's three mutating webhooks (`pod-identity-webhook`,
   `vpc-resource-mutating-webhook`, `eks-load-balancing-webhook`)
   changed nothing on these Pods. A cluster with other webhooks, or a
   later EKS platform version, can write `schedulingGates`,
@@ -868,7 +869,7 @@ only, so the `k8s` values are valid but not offered by completion.
 |---|---|
 | `cpus` | `requests.cpu` **and** `limits.cpu`. Whole cores render as an integer (`"2"`), fractional cores as milli-CPU (`"500m"`). |
 | `memoryMb` | `requests.memory` **and** `limits.memory` (Mi). |
-| `diskMb` | `requests.ephemeral-storage` **and** `limits.ephemeral-storage` (Mi). The API server defaults an absent request to the limit, so the admitted Pod carries the request either way, and the scheduler counts it against a node's allocatable ephemeral storage. |
+| `diskMb` | `requests.ephemeral-storage` **and** `limits.ephemeral-storage` (Mi). The API server defaults an absent request to the limit ([Kubernetes: requests and limits](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#requests-and-limits); *measured* on the 2026-11-13 EKS run, a Pod submitted with only the limit read back with an equal request), so the admitted Pod carries the request either way, and the scheduler counts it against a node's allocatable ephemeral storage. |
 | `pids` | **Logged and ignored.** Per-Pod PID limits are a kubelet setting (`--pod-max-pids`), not a container resource field. |
 
 A nil or all-zero `resources` block leaves the Pod's requirements empty
@@ -1183,7 +1184,7 @@ the DMI diagnostic only if its guest reports a name ending `.enclave`.
    page. *Measured:* Auto Mode's built-in `general-purpose` NodePool
    launched a sandbox-capable node with no custom NodePool. With every
    custom NodePool deleted, the unmodified example RunConfig was served
-   an `m5d.xlarge`, and a Pod selecting only that pool and `amd64` got a
+   an `m5d.xlarge`, and a Pod selecting only the `general-purpose` pool and `amd64` got a
    `c8a.large`. The built-in pool's requirements were on-demand,
    instance category `c`, `m` or `r`, generation above 4, `amd64` and
    Linux. A custom NodePool is optional; the repository ships no
@@ -1288,8 +1289,8 @@ diagnostics pass, the harness writes a
 `sandbox_runtime_diagnostic_passed` security event. Its `observed`
 value on the 2026-11-13 EKS run was
 `{"dmiProductName":"m5d.enclave","interfaces":"lo,dummy0","routeEntries":"0"}`,
-so on `m5d.xlarge` the line reads (one line in the output, wrapped
-here):
+so, assembled from the event format and that value, the example's line
+on `m5d.xlarge` reads (one line in the output, wrapped here):
 
 ```json
 {"timestamp":"<RFC 3339 time>","level":"info","runId":"k8s-eks-nitro-example",
@@ -1331,7 +1332,7 @@ not the Pod.
 | `... failed: diagnostic_exec: guest file read exited <n>: ...` or `guest file read failed: ...`; `... failed: diagnostic_output: unexpected line ...` | The runtime diagnostics `exec` failed, or the image's `/bin/sh` does not run the script (it uses `read -r`, `printf` and `[`; a shell without a `printf` builtin or command exits 127). | Use an image whose `/bin/sh` is a POSIX shell with those commands. |
 | `runtime diagnostics for executor.runtime "nitro-isolated" interrupted: ...` | The run's own deadline or a cancellation ended construction during the diagnostics. | In `stirrup job` raise `timeout`, which also covers sandbox startup. |
 | `pod <ns>/<pod> not ready within 5m0s: phase Pending; ...`, with `FailedCreatePodSandBox` Events naming a `sandbox.amazonaws.com/...` annotation | A mutating policy set a throttle annotation to a value the platform refuses. *Measured:* `log-bandwidth: "0"` left the Pod Pending (`resolves to 0 bytes/sec`). The admission check allows throttle keys to be retuned, so the run fails only at the readiness timeout. | Fix the policy's value. |
-| A command exits 137, and later commands fail with `container not found ("agent")` | The command exhausted the guest's memory. *Measured* in a 1 GiB guest: the container was `OOMKilled` and the Pod went `Failed`, so the sandbox is gone for the rest of the run. An ordinary Pod is killed the same way. With the Anthropic provider the run can then end with a provider error, `tool_result: content cannot be empty if is_error is true`. | Raise `executor.resources.memoryMb`, which sizes the guest. |
+| A command exits 137, and later commands fail with `container not found ("agent")` | The command exhausted the guest's memory. *Measured* in a 1 GiB guest: the container was `OOMKilled` and the Pod went `Failed`, so the sandbox is gone for the rest of the run. An ordinary Pod is killed the same way. | Raise `executor.resources.memoryMb`, which sizes the guest. |
 | A command fails with `No space left on device` | The guest's disk is full; the workspace and the container's writable layer share it (see [Limits](#limits)). | Set or raise `executor.resources.diskMb`. |
 | A command returns `command timed out after <timeout>: context deadline exceeded` where `output exceeded 10 MB cap` was expected | Output is throttled harder than the `20M` the executor submits: an admission policy retuned `log-bandwidth` lower, or the annotation was removed after readiness and the platform default `2M` applies (at `2M` an 11 MiB output took 44 s). | Remove the policy that lowers `log-bandwidth`, or give commands with large output a longer timeout; see [Pod shape](#pod-shape) for the measured rates. |
 | `tear down pod <ns>/<pod> (run ID "<id>"): ...; retained egress NetworkPolicy <ns>/<pod>-egress` | Pod termination was not confirmed within the teardown bound. | Follow [Cleaning up retained objects](#cleaning-up-retained-objects). |
@@ -1381,8 +1382,8 @@ Two RuntimeClass names are refused with a reason after the usual
   The size is about the larger of the declaration and 500 MiB, less
   115 MiB. It is a hard limit: with 1 GiB declared a write stopped at
   856 MiB with `No space left on device`, and the Pod kept running and
-  was usable once the file was removed. An `emptyDir.sizeLimit` does not
-  change it. A declaration of 200 GiB on `m5d.xlarge` did not become
+  was usable once the file was removed. An `emptyDir.sizeLimit` of 2 GiB with
+  nothing declared left the size at 10,367,980 KiB. A declaration of 200 GiB on `m5d.xlarge` did not become
   Ready within 90 s.
 - **Writable paths.** The root filesystem is not writable by the
   sandbox user (UID 65532); `/tmp` and `/workspace` are, and `HOME` is
@@ -1407,10 +1408,11 @@ Two RuntimeClass names are refused with a reason after the usual
   `xlarge`, 10 on `c8a.large`), and each sandbox Pod uses one
   (*measured*).
 - **Deadline.** `activeDeadlineSeconds` counts from Pod start and so
-  includes VM boot (*measured:* a 120 s deadline stopped the container
-  about 121 s after start).
-- **Run timeout.** The example's `timeout: 300` equals the 5-minute
-  readiness ceiling. In `stirrup job` the timeout also covers sandbox
+  includes VM boot (*measured* on the 2026-11-11 EKS run: a 120 s
+  deadline stopped the container about 121 s after start).
+- **Run timeout.** The example's `timeout: 300` is shorter than the
+  longest start the executor allows (the 5-minute readiness ceiling
+  plus the one-minute exec-reachability bound). In `stirrup job` the timeout also covers sandbox
   startup, so a cold node and VM boot leave less of it to the agent (see
   [Diagnosing a slow or failed start](#diagnosing-a-slow-or-failed-start)).
 
@@ -2225,7 +2227,7 @@ defaulting to the kind-friendly values when a variable is unset:
 | `STIRRUP_TEST_NAMESPACE` | `default` | Sandbox namespace (use `stirrup-sandbox` for the restricted-PSS path). |
 | `STIRRUP_TEST_RUNTIME_CLASS` | *(empty)* | `executor.runtime` value for the generic tests (`gvisor` on GKE Sandbox — a no-RuntimeClass Pod is unschedulable on a fully tainted cluster). Runtime values equal RuntimeClass names except `nitro-isolated`, which the generic tests do not support; use `STIRRUP_TEST_NITRO_ISOLATED`. |
 | `STIRRUP_TEST_RUNTIME_CLASSES` | `,runc,gvisor` | Comma-separated `executor.runtime` values for `TestK8sRuntimeClass_Admitted` (e.g. `gvisor` alone on GKE). |
-| `STIRRUP_TEST_NITRO_ISOLATED` | *(unset → skip)* | Set to run the Nitro group on an EKS cluster with Nitro Sandboxes, pinned by `STIRRUP_TEST_NITRO_INSTANCE_TYPE` and `STIRRUP_TEST_NITRO_ARCH`. In `TestK8sNitroIsolated_EndToEnd` the Pod passes the whole-Pod admission check and the runtime diagnostics, then the group runs the generic exec, timeout, process-tree kill, output-cap, file round-trip, writable-workspace and teardown checks, probes for a guest network with `wget` (an image without `wget` fails the probe), and logs the workspace capacity. Once the Pod is constructed, the subtests share a fresh context sized from the sum of their timeouts (including `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT`), and the Pod's lifetime is the readiness ceiling plus that sum; the group logs the budget when it starts. With the defaults its bounds add up to about 20 minutes, so run it with `-timeout 30m` as in the example below. `TestK8sNitroIsolated_DiskMbBoundsTheGuestDisk` declares `diskMb: 1024` and checks that the workspace is no larger than that and more than three quarters of it, that a write beyond it fails with `No space left on device`, and that the sandbox stays usable afterwards. Both skip everywhere else; both passed on the 2026-11-13 EKS run (see [Status](#status)). |
+| `STIRRUP_TEST_NITRO_ISOLATED` | *(unset → skip)* | Set to run the Nitro group on an EKS cluster with Nitro Sandboxes, pinned by `STIRRUP_TEST_NITRO_INSTANCE_TYPE` and `STIRRUP_TEST_NITRO_ARCH`. In `TestK8sNitroIsolated_EndToEnd` the Pod passes the whole-Pod admission check and the runtime diagnostics, then the group runs the generic exec, timeout, process-tree kill, output-cap, file round-trip, writable-workspace and teardown checks, probes for a guest network with `wget` (an image without `wget` fails the probe), and logs the workspace capacity. Once the Pod is constructed, the subtests share a fresh context sized from the sum of their timeouts (including `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT`), and the Pod's lifetime is the readiness ceiling plus the one-minute exec-reachability bound plus that sum; the group logs the budget when it starts. With the defaults its bounds add up to about 20 minutes, so run it with `-timeout 30m` as in the example below. `TestK8sNitroIsolated_DiskMbBoundsTheGuestDisk` declares `diskMb: 1024` and checks that the workspace is no larger than that and more than three quarters of it, that a write beyond it fails with `No space left on device`, and that the sandbox stays usable afterwards. Both skip everywhere else; both passed on the 2026-11-13 EKS run (see [Status](#status)). |
 | `STIRRUP_TEST_NITRO_INSTANCE_TYPE` | `m5d.xlarge` | `node.kubernetes.io/instance-type` node selector for the Nitro group; pick a type from the [tested recipe](#tested-recipe). |
 | `STIRRUP_TEST_NITRO_ARCH` | `amd64` | `kubernetes.io/arch` node selector for the Nitro group. On `arm64` `TestK8sNitroIsolated_EndToEnd` fails its runtime diagnostics by design. |
 | `STIRRUP_TEST_EVIDENCE_DIR` | *(unset → nothing written)* | Directory the Nitro group writes its evidence to: `submitted-pod.json`, `create-response.json` (the Pod as admission returned it), `ready-pod.json` and `workspace-df.txt`; when `Create` fails, its error text goes to `create-error.txt`. The Pod files are the API objects as submitted and as the cluster returned them, with `apiVersion: v1` and `kind: Pod` set and every environment value replaced by a fixed marker. They hold infrastructure identifiers, so review them before sharing or committing them. |
