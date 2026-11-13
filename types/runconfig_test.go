@@ -2305,7 +2305,7 @@ func TestK8sRuntimeRequirementErrors_NitroIsolated(t *testing.T) {
 	})
 	t.Run("every violation reported", func(t *testing.T) {
 		must := require.New(t)
-		errs := K8sRuntimeRequirementErrors("nitro-isolated", &NetworkConfig{Mode: "allowlist"}, &ResourceLimits{DiskMB: 64}, true)
+		errs := K8sRuntimeRequirementErrors("nitro-isolated", &NetworkConfig{Mode: "allowlist"}, &ResourceLimits{}, true)
 		must.Len(errs, 4)
 	})
 }

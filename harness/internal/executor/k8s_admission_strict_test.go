@@ -175,6 +175,25 @@ func strictAdmissionMutations() []strictMutation {
 	}
 }
 
+func TestPodAdmission_StrictRejectsARequestDefaultedFromALimit(t *testing.T) {
+	must := require.New(t)
+	profile := k8sRuntimeProfiles["nitro-isolated"]
+	disk := resource.MustParse("2048Mi")
+	submitted := buildSandboxPod(nitroFixtureCfg(), profile, testK8sPodName, nil)
+	submitted.Spec.Containers[0].Resources.Limits[corev1.ResourceEphemeralStorage] = disk
+	// The API server defaults a missing request to the limit.
+	admitted := decodeAdmittedNitroPod(t)
+	admitted.Spec.Containers[0].Resources.Limits[corev1.ResourceEphemeralStorage] = disk
+	admitted.Spec.Containers[0].Resources.Requests[corev1.ResourceEphemeralStorage] = disk
+
+	err := newPodAdmission(submitted, admitted, profile).checkCreate()
+
+	must.ErrorContains(err, "spec.containers[agent].resources", "a limit submitted without its request fails the comparison")
+
+	submitted.Spec.Containers[0].Resources.Requests[corev1.ResourceEphemeralStorage] = disk
+	must.NoError(newPodAdmission(submitted, admitted, profile).checkCreate())
+}
+
 func TestPodAdmission_StrictRejectsAdmittedPodMutations(t *testing.T) {
 	profile := k8sRuntimeProfiles["nitro-isolated"]
 	for _, tc := range strictAdmissionMutations() {

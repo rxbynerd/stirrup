@@ -36,6 +36,9 @@ type k8sTiming struct {
 	// execReachableTimeout bounds the wait for exec to reach the Pod after
 	// readiness; zero means k8sExecReachableTimeout.
 	execReachableTimeout time.Duration
+	// execProbeTimeout bounds each attempt of that wait; zero means
+	// k8sExecProbeTimeout.
+	execProbeTimeout time.Duration
 }
 
 var defaultK8sTiming = k8sTiming{

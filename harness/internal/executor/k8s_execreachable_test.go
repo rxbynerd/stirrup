@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -88,19 +90,74 @@ func TestWaitForExecReachable_FailsWhenTheKubeletStaysUnreachable(t *testing.T) 
 	must := require.New(t)
 	logger, _ := testLogger()
 	calls := 0
-	core := execReachableCore(scriptedExec(&calls, errors.New("unable to upgrade connection: error dialing backend: \x1b[31mtls‮: internal error")))
+	core := execReachableCore(scriptedExec(&calls, errKubeletUnreachable))
 	timing := k8sTiming{pollPeriod: time.Millisecond, execReachableTimeout: 50 * time.Millisecond}
 
 	err := waitForExecReachable(context.Background(), core, timing, logger)
 
 	must.ErrorIs(err, errExecUnreachable)
-	must.Equal("is not reachable for exec within 50ms: unable to upgrade connection: error dialing backend: [31mtls: internal error", err.Error())
+	must.Equal("is not reachable for exec within 50ms: "+errKubeletUnreachable.Error(), err.Error())
 	must.Greater(calls, 1)
+}
+
+func TestWaitForExecReachable_SanitisesClusterTextInTheErrorAndTheLog(t *testing.T) {
+	cases := []struct {
+		name string
+		// retried selects the retried dial failure; otherwise the error
+		// is one the wait leaves to the next exec.
+		retried bool
+	}{
+		{name: "retried failure", retried: true},
+		{name: "failure left to the next exec"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			logger, logs := testLogger()
+			text := "container \x1b[31mgone\u202e\u009b"
+			if tc.retried {
+				text = "error dialing backend: \x1b[31mtls\u202e\u009b: internal error"
+			}
+			calls := 0
+			core := execReachableCore(scriptedExec(&calls, errors.New(text)))
+			timing := k8sTiming{pollPeriod: time.Millisecond, execReachableTimeout: 20 * time.Millisecond}
+
+			err := waitForExecReachable(context.Background(), core, timing, logger)
+
+			if tc.retried {
+				must.Equal("is not reachable for exec within 20ms: error dialing backend: [31mtls: internal error", err.Error())
+			} else {
+				must.NoError(err)
+			}
+			for _, r := range logs.String() {
+				must.False(isUnprintableRune(r) && r != '\n', "log line carries unprintable rune %U", r)
+			}
+			must.Contains(logs.String(), "[31m", "the failure text is logged")
+		})
+	}
 }
 
 func TestWaitForExecReachable_HungAttemptFailsAtTheBound(t *testing.T) {
 	must := require.New(t)
 	logger, _ := testLogger()
+	calls := 0
+	core := execReachableCore(func(ctx context.Context, _ []string, _ io.Reader, _, _ io.Writer) error {
+		calls++
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	// The bound ends the first attempt before the per-attempt timeout does.
+	timing := k8sTiming{pollPeriod: time.Millisecond, execReachableTimeout: 50 * time.Millisecond}
+
+	err := waitForExecReachable(context.Background(), core, timing, logger)
+
+	must.ErrorIs(err, errExecUnreachable)
+	must.Equal(1, calls)
+}
+
+func TestWaitForExecReachable_RetriesAnAttemptThatTimesOut(t *testing.T) {
+	must := require.New(t)
+	logger, logs := testLogger()
 	calls := 0
 	core := execReachableCore(func(ctx context.Context, _ []string, _ io.Reader, _, _ io.Writer) error {
 		calls++
@@ -110,13 +167,36 @@ func TestWaitForExecReachable_HungAttemptFailsAtTheBound(t *testing.T) {
 		}
 		return nil
 	})
-	// The bound ends the first attempt before the per-attempt timeout does.
+	timing := k8sTiming{pollPeriod: time.Millisecond, execReachableTimeout: 30 * time.Second, execProbeTimeout: 20 * time.Millisecond}
+	started := time.Now()
+
+	err := waitForExecReachable(context.Background(), core, timing, logger)
+
+	must.NoError(err)
+	must.Equal(2, calls)
+	must.Less(time.Since(started), 5*time.Second, "the attempt ends at its own timeout, not the default")
+	must.Contains(logs.String(), "k8s executor exec reached the sandbox pod")
+}
+
+func TestWaitForExecReachable_ReportsTheDialFailureWhenTheBoundCutsTheLastAttempt(t *testing.T) {
+	must := require.New(t)
+	logger, _ := testLogger()
+	calls := 0
+	core := execReachableCore(func(ctx context.Context, _ []string, _ io.Reader, _, _ io.Writer) error {
+		calls++
+		if calls == 1 {
+			return errKubeletUnreachable
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	})
 	timing := k8sTiming{pollPeriod: time.Millisecond, execReachableTimeout: 50 * time.Millisecond}
 
 	err := waitForExecReachable(context.Background(), core, timing, logger)
 
-	must.ErrorIs(err, errExecUnreachable, "a hung attempt that outlasts the bound fails the wait")
-	must.Equal(1, calls)
+	must.ErrorIs(err, errExecUnreachable)
+	must.ErrorContains(err, errKubeletUnreachable.Error(), "the bound cutting an attempt short does not replace the cause")
+	must.Equal(2, calls)
 }
 
 func TestWaitForExecReachable_CallerCancellationIsAnInterruption(t *testing.T) {
@@ -163,6 +243,30 @@ func TestNewK8sExecutor_UnreachableExecTearsDown(t *testing.T) {
 	must.ErrorIs(err, errExecUnreachable)
 	must.ErrorContains(err, "pod "+testK8sNamespace+"/")
 	must.Len(podDeletes(cs), 1, "the Pod is deleted when exec never becomes reachable")
+}
+
+func TestNewK8sExecutor_NitroDiagnosticsStillRunAfterAProbeFailure(t *testing.T) {
+	must := require.New(t)
+	ordinaryPod, err := os.ReadFile(filepath.Join("testdata", "runtime-diagnostics-ordinary-pod.txt"))
+	must.NoError(err)
+	cs := fake.NewClientset()
+	admitPods(cs, nil)
+	cfg, recorder := nitroConstructorCfg()
+	execFn := func(_ context.Context, command []string, _ io.Reader, out, _ io.Writer) error {
+		if isExecProbe(command) {
+			return errors.New("unable to upgrade connection: Forbidden")
+		}
+		_, writeErr := out.Write(ordinaryPod)
+		return writeErr
+	}
+
+	exec, err := newFakeK8sExecutorWithExec(context.Background(), cs, cfg, execFn)
+
+	must.Nil(exec)
+	must.ErrorContains(err, "runtime diagnostics for executor.runtime \"nitro-isolated\" failed", "a probe failure the wait does not retry leaves the diagnostics in force")
+	must.Len(recorder.runtimeDiagnostics, 1)
+	must.False(recorder.runtimeDiagnostics[0].passed)
+	must.Len(podDeletes(cs), 1)
 }
 
 func TestNewK8sExecutor_NitroDiagnosticsRunAfterExecIsReachable(t *testing.T) {
