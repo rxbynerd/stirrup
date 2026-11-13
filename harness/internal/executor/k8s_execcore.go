@@ -44,8 +44,11 @@ type podExecCore struct {
 	sandboxIdentity bool
 	// execFn replaces the pods/exec round trip when set; unit tests use it to
 	// observe the exec calls without a cluster.
-	execFn func(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error
+	execFn podExecFunc
 }
+
+// podExecFunc runs command in the agent container with the given streams.
+type podExecFunc func(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error
 
 // WriteSandboxIdentityToken delivers token to SandboxIdentityTokenPath over
 // the pods/exec subresource with the token on stdin (see

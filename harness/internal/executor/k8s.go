@@ -138,8 +138,9 @@ type K8sExecutor struct {
 }
 
 // NewK8sExecutor builds a kubernetes clientset, installs the egress
-// NetworkPolicy, creates a sandbox Pod, checks what admission did to it, and
-// waits for it to become Ready. The policy is installed BEFORE the Pod so the
+// NetworkPolicy, creates a sandbox Pod, checks what admission did to it,
+// waits for it to become Ready, and runs the runtime profile's guest
+// diagnostics. The policy is installed BEFORE the Pod so the
 // Pod never runs with unrestricted egress. Any failure after the Pod create
 // tears down through the same contract as Close.
 func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, error) {
@@ -168,7 +169,7 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		return nil, fmt.Errorf("build kube clientset: %w", err)
 	}
 
-	return newK8sExecutor(ctx, cfg, profile, proxyEnv, clientset, restCfg, defaultK8sTiming, slog.Default())
+	return newK8sExecutor(ctx, cfg, profile, proxyEnv, clientset, restCfg, nil, defaultK8sTiming, slog.Default())
 }
 
 // prepareK8sExecutor checks everything about cfg that needs no cluster: the
@@ -195,7 +196,8 @@ func prepareK8sExecutor(cfg K8sExecutorConfig) (k8sRuntimeProfile, []corev1.EnvV
 }
 
 // newK8sExecutor is NewK8sExecutor after prepareK8sExecutor and the clientset.
-func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRuntimeProfile, proxyEnv []corev1.EnvVar, clientset kubernetes.Interface, restCfg *rest.Config, timing k8sTiming, logger *slog.Logger) (*K8sExecutor, error) {
+// execFn, when non-nil, replaces the pods/exec round trip (see podExecCore).
+func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRuntimeProfile, proxyEnv []corev1.EnvVar, clientset kubernetes.Interface, restCfg *rest.Config, execFn podExecFunc, timing k8sTiming, logger *slog.Logger) (*K8sExecutor, error) {
 
 	// An empty runtime selects the cluster-default RuntimeClass, which may be
 	// plain runc with no sandbox isolation. Warn so the opt-out is visible.
@@ -253,7 +255,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 		return nil, withTeardownErr(fmt.Errorf("pod %s/%s %w", cfg.Namespace, podName, err), teardown.run())
 	}
 
-	return &K8sExecutor{
+	exec := &K8sExecutor{
 		podExecCore: podExecCore{
 			clientset:       clientset,
 			restConfig:      restCfg,
@@ -263,12 +265,19 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 			Security:        cfg.Security,
 			logger:          logger,
 			sandboxIdentity: cfg.SandboxIdentityToken,
+			execFn:          execFn,
 		},
 		podUID:            created.UID,
 		networkPolicyName: policy.Name,
 		runID:             cfg.Lifecycle.RunID,
 		timing:            timing,
-	}, nil
+	}
+	// The diagnostics run before the executor is returned, so before any
+	// token delivery or lifecycle hook reaches the sandbox.
+	if err := runK8sRuntimeDiagnostics(ctx, cfg.Runtime, profile, &exec.podExecCore); err != nil {
+		return nil, withTeardownErr(err, teardown.run())
+	}
+	return exec, nil
 }
 
 // reportAdmissionFailure emits the admitted_pod runtime diagnostic event when
