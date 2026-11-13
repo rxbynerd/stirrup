@@ -104,6 +104,65 @@ func TestNewK8sExecutor_BindsAdmittedReadyPod(t *testing.T) {
 	requireTornDown(t, cs)
 }
 
+func TestNewK8sExecutor_TearsDownOnAdmissionMismatch(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(pod *corev1.Pod)
+		wantErr string
+	}{
+		{
+			name:    "runtime class rewritten",
+			mutate:  func(pod *corev1.Pod) { pod.Spec.RuntimeClassName = ptr.To("runc") },
+			wantErr: `spec.runtimeClassName: expected "gvisor", observed "runc"`,
+		},
+		{
+			name:    "selector label rewritten",
+			mutate:  func(pod *corev1.Pod) { pod.Labels[k8sPodNameLabel] = "unselected" },
+			wantErr: `metadata.labels[stirrup.dev/pod]`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cs := fake.NewClientset()
+			admitPods(cs, tc.mutate)
+
+			_, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
+
+			must.ErrorContains(err, tc.wantErr)
+			must.Zero(countVerb(cs, "get", "pods")-countTerminationPolls(cs), "readiness wait ran after an admission mismatch")
+			requireTornDown(t, cs)
+		})
+	}
+}
+
+// countTerminationPolls counts the Pod gets issued after the first Pod
+// delete, which belong to the teardown wait rather than to readiness.
+func countTerminationPolls(cs *fake.Clientset) int {
+	n, deleted := 0, false
+	for _, a := range actionsOf(cs, "pods") {
+		switch a.GetVerb() {
+		case "delete":
+			deleted = true
+		case "get":
+			if deleted {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func TestNewK8sExecutor_LogsDefaultedRuntimeClass(t *testing.T) {
+	must := require.New(t)
+	cs := fake.NewClientset()
+	admitPods(cs, func(pod *corev1.Pod) { pod.Spec.RuntimeClassName = ptr.To("cluster-default") })
+
+	exec, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg(""))
+	must.NoError(err, "a RuntimeClass the cluster assigns when none was requested is not a mismatch")
+	must.NoError(exec.Close())
+}
+
 func TestNewK8sExecutor_CleansUpAfterCallerCancellation(t *testing.T) {
 	must := require.New(t)
 	cs := fake.NewClientset()

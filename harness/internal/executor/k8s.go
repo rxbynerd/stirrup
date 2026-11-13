@@ -120,10 +120,10 @@ type K8sExecutor struct {
 }
 
 // NewK8sExecutor builds a kubernetes clientset, installs the egress
-// NetworkPolicy, creates a sandbox Pod, and waits for it to become Ready.
-// The policy is installed BEFORE the Pod so the Pod never runs with
-// unrestricted egress. Any failure after the Pod create tears down through
-// the same contract as Close.
+// NetworkPolicy, creates a sandbox Pod, checks what admission did to it, and
+// waits for it to become Ready. The policy is installed BEFORE the Pod so the
+// Pod never runs with unrestricted egress. Any failure after the Pod create
+// tears down through the same contract as Close.
 func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, error) {
 	if cfg.Image == "" {
 		return nil, fmt.Errorf("k8s executor requires an image")
@@ -210,6 +210,15 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev
 		return nil, withTeardownErr(createErr, cleanupErr)
 	}
 	teardown.podUID = created.UID
+
+	admission := podAdmission{submitted: pod, uid: created.UID, checks: baseAdmissionChecks}
+	if err := admission.check(created); err != nil {
+		return nil, withTeardownErr(err, teardown.run())
+	}
+	if cfg.RuntimeClassName == "" && created.Spec.RuntimeClassName != nil {
+		logger.Info("k8s executor pod admitted with a cluster-assigned RuntimeClass",
+			"namespace", cfg.Namespace, "pod", podName, "runtimeClassName", clusterText(*created.Spec.RuntimeClassName))
+	}
 
 	if err := waitForPodReady(ctx, clientset, cfg.Namespace, podName); err != nil {
 		return nil, withTeardownErr(fmt.Errorf("pod %s/%s not ready: %w", cfg.Namespace, podName, err), teardown.run())
