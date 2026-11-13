@@ -13,7 +13,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	utilexec "k8s.io/client-go/util/exec"
+	"k8s.io/utils/ptr"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -62,6 +64,50 @@ func TestK8sRuntimeProfiles_RuntimeClassNames(t *testing.T) {
 		must.Equal(map[string]string{"sandbox.amazonaws.com/log-bandwidth": "20M"}, profile.podAnnotations)
 		must.Equal(map[string]string{"sandbox.amazonaws.com/network-isolated": "true"}, profile.noNetworkAnnotations)
 		must.NotNil(profile.verify)
+	})
+}
+
+func TestBuildSandboxPod_ShapePerRuntimeProfile(t *testing.T) {
+	podFor := func(runtime, mode string) *corev1.Pod {
+		cfg := K8sExecutorConfig{Image: "busybox", Namespace: testK8sNamespace, Runtime: runtime, Network: &types.NetworkConfig{Mode: mode}}
+		return buildSandboxPod(cfg, k8sRuntimeProfiles[runtime], testK8sPodName, nil)
+	}
+	for _, runtime := range append([]string{""}, types.ValidK8sExecutorRuntimeValues()...) {
+		if runtime == "nitro-isolated" {
+			continue
+		}
+		t.Run(fmt.Sprintf("%q has no annotations", runtime), func(t *testing.T) {
+			must := require.New(t)
+			pod := podFor(runtime, "none")
+			must.Nil(pod.Annotations)
+			if runtime == "" {
+				must.Nil(pod.Spec.RuntimeClassName)
+				return
+			}
+			must.Equal(ptr.To(runtime), pod.Spec.RuntimeClassName)
+		})
+	}
+	t.Run("nitro-isolated in mode none", func(t *testing.T) {
+		must := require.New(t)
+		pod := podFor("nitro-isolated", "none")
+		must.Equal(ptr.To("isolated-sandbox"), pod.Spec.RuntimeClassName)
+		must.Equal(map[string]string{
+			"sandbox.amazonaws.com/log-bandwidth":    "20M",
+			"sandbox.amazonaws.com/network-isolated": "true",
+		}, pod.Annotations)
+		must.Empty(pod.Spec.NodeSelector, "the executor adds no node selector of its own")
+		must.Empty(pod.Spec.Tolerations, "the executor adds no toleration of its own")
+	})
+	t.Run("no-network annotation only in mode none", func(t *testing.T) {
+		must := require.New(t)
+		pod := podFor("nitro-isolated", "allowlist")
+		must.Equal(map[string]string{"sandbox.amazonaws.com/log-bandwidth": "20M"}, pod.Annotations)
+	})
+	t.Run("the registry maps are not shared with the pod", func(t *testing.T) {
+		must := require.New(t)
+		pod := podFor("nitro-isolated", "none")
+		pod.Annotations["sandbox.amazonaws.com/log-bandwidth"] = "1M"
+		must.Equal("20M", k8sRuntimeProfiles["nitro-isolated"].podAnnotations["sandbox.amazonaws.com/log-bandwidth"])
 	})
 }
 

@@ -293,10 +293,31 @@ func buildSandboxPod(cfg K8sExecutorConfig, profile k8sRuntimeProfile, podName s
 			Name:            podName,
 			Namespace:       cfg.Namespace,
 			Labels:          podLabels(podName, cfg.Lifecycle.RunID),
+			Annotations:     profilePodAnnotations(profile, cfg.Network),
 			OwnerReferences: cfg.HarnessPod.ownerReferences(cfg.Namespace),
 		},
 		Spec: spec,
 	}
+}
+
+// profilePodAnnotations copies the profile's Pod annotations, adding its
+// no-network annotations when the network mode is "none". Nil when the
+// profile sets none.
+func profilePodAnnotations(profile k8sRuntimeProfile, network *types.NetworkConfig) map[string]string {
+	var out map[string]string
+	add := func(from map[string]string) {
+		for k, v := range from {
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[k] = v
+		}
+	}
+	add(profile.podAnnotations)
+	if network != nil && network.Mode == "none" {
+		add(profile.noNetworkAnnotations)
+	}
+	return out
 }
 
 // buildSandboxPodSpec builds the hardened agent Pod spec shared by the k8s and
