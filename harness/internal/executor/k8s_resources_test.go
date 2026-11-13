@@ -25,7 +25,7 @@ func requireQuantity(t *testing.T, list corev1.ResourceList, name corev1.Resourc
 
 // TestResourcesToPodResources_RendersEachLimit covers nil input, whole and
 // fractional CPU, memory-only, and the full four-field case where DiskMB
-// lands on limits.ephemeral-storage only and PIDs is ignored.
+// lands on the ephemeral-storage request and limit and PIDs is ignored.
 func TestResourcesToPodResources_RendersEachLimit(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -63,7 +63,7 @@ func TestResourcesToPodResources_RendersEachLimit(t *testing.T) {
 			wantLimMem: "512Mi",
 		},
 		{
-			name: "all four fields: disk is limit-only, pids ignored",
+			name: "all four fields: disk sets request and limit, pids ignored",
 			limits: &types.ResourceLimits{
 				CPUs:     1.5,
 				MemoryMB: 1024,
@@ -103,12 +103,16 @@ func TestResourcesToPodResources_RendersEachLimit(t *testing.T) {
 				requireQuantity(t, got.Limits, corev1.ResourceMemory, tc.wantLimMem)
 			}
 
-			// DiskMB must land on limits.ephemeral-storage ONLY — never on
-			// requests, where it would force the scheduler to find a node
-			// with that much free scratch space.
+			// DiskMB lands on the ephemeral-storage request and limit alike:
+			// the API server defaults an absent request to the limit, and a
+			// strict-admission runtime compares the admitted Pod with the
+			// submitted one.
 			if tc.wantLimEph != "" {
 				requireQuantity(t, got.Limits, corev1.ResourceEphemeralStorage, tc.wantLimEph)
+				requireQuantity(t, got.Requests, corev1.ResourceEphemeralStorage, tc.wantLimEph)
+			} else {
 				must.NotContains(got.Requests, corev1.ResourceEphemeralStorage)
+				must.NotContains(got.Limits, corev1.ResourceEphemeralStorage)
 			}
 
 			// PIDs is never enforced as a container resource, regardless of

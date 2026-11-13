@@ -669,7 +669,12 @@ func resourcesToPodResources(limits *types.ResourceLimits) corev1.ResourceRequir
 		caps[corev1.ResourceMemory] = mem
 	}
 	if limits.DiskMB > 0 {
-		caps[corev1.ResourceEphemeralStorage] = resource.MustParse(fmt.Sprintf("%dMi", limits.DiskMB))
+		// The request is the value the API server would default from the
+		// limit; submitting it keeps the admitted Pod equal to the submitted
+		// one.
+		disk := resource.MustParse(fmt.Sprintf("%dMi", limits.DiskMB))
+		requests[corev1.ResourceEphemeralStorage] = disk
+		caps[corev1.ResourceEphemeralStorage] = disk
 	}
 	if limits.PIDs > 0 {
 		slog.Default().Debug(

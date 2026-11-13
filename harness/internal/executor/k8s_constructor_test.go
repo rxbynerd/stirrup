@@ -159,11 +159,6 @@ func TestNewK8sExecutor_RejectsUnsupportedConfigBeforeAnyClusterCall(t *testing.
 			wantErr: `executor.resources.memoryMb must be positive`,
 		},
 		{
-			name:    "nitro-isolated with a disk limit",
-			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources.DiskMB = 512 },
-			wantErr: `executor.resources.diskMb must be unset`,
-		},
-		{
 			name:    "nitro-isolated with an empty network mode",
 			mutate:  func(cfg *K8sExecutorConfig) { cfg.Network = &types.NetworkConfig{} },
 			wantErr: `unsupported network mode ""`,
