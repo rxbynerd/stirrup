@@ -1,6 +1,8 @@
 # AWS Nitro Sandboxes: assessment and adoption plan
 
-Status: reviewed proposal with a completed live spike, 2026-11-11. The executor changes are not implemented.
+Status: implemented and open for review as three stacked pull requests, 2026-11-13; not released. Nothing in the
+implementation has run on EKS. See [Implementation status](#implementation-status-2026-11-13) for what was
+built, where it departs from this plan, and the live checks still open.
 Measured results are summarised in [Live spike findings](#live-spike-findings-incorporated-on-2026-11-11)
 and [Tested recipe](#tested-recipe-2026-11-11). The raw spike evidence was removed
 from the tree once distilled; it remains at commit `bccf4862` under `docs/research/nitro-spike-2026-11-11/`
@@ -24,6 +26,7 @@ the line references before acting on them; the code will have moved.
 
 ## Contents
 
+- [Implementation status](#implementation-status-2026-11-13)
 - [Implementation handoff gates](#implementation-handoff-gates)
 - [Live spike findings](#live-spike-findings-incorporated-on-2026-11-11)
 - [Verdict](#verdict)
@@ -36,6 +39,105 @@ the line references before acting on them; the code will have moved.
 - [What is deliberately not built](#what-is-deliberately-not-built)
 - [Open decisions](#open-decisions)
 - [Sources](#sources)
+
+## Implementation status (2026-11-13)
+
+The plan was implemented as three stacked pull requests. Nothing below has
+run on EKS or on a Nitro guest: the implementation was verified with unit
+tests, deliberate breakage of the checks, and a local kind cluster. The Nitro
+runtime is **not released** until the live items at the end of this section
+pass on a paid run, which needs fresh authorization.
+
+| Plan item | Pull request | State |
+|---|---|---|
+| PR 1: readiness, admission check, teardown, token re-exchange | #887 | Implemented; open for review |
+| PR 4: read-only `--dry-run` for `k8s` and `k8s-sandbox` | #888 | Implemented; open for review. Ordered before the Nitro runtime, as [Step 0](#step-0-live-validation-no-code-needs-approval-to-spend) requires |
+| PR 2 + PR 3: `nitro-isolated` runtime and runtime diagnostics | #894 | Implemented as one change; open as a draft pending live acceptance |
+| PR 5: networked Nitro sandboxes | none | Not started; still needs its own design (#896) |
+
+Follow-up issues: live EKS acceptance (#895), the networked design (#896),
+runtime diagnostics for gVisor (#897), control-plane visibility of the
+diagnostics and typed build failures (#898), missing CLI flags (#899), and
+the work this plan defers until a need is shown (#900).
+
+### Where the implementation departs from this plan
+
+Each of these was decided during implementation without the owner present and
+is called out in the pull request that contains it.
+
+- **Runtime diagnostics read different files.** The plan says to check that
+  `/sys/class/net` contains only `lo`. The spike's raw output shows `lo` and
+  `dummy0` in a network-isolated guest, and `/sys/class/net` reflects the
+  network namespace of whoever mounted that sysfs. The implementation reads
+  `/proc/net/dev` (only `lo` and `dummy0` allowed) and `/proc/net/route` (no
+  entries), with shell builtins.
+- **The admitted Pod is compared as a whole.** The plan lists the fields to
+  check. The implementation classifies every `PodSpec` and `Container` field
+  as compared, platform-owned or may-gain-entries, and a test fails when
+  either struct gains a field the table does not name. It also requires the
+  two marks the EKS RuntimeClass puts on the Pod (the
+  `eks.amazonaws.com/nitro-sandbox` overhead resource and node selector),
+  which a sandbox image cannot forge.
+- **A fixed `sandbox.amazonaws.com/log-bandwidth: "20M"` annotation is set.**
+  The plan defers throttle annotations until measured. The spike measured
+  that the default 2M throttle also throttles exec output (11 MiB took 44
+  seconds against 4.48 seconds at 20M), and exec is the only channel the
+  executor reads results over. The value is not operator-configurable;
+  `executor.k8sPodAnnotations` stays deferred. A cluster mutating policy may
+  still retune the documented throttle annotations; any other key under
+  `sandbox.amazonaws.com/` fails the run.
+- **Sandbox identity and the git proxy are rejected for `nitro-isolated`.**
+  V12 confirmed the memory-backed token directory is tmpfs, and the token
+  re-exchange after a slow start is implemented for every runtime. Identity
+  is still rejected for this runtime in the first release: an offline guest
+  has no network path on which to use the token, and the token lifecycle was
+  not exercised on a Nitro guest.
+- **Teardown uses a one-second graceful delete, not a zero-grace delete**, for
+  every runtime, and the sandbox Pod sets `terminationGracePeriodSeconds: 1`.
+  An ambiguous create result keeps the egress policy.
+- **`k8s-sandbox` teardown follows the same contract** and reads the backing
+  Pod until it is gone, which the plan did not ask for.
+- **The `k8s` executor's Pod sets `enableServiceLinks: false`**, for every
+  runtime. Otherwise Kubernetes injects environment variables for each
+  Service in the namespace, which the whole-Pod comparison cannot predict.
+  The `k8s-sandbox` Pod is unchanged.
+
+### Live items still open
+
+None can be closed without a paid EKS run. #895 tracks them.
+
+1. **Guest workspace size when no `ephemeral-storage` is declared.** The plan
+   rejects `diskMb` for this runtime, so the executor declares none. Every
+   spike Pod declared one and the guest disk followed the declaration (about
+   385 MiB at 64Mi, about 909 MiB at 1Gi). The undeclared size is unmeasured,
+   and a real task may run out of disk. If it is too small, the options are to
+   accept `diskMb` as a sizing hint documented as not a quota, or to have the
+   profile send a fixed declaration.
+2. The candidate acceptance in
+   [Implementation handoff gates](#implementation-handoff-gates) (V1-V5, V7,
+   V10-V11) against the implemented executor. The integration group gated on
+   `STIRRUP_TEST_NITRO_ISOLATED` is written to produce this evidence with
+   `go test`; it has never run.
+3. The whole-Pod admission check against a real EKS `Create` response. The
+   spike captured only Pods read back after readiness.
+4. The runtime diagnostics in their implemented form (shell builtins over
+   `podExecCore`; the spike used `cat` over `kubectl exec`).
+5. Graceful-delete timing on a Nitro guest.
+6. The DMI product name on instance families other than `m5d`.
+7. The field classification in the whole-Pod admission check. Some fields
+   are compared on the premise that nothing on EKS Auto Mode writes them at
+   creation; a false failure names the field.
+8. The list of throttle annotations a cluster policy may add or change,
+   which is taken from AWS documentation.
+9. Command timeout, process-tree kill and the output-cap error at
+   `log-bandwidth: 20M`. At the default throttle the spike logged
+   `stirrup-kill: ... can't open /tmp/.stirrup-exec-<id>.pid` when killing a
+   timed-out command; that path was not re-run at 20M.
+
+Separately, the `terminationGracePeriodSeconds: 1` field now sent by
+`k8s-sandbox` has not been accepted by a live GKE Agent Sandbox admission
+policy; one `TestAgentSandbox_Lifecycle` run on GKE settles it before #887
+merges.
 
 ## Implementation handoff gates
 
@@ -138,12 +240,28 @@ Facts measured on that recipe that the implementation needs:
   `eks.amazonaws.com/nitro-sandbox: "true"` and overhead of 256 MiB plus one
   `eks.amazonaws.com/nitro-sandbox` extended resource. Admission left
   container requests and limits unchanged.
-- A network-isolated Pod still has a PodIP in its API status. The verifier
-  must check `/sys/class/net` inside the guest, not the Pod status.
+- A network-isolated Pod still has a PodIP in its API status, so the check
+  must look inside the guest, not at the Pod status. `/proc/net/dev` in a
+  network-isolated guest listed `lo` and `dummy0` (all counters zero); a
+  networked Nitro guest listed `lo`, `dummy0` and `eth0`. `/sys/class/net`
+  was not read in the spike, so the earlier instruction here to check that it
+  holds only `lo` was not based on a measurement; the implementation reads
+  `/proc/net/dev` and `/proc/net/route`.
 - `activeDeadlineSeconds` counts from Pod start and so includes VM boot (a
   120-second deadline stopped the container about 121 seconds after start).
-- The workspace `emptyDir` was XFS mounted `noquota` (about 394 MiB); this is
-  why the 64 MiB limit did not bound writes (V8).
+- The workspace `emptyDir` was XFS mounted `noquota`. Its size followed the
+  declared `ephemeral-storage`: 394,220 KiB (about 385 MiB) at 64Mi and
+  930,796 KiB (about 909 MiB) at 1Gi. Two points, no formula; the size with
+  no declaration was not measured. The 64 MiB limit did not bound a 128 MiB
+  write (V8).
+- Guest `MemTotal` was 1,161,772 kB with 1 GiB of container memory and
+  132,460 kB (about 130 MiB) with no requests or limits. Requests equalled
+  limits in every sized Pod, so the spike does not show which of the two
+  sizes the guest.
+- Output-cap timing for 11 MiB over exec: 44.07 s at the default 2M log
+  throttle, 4.48 s at `log-bandwidth: 20M`, 3.39 s on an ordinary Pod.
+- Create-to-Ready on a warm node was 5.8 s, 6.6 s and 7.8 s across three
+  Nitro Pods (2.8 s for an ordinary Pod); 43.84 s on a clean cold node.
 - `podExecCore.Exec` checks context expiry before the output-cap flag. Under
   the 2M log throttle, a stream that reaches the cap can still return a
   timeout. Output-cap tests need a measured timeout for this runtime.
