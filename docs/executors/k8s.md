@@ -195,7 +195,8 @@ them in sync. A run with a run ID also labels the Pod and its policy
 
 A normal run goes like this. Construction installs the egress policy,
 creates the Pod, compares what admission returned with what was
-submitted, waits up to 5 minutes for the Pod to become Ready, and, for a
+submitted, waits up to 5 minutes for the Pod to become Ready and up to
+a minute more for `exec` to reach it, and, for a
 runtime with [runtime diagnostics](#runtime-diagnostics)
 (`nitro-isolated`), checks the guest before the run starts.
 `Close` deletes the Pod with a 1-second grace period, reads the Pod
@@ -255,11 +256,46 @@ PodScheduled False (Unschedulable: 0/3 nodes are available: 3 Insufficient cpu.)
 context deadline exceeded
 ```
 
+Once the Pod is Ready, the executor waits for `pods/exec` to reach it
+before using it. On a node that has just joined the cluster, a Pod can
+be Ready before the kubelet's serving certificate is issued, and until
+then the API server cannot dial the kubelet, so every `exec` fails.
+*Measured* on the 2026-11-13 EKS run, a new node's certificate request
+was approved about 15 s after the node registered (26 s in one of seven
+samples), and `exec` was refused for up to 7.9 s after a Pod on a new
+node was Ready.
+
+The wait runs a no-op command, `/bin/sh -c :`, with no stdin. It retries
+only while an attempt fails because the API server could not dial the
+kubelet (an error containing `error dialing backend`, for example
+`unable to upgrade connection: error dialing backend: remote error: tls:
+internal error`) or while an attempt times out; each attempt is bounded
+at 10 seconds. The first retry logs `k8s executor waiting for exec to
+reach the sandbox pod` at info level with `namespace`, `pod`, `timeout`
+and `err`. Any other outcome, such as a non-zero exit, a `Forbidden`
+answer or a missing container, ends the wait without an error and is
+left to the first real `exec` to report, so a missing `pods/exec`
+permission fails as fast as without the wait. The wait is bounded at one
+minute, within the caller's context. When the kubelet stays unreachable
+for that minute, construction fails with the last error, cleaned like
+other cluster text, and the Pod is torn down:
+
+```
+pod stirrup-sandbox/stirrup-0123456789ab is not reachable for exec within 1m0s:
+unable to upgrade connection: error dialing backend: remote error: tls: internal error
+```
+
+A cancellation or run deadline during the wait fails construction with
+`pod <ns>/<pod> exec reachability wait interrupted: <context error>`. The wait applies
+to every `k8s` runtime; for `nitro-isolated` it runs before the
+[runtime diagnostics](#runtime-diagnostics).
+
 The [`k8s-sandbox`](k8s-agent-sandbox.md) executor shares only the
 5-minute ceiling and the immediate failure on `Forbidden` or
 `Unauthorized`. It waits on the Sandbox's `Ready` condition and has none
-of the Pod states above, no progress lines and no admission check, so a
-permanently broken image there waits the full five minutes.
+of the Pod states above, no progress lines, no admission check and no
+wait for `exec` to reach the Pod, so a permanently broken image there
+waits the full five minutes.
 
 ### Admission check
 
@@ -807,8 +843,8 @@ only, so the `k8s` values are valid but not offered by completion.
   finite number (`NaN` and infinities are rejected).
 - `executor.runtime: nitro-isolated` adds the requirements listed in
   [What the runtime accepts](#what-the-runtime-accepts): network mode
-  `none`, positive `cpus` and `memoryMb`, no `diskMb`, and no
-  `sandboxIdentity` or `gitProxy`. The rules are
+  `none`, positive `cpus` and `memoryMb`, and no `sandboxIdentity` or
+  `gitProxy`. The rules are
   `types.K8sRuntimeRequirementErrors`, the one function both validation
   and the executor constructor apply.
 
@@ -821,16 +857,14 @@ only, so the `k8s` values are valid but not offered by completion.
 |---|---|
 | `cpus` | `requests.cpu` **and** `limits.cpu`. Whole cores render as an integer (`"2"`), fractional cores as milli-CPU (`"500m"`). |
 | `memoryMb` | `requests.memory` **and** `limits.memory` (Mi). |
-| `diskMb` | `limits.ephemeral-storage` **only** (Mi) — the eviction ceiling. No request, so the scheduler is not forced to find a node with that much free scratch. |
+| `diskMb` | `requests.ephemeral-storage` **and** `limits.ephemeral-storage` (Mi). The API server defaults an absent request to the limit, so the admitted Pod carries the request either way, and the scheduler counts it against a node's allocatable ephemeral storage. |
 | `pids` | **Logged and ignored.** Per-Pod PID limits are a kubelet setting (`--pod-max-pids`), not a container resource field. |
 
 A nil or all-zero `resources` block leaves the Pod's requirements empty
 so it inherits namespace defaults. `nitro-isolated` is the exception:
-the AWS sample says its guest VM is sized from the requests at boot, so
-CPU and memory are both required, and `diskMb` is rejected because an
-`ephemeral-storage` limit was not observed to bound writes inside the
-guest (one 128 MiB write succeeded against a 64 MiB limit). See
-[What the runtime accepts](#what-the-runtime-accepts).
+its guest VM is sized from the requests at boot, so CPU and memory are
+both required, and `diskMb`, when set, is the size of the guest's disk.
+See [What the runtime accepts](#what-the-runtime-accepts).
 
 ## Deployment recipes
 
@@ -2045,12 +2079,13 @@ it, the probe uses the same kubeconfig resolution as a run:
 | `pod <ns>/<pod> not ready: agent container terminated (exit code 128, StartError: ... exec: "/bin/sh": stat /bin/sh: no such file or directory: unknown)` | The image lacks `/bin/sh`. The exit code and wording come from the container runtime; this is containerd with runc. | Use an image shipping `/bin/sh`, `tar`, `ls`, `mkdir`, `readlink`. |
 | `pod <ns>/<pod> not ready: agent container cannot start: InvalidImageName (...)` | The image reference cannot be parsed. | Fix the image reference. |
 | `pod <ns>/<pod> not ready: pod phase Failed (...)` | The Pod failed before it was Ready (eviction, `DeadlineExceeded`, a runtime error). | Read the reason in the error; check node pressure and the RuntimeClass handler. |
+| `pod <ns>/<pod> is not reachable for exec within 1m0s: <last error>` | The Pod was Ready, but for a minute the API server could not dial the kubelet on its node (the last error contains `error dialing backend`) or every attempt timed out. On a new node this is the window before the kubelet's serving certificate is issued; it outlasted the wait. | Check that the node's `kubernetes.io/kubelet-serving` certificate request was approved (`kubectl get csr`) and that `kubectl exec` reaches other Pods on that node. See [Readiness](#readiness). |
 | `admitted pod <ns>/<pod> does not match the submitted pod: spec.runtimeClassName: expected ..., observed ...` (or a `metadata.labels[...]` entry) | An admission webhook or policy rewrote the RuntimeClass or a policy-selected label. | Exclude the sandbox namespace from that webhook, or make it preserve the fields. See [Admission check](#admission-check). |
 | `pod <ns>/<pod> not ready: observed pod <ns>/<pod> no longer matches the admitted pod: metadata.uid: expected <uid>, observed <uid>` | The Pod was deleted and another created under its name during the readiness wait; no webhook acted. A label or RuntimeClass entry instead means a writer changed the Pod after admission. | Find what deleted or edited the Pod (audit log); the sandbox namespace should hold only harness-managed Pods. |
 | `tear down pod <ns>/<pod> (run ID "<id>"): <cause>; retained egress NetworkPolicy <ns>/<pod>-egress` (also in the warning `sandbox teardown incomplete; retaining the egress NetworkPolicy (fail closed)`), or the same beginning `tear down sandbox` for `k8s-sandbox` | Pod termination was not confirmed within the teardown bound, the delete or the post-create lookup failed, the Pod under the name was not the run's or a replacement still carried the policy's selector label, a create with an unknown outcome found no Pod, the policy delete failed, or (for `k8s-sandbox`) the backing Pod was still present after the Sandbox was gone. The cause names which. | Follow [Cleaning up retained objects](#cleaning-up-retained-objects). |
 | Exec/file I/O fails with API errors | The orchestrator lacks `pods/exec` create. | Apply [`rbac.yaml`](../../examples/k8s/rbac.yaml) (or grant the verb). |
 | Egress not actually confined on `kind` or EKS Auto Mode | kindnet does not enforce NetworkPolicy; Auto Mode does not until its network policy controller is enabled, and with the controller enabled and a `DefaultAllow` NodeClass startup traffic escaped a policy once. | Use a NetworkPolicy-enforcing CNI (Cilium, Calico); on Auto Mode enable enforcement with a `DefaultDeny` NodeClass (measured once; see the [Enforcement caveat](#enforcement-caveat--networkpolicy-may-be-accepted-but-not-enforced)), or use a runtime that removes the guest network, such as [`nitro-isolated`](#network-mode-none-on-this-runtime). |
-| Validation errors naming `executor.runtime="nitro-isolated"` | The run sets a network mode, resources, `diskMb`, `sandboxIdentity` or `gitProxy` the runtime does not accept. | See [What the runtime accepts](#what-the-runtime-accepts); Nitro-specific run failures are under [Troubleshooting on Nitro](#troubleshooting-on-nitro). |
+| Validation errors naming `executor.runtime="nitro-isolated"` | The run sets a network mode, resources, `sandboxIdentity` or `gitProxy` the runtime does not accept. | See [What the runtime accepts](#what-the-runtime-accepts); Nitro-specific run failures are under [Troubleshooting on Nitro](#troubleshooting-on-nitro). |
 
 ## Testing the executor against a real cluster
 

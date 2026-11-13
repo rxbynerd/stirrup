@@ -106,7 +106,9 @@ The provisioning sequence
    Sandbox not Ready, and the run fails only at the 5-minute ceiling
    with `sandbox <ns>/<name> not ready: <wait error>`. The backing Pod's
    labels and RuntimeClass are not compared with what was submitted;
-   they rest on the controller and the GKE admission policy.
+   they rest on the controller and the GKE admission policy. The `k8s`
+   executor's wait for `exec` to reach a Ready Pod (see
+   [Readiness](k8s.md#readiness)) is not applied here.
 4. **Resolve the backing Pod and bind.** The Pod name is read from the
    Sandbox status; on the cold-create path it equals the Sandbox name.
    Command execution and file I/O then ride the shared `pods/exec` core.

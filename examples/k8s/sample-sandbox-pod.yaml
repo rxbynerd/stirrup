@@ -167,7 +167,7 @@ spec:
       #   cpus     -> requests.cpu AND limits.cpu (whole cores "2", fractional
       #               cores milli "500m")
       #   memoryMB -> requests.memory AND limits.memory (Mi)
-      #   diskMB   -> limits.ephemeral-storage ONLY (Mi); no request
+      #   diskMB   -> requests.ephemeral-storage AND limits.ephemeral-storage (Mi)
       #   pids     -> logged and IGNORED (per-Pod PID limits are a kubelet flag,
       #               not a container resource field)
       # The values shown are illustrative of a resources block with cpus=2,
@@ -176,6 +176,7 @@ spec:
         requests:
           cpu: "2"
           memory: 2048Mi
+          ephemeral-storage: 4096Mi
         limits:
           cpu: "2"
           memory: 2048Mi
