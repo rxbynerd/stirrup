@@ -31,9 +31,20 @@ spec:
       # The ServiceAccount refuses a default token automount; the harness needs
       # one to reach the API server.
       automountServiceAccountToken: true
+      # namespace.yaml enforces the restricted Pod Security Standard, which
+      # also applies to this Pod. 65532 is the image's nonroot user.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: stirrup
           image: ghcr.io/rxbynerd/stirrup:main
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
           args:
             - harness
             - --config
