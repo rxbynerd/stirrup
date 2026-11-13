@@ -36,6 +36,7 @@ var fastK8sTiming = k8sTiming{
 	readyTimeout:    200 * time.Millisecond,
 	pollPeriod:      time.Millisecond,
 	teardownTimeout: 100 * time.Millisecond,
+	policyTimeout:   100 * time.Millisecond,
 }
 
 // syncBuffer is a goroutine-safe log sink.

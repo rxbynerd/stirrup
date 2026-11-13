@@ -321,6 +321,48 @@ func TestPodTeardown_ReturnsPolicyDeleteFailure(t *testing.T) {
 	must.Contains(logs.String(), "runId="+testK8sRunID)
 }
 
+func TestPodTeardown_RetriesTransientPolicyDeleteFailure(t *testing.T) {
+	must := require.New(t)
+	cs := fake.NewClientset(readyPod("uid-1"), testPolicy())
+	failures := 0
+	cs.PrependReactor("delete", "networkpolicies", func(clienttesting.Action) (bool, runtime.Object, error) {
+		if failures == 0 {
+			failures++
+			return true, nil, apierrors.NewServiceUnavailable("etcd leader election")
+		}
+		return false, nil, nil
+	})
+
+	logger, _ := testLogger()
+	must.NoError(testTeardown(cs, "uid-1", logger).run())
+	must.Equal(2, countVerb(cs, "delete", "networkpolicies"))
+	must.False(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(testK8sPodName)))
+}
+
+func TestPodTeardown_PolicyDeleteDenialFailsAtOnce(t *testing.T) {
+	for name, denial := range map[string]error{
+		"forbidden":    apierrors.NewForbidden(networkPoliciesResource.GroupResource(), "x", errors.New("denied by RBAC")),
+		"unauthorized": apierrors.NewUnauthorized("token expired"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			must := require.New(t)
+			cs := fake.NewClientset(readyPod("uid-1"), testPolicy())
+			failVerb(cs, "delete", "networkpolicies", denial)
+
+			logger, _ := testLogger()
+			td := testTeardown(cs, "uid-1", logger)
+			td.timing.policyTimeout = 10 * time.Second
+			start := time.Now()
+			err := td.run()
+
+			must.ErrorIs(err, denial)
+			must.ErrorContains(err, "retained egress NetworkPolicy")
+			must.Equal(1, countVerb(cs, "delete", "networkpolicies"))
+			must.Less(time.Since(start), 5*time.Second)
+		})
+	}
+}
+
 func TestPodTeardown_ReconcileFailedCreate(t *testing.T) {
 	policyName := networkPolicyName(testK8sPodName)
 	ours := podLabels(testK8sPodName, testK8sRunID)

@@ -22,9 +22,11 @@ type k8sTiming struct {
 	readyTimeout time.Duration
 	pollPeriod   time.Duration
 	// teardownTimeout bounds the Pod delete plus the wait for its
-	// termination; the NetworkPolicy delete that follows gets its own
-	// k8sAPITimeout.
+	// termination.
 	teardownTimeout time.Duration
+	// policyTimeout bounds the NetworkPolicy delete that follows, retries
+	// included; zero means k8sAPITimeout.
+	policyTimeout time.Duration
 	// progressPeriod spaces the readiness wait's progress log lines; zero
 	// disables them.
 	progressPeriod time.Duration
@@ -34,6 +36,7 @@ var defaultK8sTiming = k8sTiming{
 	readyTimeout:    k8sReadyTimeout,
 	pollPeriod:      k8sReadyPollPeriod,
 	teardownTimeout: k8sCloseTimeout,
+	policyTimeout:   k8sAPITimeout,
 	progressPeriod:  k8sReadyProgressPeriod,
 }
 
@@ -202,6 +205,7 @@ func (t podTeardown) egress() sandboxEgress {
 		policyName: t.policyName,
 		runID:      t.runID,
 		logger:     t.logger,
+		timing:     t.timing,
 	}
 }
 
@@ -218,21 +222,38 @@ type sandboxEgress struct {
 	policyName string
 	runID      string
 	logger     *slog.Logger
+	timing     k8sTiming
 }
 
-// removePolicy makes one delete attempt under k8sAPITimeout; NotFound counts
-// as success and a failure is reported through retain.
+// removePolicy deletes the policy, retrying transient failures within
+// timing.policyTimeout; NotFound counts as success. Forbidden and
+// Unauthorized stop at once, and every failure is reported through retain.
 func (e sandboxEgress) removePolicy() error {
 	if e.policyName == "" {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), k8sAPITimeout)
-	defer cancel()
-	err := e.clientset.NetworkingV1().NetworkPolicies(e.namespace).Delete(ctx, e.policyName, metav1.DeleteOptions{})
-	if err == nil || apierrors.IsNotFound(err) {
-		return nil
+	timeout := e.timing.policyTimeout
+	if timeout <= 0 {
+		timeout = k8sAPITimeout
 	}
-	return e.retain(fmt.Errorf("delete egress NetworkPolicy: %w", boundClusterErr(err)))
+	pollPeriod := e.timing.pollPeriod
+	if pollPeriod <= 0 {
+		pollPeriod = k8sReadyPollPeriod
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	for {
+		err := e.clientset.NetworkingV1().NetworkPolicies(e.namespace).Delete(ctx, e.policyName, metav1.DeleteOptions{})
+		switch {
+		case err == nil, apierrors.IsNotFound(err):
+			return nil
+		case apierrors.IsForbidden(err), apierrors.IsUnauthorized(err):
+			return e.retain(fmt.Errorf("delete egress NetworkPolicy: %w", boundClusterErr(err)))
+		}
+		if !sleepCtx(ctx, pollPeriod) {
+			return e.retain(fmt.Errorf("delete egress NetworkPolicy: %w (gave up within the %s bound)", boundClusterErr(err), timeout))
+		}
+	}
 }
 
 // retain logs a warning and returns an error naming the retained policy.

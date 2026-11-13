@@ -353,6 +353,7 @@ func (e *AgentSandboxExecutor) egress() sandboxEgress {
 		policyName: e.networkPolicyName,
 		runID:      e.runID,
 		logger:     e.logger,
+		timing:     e.effectiveTiming(),
 	}
 }
 
