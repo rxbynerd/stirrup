@@ -80,6 +80,14 @@ func readyPod(uid k8stypes.UID) *corev1.Pod {
 	}
 }
 
+// unselectedPod is a Pod under testK8sPodName that the egress policy does not
+// select.
+func unselectedPod(uid k8stypes.UID) *corev1.Pod {
+	pod := readyPod(uid)
+	pod.Labels = map[string]string{"app": "other"}
+	return pod
+}
+
 // testPolicy returns the deny-all egress policy for testK8sPodName.
 func testPolicy() *networkingv1.NetworkPolicy {
 	return denyAllEgressPolicy(testK8sNamespace, testK8sPodName, testK8sRunID)

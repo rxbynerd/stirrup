@@ -303,7 +303,7 @@ func TestPodTeardown_RetriesTransientDeleteFailure(t *testing.T) {
 func TestPodTeardown_TreatsReplacedPodAsTerminated(t *testing.T) {
 	t.Run("uid precondition conflict", func(t *testing.T) {
 		must := require.New(t)
-		cs := fake.NewClientset(readyPod("uid-2"), testPolicy())
+		cs := fake.NewClientset(unselectedPod("uid-2"), testPolicy())
 		failVerb(cs, "delete", "pods", apierrors.NewConflict(podsResource.GroupResource(), testK8sPodName, errors.New("precondition failed: UID mismatch")))
 
 		logger, _ := testLogger()
@@ -316,7 +316,7 @@ func TestPodTeardown_TreatsReplacedPodAsTerminated(t *testing.T) {
 		must := require.New(t)
 		cs := fake.NewClientset(readyPod("uid-1"), testPolicy())
 		cs.PrependReactor("delete", "pods", func(clienttesting.Action) (bool, runtime.Object, error) {
-			must.NoError(cs.Tracker().Update(podsResource, readyPod("uid-2"), testK8sNamespace))
+			must.NoError(cs.Tracker().Update(podsResource, unselectedPod("uid-2"), testK8sNamespace))
 			return true, nil, nil
 		})
 
@@ -324,6 +324,20 @@ func TestPodTeardown_TreatsReplacedPodAsTerminated(t *testing.T) {
 		must.NoError(testTeardown(cs, "uid-1", logger).run())
 		must.False(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(testK8sPodName)))
 	})
+}
+
+func TestPodTeardown_RetainsPolicyForReplacementItSelects(t *testing.T) {
+	must := require.New(t)
+	cs := fake.NewClientset(readyPod("uid-2"), testPolicy())
+	failVerb(cs, "delete", "pods", apierrors.NewConflict(podsResource.GroupResource(), testK8sPodName, errors.New("precondition failed: UID mismatch")))
+
+	logger, _ := testLogger()
+	err := testTeardown(cs, "uid-1", logger).run()
+
+	must.ErrorContains(err, "pod termination not confirmed")
+	must.ErrorContains(err, "retained egress NetworkPolicy")
+	must.True(trackerHas(t, cs, podsResource, testK8sPodName), "another run's pod was deleted")
+	must.True(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(testK8sPodName)))
 }
 
 func TestPodTeardown_PodAlreadyGoneIsIdempotent(t *testing.T) {

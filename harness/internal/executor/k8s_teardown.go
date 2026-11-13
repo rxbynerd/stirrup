@@ -137,8 +137,10 @@ func (t podTeardown) terminatePod(ctx context.Context) error {
 }
 
 // waitForTermination polls until the Pod is NotFound or its name carries a
-// different UID. Forbidden and Unauthorized stop at once; other poll errors
-// are retried until ctx ends.
+// different UID. A replacement that still carries the policy's selector
+// label is not accepted, because removing the policy would unconfine it.
+// Forbidden and Unauthorized stop at once; other poll errors are retried
+// until ctx ends.
 func (t podTeardown) waitForTermination(ctx context.Context) error {
 	var lastErr error
 	for {
@@ -150,7 +152,7 @@ func (t podTeardown) waitForTermination(ctx context.Context) error {
 			lastErr = err
 		case pod == nil:
 			return nil
-		case t.podUID != "" && pod.UID != t.podUID:
+		case t.podUID != "" && pod.UID != t.podUID && pod.Labels[k8sPodNameLabel] != t.podName:
 			return nil
 		default:
 			lastErr = nil
