@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	authorizationv1 "k8s.io/api/authorization/v1"
+	corev1 "k8s.io/api/core/v1"
 	nodev1 "k8s.io/api/node/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -27,15 +28,14 @@ import (
 
 const probeTestNamespace = "stirrup-sandbox"
 
-// accessClient returns a fake clientset whose access reviews allow every
-// permission except those named (in k8sAccess.String form).
-func accessClient(denied ...string) *fake.Clientset {
+// reviewReactor answers access reviews: every permission is allowed except
+// those named (in k8sAccess.String form).
+func reviewReactor(denied ...string) k8stesting.ReactionFunc {
 	deny := map[string]bool{}
 	for _, d := range denied {
 		deny[d] = true
 	}
-	kube := fake.NewClientset()
-	kube.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+	return func(action k8stesting.Action) (bool, runtime.Object, error) {
 		review := action.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
 		attrs := review.Spec.ResourceAttributes
 		access := k8sAccess{group: attrs.Group, resource: attrs.Resource, subresource: attrs.Subresource, verb: attrs.Verb}
@@ -44,7 +44,14 @@ func accessClient(denied ...string) *fake.Clientset {
 			review.Status.Reason = "no RBAC policy matched"
 		}
 		return true, review, nil
-	})
+	}
+}
+
+// accessClient returns a fake clientset holding the probe namespace whose
+// access reviews allow every permission except those named.
+func accessClient(denied ...string) *fake.Clientset {
+	kube := fake.NewClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: probeTestNamespace}})
+	kube.PrependReactor("create", "selfsubjectaccessreviews", reviewReactor(denied...))
 	return kube
 }
 
@@ -57,20 +64,43 @@ func serveSandboxAPI(kube *fake.Clientset) {
 
 func addRuntimeClass(t *testing.T, kube *fake.Clientset, name string) {
 	t.Helper()
+	must := require.New(t)
 	_, err := kube.NodeV1().RuntimeClasses().Create(context.Background(), &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: name}}, metav1.CreateOptions{})
-	require.NoError(t, err)
+	must.NoError(err)
 }
 
-// mutatingActions lists recorded actions other than reads and access reviews.
-func mutatingActions(kube *fake.Clientset) []string {
+// refuseRead makes reads of the resource return err.
+func refuseRead(kube *fake.Clientset, resource string, err error) {
+	kube.PrependReactor("get", resource, func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, err
+	})
+}
+
+// unexpectedActions lists recorded actions other than access reviews and the
+// reads the probe is allowed to make: the namespace, the RuntimeClass and API
+// discovery.
+func unexpectedActions(kube *fake.Clientset) []string {
 	var out []string
 	for _, a := range kube.Actions() {
-		if a.GetVerb() == "get" || a.GetResource().Resource == "selfsubjectaccessreviews" {
-			continue
+		resource := a.GetResource().Resource
+		switch {
+		case a.GetVerb() == "create" && resource == "selfsubjectaccessreviews":
+		case a.GetVerb() == "get" && (resource == "namespaces" || resource == "runtimeclasses" || resource == "resource"):
+		default:
+			out = append(out, a.GetVerb()+" "+resource)
 		}
-		out = append(out, a.GetVerb()+" "+a.GetResource().Resource)
 	}
 	return out
+}
+
+func probeErrorKinds(t *testing.T, err error) []K8sProbeKind {
+	t.Helper()
+	must := require.New(t)
+	var probeErr *K8sProbeError
+	must.ErrorAs(err, &probeErr)
+	kinds := append([]K8sProbeKind(nil), probeErr.Kinds...)
+	sort.Slice(kinds, func(i, j int) bool { return kinds[i] < kinds[j] })
+	return kinds
 }
 
 func TestProbeK8sAccess_AllGrantedReportsOK(t *testing.T) {
@@ -83,12 +113,12 @@ func TestProbeK8sAccess_AllGrantedReportsOK(t *testing.T) {
 			addRuntimeClass(t, kube, "gvisor")
 			kube.ClearActions()
 
-			detail, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: executorType, Namespace: probeTestNamespace})
+			detail, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: executorType, Namespace: probeTestNamespace, RuntimeClassName: "gvisor"})
 
 			must.NoError(err)
 			check.Contains(detail, "6 required permissions granted")
-			check.Contains(detail, probeTestNamespace)
-			check.Empty(mutatingActions(kube), "the probe must only review access and read")
+			check.Contains(detail, `namespace "stirrup-sandbox" exists`)
+			check.Empty(unexpectedActions(kube), "the probe must only review access and make the documented reads")
 		})
 	}
 }
@@ -156,6 +186,7 @@ func TestProbeK8sAccess_DeniedPermissionFailsNamingVerbResourceAndNamespace(t *t
 			check := assert.New(t)
 			kube := accessClient(tt.denied...)
 			serveSandboxAPI(kube)
+			addRuntimeClass(t, kube, "gvisor")
 
 			_, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: tt.executorType, Namespace: probeTestNamespace})
 
@@ -164,23 +195,30 @@ func TestProbeK8sAccess_DeniedPermissionFailsNamingVerbResourceAndNamespace(t *t
 				check.Contains(err.Error(), want)
 			}
 			check.Contains(err.Error(), "no RBAC policy matched")
+			check.Equal([]K8sProbeKind{K8sProbePermissionDenied}, probeErrorKinds(t, err))
 		})
 	}
 }
 
-func TestProbeK8sAccess_PodCreateDoesNotSatisfyK8sSandbox(t *testing.T) {
+func TestProbeK8sAccess_EvaluationErrorReachesTheDenial(t *testing.T) {
 	must := require.New(t)
-	kube := accessClient(
-		"create sandboxes.agents.x-k8s.io", "get sandboxes.agents.x-k8s.io", "delete sandboxes.agents.x-k8s.io",
-	)
-	serveSandboxAPI(kube)
+	check := assert.New(t)
+	kube := fake.NewClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: probeTestNamespace}})
+	kube.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		review := action.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
+		review.Status.Allowed = false
+		review.Status.EvaluationError = "authorizer unavailable"
+		return true, review, nil
+	})
 
-	_, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s-sandbox", Namespace: probeTestNamespace})
+	_, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace})
 
-	must.ErrorContains(err, "sandboxes.agents.x-k8s.io")
+	must.Error(err)
+	check.Contains(err.Error(), "authorizer unavailable")
+	check.Equal([]K8sProbeKind{K8sProbePermissionDenied}, probeErrorKinds(t, err))
 }
 
-func TestProbeK8sAccess_ReviewCallErrorFails(t *testing.T) {
+func TestProbeK8sAccess_ReviewCallErrorFailsAsAFailedCall(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
 	kube := fake.NewClientset()
@@ -191,19 +229,49 @@ func TestProbeK8sAccess_ReviewCallErrorFails(t *testing.T) {
 	_, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace})
 
 	must.Error(err)
+	check.Contains(err.Error(), `access review for "create pods" in namespace "stirrup-sandbox" failed`)
 	check.Contains(err.Error(), "selfsubjectaccessreviews")
-	check.Contains(err.Error(), `"create pods"`)
+	check.Equal([]K8sProbeKind{K8sProbeReviewFailed}, probeErrorKinds(t, err))
 }
 
-func TestProbeK8sAccess_RuntimeClass(t *testing.T) {
+func TestProbeK8sAccess_UnsupportedTypeFailsWithoutCalls(t *testing.T) {
+	for _, executorType := range []string{"", "container", "local"} {
+		t.Run("type="+executorType, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			kube := accessClient()
+
+			_, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: executorType, Namespace: probeTestNamespace})
+			must.Error(err)
+			check.Contains(err.Error(), "unsupported executor type")
+			check.Empty(kube.Actions())
+
+			_, err = ProbeK8sAccess(context.Background(), K8sProbeConfig{Type: executorType, Namespace: probeTestNamespace})
+			must.Error(err)
+			check.Contains(err.Error(), "unsupported executor type")
+		})
+	}
+}
+
+func TestProbeK8sAccess_ClientBuildFailureIsClassified(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+
+	_, err := ProbeK8sAccess(context.Background(), K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace, Kubeconfig: filepath.Join(t.TempDir(), "missing")})
+
+	must.Error(err)
+	check.Contains(err.Error(), "build kube rest config")
+	check.Equal([]K8sProbeKind{K8sProbeClientBuild}, probeErrorKinds(t, err))
+}
+
+func TestProbeK8sAccess_RuntimeClassOutcomes(t *testing.T) {
 	cfg := K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace, RuntimeClassName: "gvisor"}
 
 	t.Run("existing class is reported", func(t *testing.T) {
 		must := require.New(t)
 		check := assert.New(t)
 		kube := accessClient()
-		_, err := kube.NodeV1().RuntimeClasses().Create(context.Background(), &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: "gvisor"}}, metav1.CreateOptions{})
-		must.NoError(err)
+		addRuntimeClass(t, kube, "gvisor")
 
 		detail, err := probeK8sAccess(context.Background(), kube, cfg)
 
@@ -213,26 +281,47 @@ func TestProbeK8sAccess_RuntimeClass(t *testing.T) {
 
 	t.Run("missing class fails", func(t *testing.T) {
 		must := require.New(t)
+		check := assert.New(t)
 		kube := accessClient()
 
 		_, err := probeK8sAccess(context.Background(), kube, cfg)
 
 		must.ErrorContains(err, `RuntimeClass "gvisor" does not exist`)
+		check.Equal([]K8sProbeKind{K8sProbeRuntimeClassMissing}, probeErrorKinds(t, err))
 	})
 
 	t.Run("forbidden read is reported as not checked", func(t *testing.T) {
 		must := require.New(t)
 		check := assert.New(t)
 		kube := accessClient()
-		kube.PrependReactor("get", "runtimeclasses", func(k8stesting.Action) (bool, runtime.Object, error) {
-			return true, nil, apierrors.NewForbidden(schema.GroupResource{Group: "node.k8s.io", Resource: "runtimeclasses"}, "gvisor", errors.New("denied"))
-		})
+		refuseRead(kube, "runtimeclasses", apierrors.NewForbidden(schema.GroupResource{Group: "node.k8s.io", Resource: "runtimeclasses"}, "gvisor", errors.New("denied")))
 
 		detail, err := probeK8sAccess(context.Background(), kube, cfg)
 
 		must.NoError(err)
 		check.Contains(detail, `RuntimeClass "gvisor" not checked`)
-		check.NotContains(detail, "exists")
+		check.NotContains(detail, `RuntimeClass "gvisor" exists`)
+	})
+
+	t.Run("other read errors are reported as not checked", func(t *testing.T) {
+		for name, readErr := range map[string]error{
+			"server error": apierrors.NewInternalError(errors.New("etcd timeout")),
+			"unauthorized": apierrors.NewUnauthorized("token expired"),
+			"transport":    errors.New("connection reset"),
+		} {
+			t.Run(name, func(t *testing.T) {
+				must := require.New(t)
+				check := assert.New(t)
+				kube := accessClient()
+				refuseRead(kube, "runtimeclasses", readErr)
+
+				detail, err := probeK8sAccess(context.Background(), kube, cfg)
+
+				must.NoError(err)
+				check.Contains(detail, `RuntimeClass "gvisor" not checked`)
+				check.NotContains(detail, `RuntimeClass "gvisor" exists`)
+			})
+		}
 	})
 
 	t.Run("no requested class makes no read", func(t *testing.T) {
@@ -259,48 +348,95 @@ func TestProbeK8sAccess_RuntimeClass(t *testing.T) {
 	})
 }
 
-func TestProbeK8sAccess_SandboxAPIDiscovery(t *testing.T) {
-	cfg := K8sProbeConfig{Type: "k8s-sandbox", Namespace: probeTestNamespace}
-	gvisor := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: "gvisor"}}
+func TestProbeK8sAccess_NamespaceOutcomes(t *testing.T) {
+	cfg := K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace}
 
-	t.Run("an unserved API group fails", func(t *testing.T) {
+	t.Run("missing namespace fails naming it", func(t *testing.T) {
 		must := require.New(t)
-		kube := accessClient()
-		_, err := kube.NodeV1().RuntimeClasses().Create(context.Background(), gvisor, metav1.CreateOptions{})
-		must.NoError(err)
+		check := assert.New(t)
+		kube := fake.NewClientset()
+		kube.PrependReactor("create", "selfsubjectaccessreviews", reviewReactor())
 
-		_, err = probeK8sAccess(context.Background(), kube, cfg)
+		_, err := probeK8sAccess(context.Background(), kube, cfg)
 
-		must.ErrorContains(err, "agents.x-k8s.io/v1alpha1 is not served")
+		must.ErrorContains(err, `namespace "stirrup-sandbox" does not exist`)
+		check.Equal([]K8sProbeKind{K8sProbeNamespaceMissing}, probeErrorKinds(t, err))
 	})
 
-	t.Run("a served group without the sandboxes resource fails", func(t *testing.T) {
-		must := require.New(t)
-		kube := accessClient()
-		_, err := kube.NodeV1().RuntimeClasses().Create(context.Background(), gvisor, metav1.CreateOptions{})
-		must.NoError(err)
-		kube.Discovery().(*fakediscovery.FakeDiscovery).Resources = []*metav1.APIResourceList{{GroupVersion: sandboxGVR.GroupVersion().String()}}
-
-		_, err = probeK8sAccess(context.Background(), kube, cfg)
-
-		must.ErrorContains(err, "not the sandboxes resource")
-	})
-
-	t.Run("a discovery failure is reported as not checked", func(t *testing.T) {
+	t.Run("forbidden read is reported as not checked", func(t *testing.T) {
 		must := require.New(t)
 		check := assert.New(t)
 		kube := accessClient()
-		_, err := kube.NodeV1().RuntimeClasses().Create(context.Background(), gvisor, metav1.CreateOptions{})
-		must.NoError(err)
-		kube.PrependReactor("get", "resource", func(k8stesting.Action) (bool, runtime.Object, error) {
-			return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "resource"}, "", errors.New("denied"))
-		})
+		refuseRead(kube, "namespaces", apierrors.NewForbidden(schema.GroupResource{Resource: "namespaces"}, probeTestNamespace, errors.New("denied")))
 
 		detail, err := probeK8sAccess(context.Background(), kube, cfg)
 
 		must.NoError(err)
-		check.Contains(detail, "Agent Sandbox API agents.x-k8s.io/v1alpha1 not checked")
-		check.NotContains(detail, "served")
+		check.Contains(detail, `namespace "stirrup-sandbox" not checked`)
+		check.NotContains(detail, `namespace "stirrup-sandbox" exists`)
+	})
+
+	t.Run("other read errors are reported as not checked", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		kube := accessClient()
+		refuseRead(kube, "namespaces", apierrors.NewInternalError(errors.New("etcd timeout")))
+
+		detail, err := probeK8sAccess(context.Background(), kube, cfg)
+
+		must.NoError(err)
+		check.Contains(detail, `namespace "stirrup-sandbox" not checked`)
+	})
+}
+
+func TestProbeK8sAccess_SandboxAPIOutcomes(t *testing.T) {
+	cfg := K8sProbeConfig{Type: "k8s-sandbox", Namespace: probeTestNamespace}
+
+	t.Run("an unserved API group fails", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		kube := accessClient()
+		addRuntimeClass(t, kube, "gvisor")
+
+		_, err := probeK8sAccess(context.Background(), kube, cfg)
+
+		must.ErrorContains(err, "agents.x-k8s.io/v1alpha1 is not served")
+		check.Equal([]K8sProbeKind{K8sProbeSandboxAPIMissing}, probeErrorKinds(t, err))
+	})
+
+	t.Run("a served group without the sandboxes resource fails", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		kube := accessClient()
+		addRuntimeClass(t, kube, "gvisor")
+		kube.Discovery().(*fakediscovery.FakeDiscovery).Resources = []*metav1.APIResourceList{{GroupVersion: sandboxGVR.GroupVersion().String()}}
+
+		_, err := probeK8sAccess(context.Background(), kube, cfg)
+
+		must.ErrorContains(err, "not the sandboxes resource")
+		check.Equal([]K8sProbeKind{K8sProbeSandboxAPIMissing}, probeErrorKinds(t, err))
+	})
+
+	t.Run("a refused or failed discovery request is reported as not checked", func(t *testing.T) {
+		for name, readErr := range map[string]error{
+			"forbidden":   apierrors.NewForbidden(schema.GroupResource{Resource: "resource"}, "", errors.New("denied")),
+			"unavailable": apierrors.NewServiceUnavailable("apiserver restarting"),
+			"transport":   errors.New("connection reset"),
+		} {
+			t.Run(name, func(t *testing.T) {
+				must := require.New(t)
+				check := assert.New(t)
+				kube := accessClient()
+				addRuntimeClass(t, kube, "gvisor")
+				refuseRead(kube, "resource", readErr)
+
+				detail, err := probeK8sAccess(context.Background(), kube, cfg)
+
+				must.NoError(err)
+				check.Contains(detail, "Agent Sandbox API agents.x-k8s.io/v1alpha1 not checked")
+				check.NotContains(detail, "served")
+			})
+		}
 	})
 
 	t.Run("a served API is reported", func(t *testing.T) {
@@ -308,14 +444,32 @@ func TestProbeK8sAccess_SandboxAPIDiscovery(t *testing.T) {
 		check := assert.New(t)
 		kube := accessClient()
 		serveSandboxAPI(kube)
-		_, err := kube.NodeV1().RuntimeClasses().Create(context.Background(), gvisor, metav1.CreateOptions{})
-		must.NoError(err)
+		addRuntimeClass(t, kube, "gvisor")
 
 		detail, err := probeK8sAccess(context.Background(), kube, cfg)
 
 		must.NoError(err)
 		check.Contains(detail, "Agent Sandbox API agents.x-k8s.io/v1alpha1 served")
 	})
+}
+
+func TestProbeK8sAccess_SimultaneousFailuresAreAllReported(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	kube := fake.NewClientset()
+	kube.PrependReactor("create", "selfsubjectaccessreviews", reviewReactor("create sandboxes.agents.x-k8s.io"))
+
+	_, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s-sandbox", Namespace: probeTestNamespace})
+
+	must.Error(err)
+	check.Contains(err.Error(), `"create sandboxes.agents.x-k8s.io"`)
+	check.Contains(err.Error(), `namespace "stirrup-sandbox" does not exist`)
+	check.Contains(err.Error(), "is not served")
+	check.Contains(err.Error(), `RuntimeClass "gvisor" does not exist`)
+	check.NotContains(err.Error(), "not checked", "optional notes are dropped when the probe fails")
+	check.Equal([]K8sProbeKind{
+		K8sProbeNamespaceMissing, K8sProbePermissionDenied, K8sProbeRuntimeClassMissing, K8sProbeSandboxAPIMissing,
+	}, probeErrorKinds(t, err))
 }
 
 // referenceRolePermissions flattens the Role in a reference RBAC manifest
@@ -359,17 +513,21 @@ func referenceRolePermissions(t *testing.T, manifest string) map[string]bool {
 
 // TestK8sRequiredAccess_MatchesReferenceRoles pins the probe's permission list
 // to the reference Roles: every probed permission must be granted, and every
-// granted permission the probe does not check must be listed here as
-// documented but unused by the executor.
+// granted permission the probe does not check must be listed here with the
+// reason the executor does not use it.
 func TestK8sRequiredAccess_MatchesReferenceRoles(t *testing.T) {
 	tests := []struct {
 		executorType string
 		manifest     string
-		unprobed     []string
+		unprobed     map[string]string
 	}{
-		{"k8s", "rbac.yaml", []string{"get pods/log"}},
-		{"k8s-sandbox", filepath.Join("agent-sandbox", "rbac-agent-sandbox.yaml"), []string{
-			"list sandboxes.agents.x-k8s.io", "watch sandboxes.agents.x-k8s.io", "get pods",
+		{"k8s", "rbac.yaml", map[string]string{
+			"get pods/log": "the executor reads no Pod logs; granted for operator debugging",
+		}},
+		{"k8s-sandbox", filepath.Join("agent-sandbox", "rbac-agent-sandbox.yaml"), map[string]string{
+			"list sandboxes.agents.x-k8s.io":  "the executor gets and deletes its own Sandbox by name and never lists",
+			"watch sandboxes.agents.x-k8s.io": "readiness is polled with get, not watched",
+			"get pods":                        "the executor never reads the controller-created Pod; it only execs into it",
 		}},
 	}
 	for _, tt := range tests {
@@ -377,17 +535,12 @@ func TestK8sRequiredAccess_MatchesReferenceRoles(t *testing.T) {
 			must := require.New(t)
 			role := referenceRolePermissions(t, tt.manifest)
 
-			probed := map[string]bool{}
-			for _, access := range k8sRequiredAccess(tt.executorType) {
-				probed[access.String()] = true
-				must.Truef(role[access.String()], "the probe checks %q but %s does not grant it", access, tt.manifest)
-			}
-
 			want := map[string]bool{}
-			for k := range probed {
-				want[k] = true
+			for _, access := range k8sRequiredAccess(tt.executorType) {
+				must.Truef(role[access.String()], "the probe checks %q but %s does not grant it", access, tt.manifest)
+				want[access.String()] = true
 			}
-			for _, k := range tt.unprobed {
+			for k := range tt.unprobed {
 				want[k] = true
 			}
 			must.Equal(want, role, "%s grants permissions that are neither probed nor listed as unprobed", tt.manifest)

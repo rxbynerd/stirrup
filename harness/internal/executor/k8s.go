@@ -178,10 +178,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev
 	// which may be plain runc with no sandbox isolation. Warn so the
 	// opt-out is visible.
 	if cfg.RuntimeClassName == "" {
-		logger.Warn(
-			"k8s executor running with the cluster-default RuntimeClass; sandbox isolation is not guaranteed — set executor.runtime (e.g. gvisor) for a sandboxed RuntimeClass",
-			"namespace", cfg.Namespace,
-		)
+		logger.Warn(K8sDefaultRuntimeClassWarning, "namespace", cfg.Namespace)
 	}
 
 	podName, err := generatePodName()
