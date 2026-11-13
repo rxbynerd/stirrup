@@ -1,0 +1,149 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "name": "stirrup-0123456789ab",
+    "namespace": "stirrup-sandbox",
+    "uid": "6f1c0b0e-3a51-4f7e-9d0a-2b7c8e1f4a90",
+    "resourceVersion": "184213",
+    "generation": 1,
+    "creationTimestamp": "2026-11-11T23:00:12Z",
+    "labels": {
+      "stirrup-sandbox": "true",
+      "stirrup.dev/pod": "stirrup-0123456789ab",
+      "stirrup.dev/run-id": "run-1",
+      "topology.kubernetes.io/region": "us-east-1",
+      "topology.kubernetes.io/zone": "us-east-1b"
+    },
+    "annotations": {
+      "sandbox.amazonaws.com/log-bandwidth": "2M",
+      "sandbox.amazonaws.com/network-isolated": "true"
+    }
+  },
+  "spec": {
+    "volumes": [
+      {
+        "name": "workspace",
+        "emptyDir": {}
+      }
+    ],
+    "containers": [
+      {
+        "name": "agent",
+        "image": "public.ecr.aws/docker/library/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4",
+        "command": [
+          "/bin/sh",
+          "-c",
+          "sleep infinity"
+        ],
+        "workingDir": "/workspace",
+        "resources": {
+          "limits": {
+            "cpu": "1",
+            "memory": "1Gi"
+          },
+          "requests": {
+            "cpu": "1",
+            "memory": "1Gi"
+          }
+        },
+        "volumeMounts": [
+          {
+            "name": "workspace",
+            "mountPath": "/workspace"
+          }
+        ],
+        "terminationMessagePath": "/dev/termination-log",
+        "terminationMessagePolicy": "File",
+        "imagePullPolicy": "IfNotPresent",
+        "securityContext": {
+          "capabilities": {
+            "drop": [
+              "ALL"
+            ]
+          },
+          "runAsUser": 65532,
+          "runAsNonRoot": true,
+          "allowPrivilegeEscalation": false,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        }
+      }
+    ],
+    "restartPolicy": "Never",
+    "terminationGracePeriodSeconds": 1,
+    "activeDeadlineSeconds": 600,
+    "dnsPolicy": "ClusterFirst",
+    "nodeSelector": {
+      "eks.amazonaws.com/nitro-sandbox": "true",
+      "kubernetes.io/arch": "amd64"
+    },
+    "serviceAccountName": "default",
+    "serviceAccount": "default",
+    "automountServiceAccountToken": false,
+    "nodeName": "i-0a0a2ea59026805e3",
+    "securityContext": {
+      "fsGroup": 65532
+    },
+    "schedulerName": "default-scheduler",
+    "tolerations": [
+      {
+        "key": "node.kubernetes.io/not-ready",
+        "operator": "Exists",
+        "effect": "NoExecute",
+        "tolerationSeconds": 300
+      },
+      {
+        "key": "node.kubernetes.io/unreachable",
+        "operator": "Exists",
+        "effect": "NoExecute",
+        "tolerationSeconds": 300
+      }
+    ],
+    "priority": 0,
+    "enableServiceLinks": true,
+    "preemptionPolicy": "PreemptLowerPriority",
+    "runtimeClassName": "isolated-sandbox",
+    "overhead": {
+      "eks.amazonaws.com/nitro-sandbox": "1",
+      "memory": "256Mi"
+    }
+  },
+  "status": {
+    "phase": "Running",
+    "conditions": [
+      {
+        "type": "PodReadyToStartContainers",
+        "status": "True",
+        "observedGeneration": 1,
+        "lastTransitionTime": "2026-11-11T23:00:18Z"
+      },
+      {
+        "type": "Ready",
+        "status": "True",
+        "observedGeneration": 1,
+        "lastTransitionTime": "2026-11-11T23:00:20Z"
+      }
+    ],
+    "podIP": "10.87.18.1",
+    "containerStatuses": [
+      {
+        "name": "agent",
+        "ready": true,
+        "restartCount": 0,
+        "image": "public.ecr.aws/docker/library/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4",
+        "imageID": "public.ecr.aws/docker/library/busybox@sha256:66a6306db78bf2dbf3487f293aa8d6990d8e506fdffab9cc43fe422becf886e4",
+        "state": {
+          "running": {
+            "startedAt": "2026-11-11T23:00:20Z"
+          }
+        },
+        "allocatedResources": {
+          "eks.amazonaws.com/nitro-sandbox": "1",
+          "memory": "1280Mi"
+        }
+      }
+    ]
+  }
+}

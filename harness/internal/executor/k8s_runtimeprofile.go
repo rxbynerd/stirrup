@@ -22,6 +22,10 @@ type k8sRuntimeProfile struct {
 	podAnnotations map[string]string
 	// noNetworkAnnotations are added when network.mode is "none".
 	noNetworkAnnotations map[string]string
+	// strictAdmission adds the whole-Pod admission checks
+	// (strictAdmissionChecks) at creation and during the readiness wait,
+	// and reports an admission failure as a runtime diagnostic event.
+	strictAdmission bool
 	// verify runs guest diagnostics after readiness and returns what the
 	// guest reported; nil means the runtime has none. A failed check is a
 	// *k8sRuntimeDiagnosticError.
@@ -43,6 +47,7 @@ var k8sRuntimeProfiles = map[string]k8sRuntimeProfile{
 		// path results leave an offline guest by.
 		podAnnotations:       map[string]string{"sandbox.amazonaws.com/log-bandwidth": "20M"},
 		noNetworkAnnotations: map[string]string{"sandbox.amazonaws.com/network-isolated": "true"},
+		strictAdmission:      true,
 		verify:               verifyNitroIsolatedGuest,
 	},
 }
@@ -106,6 +111,7 @@ const (
 	// reports (for example "m5d.enclave").
 	nitroGuestDMISuffix = ".enclave"
 
+	diagnosticCheckAdmission  = "admitted_pod"
 	diagnosticCheckExec       = "diagnostic_exec"
 	diagnosticCheckOutput     = "diagnostic_output"
 	diagnosticCheckDMI        = "dmi_product_name"
