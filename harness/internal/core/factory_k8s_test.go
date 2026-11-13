@@ -59,9 +59,10 @@ func TestBuildExecutor_K8sPassesRuntimeSecurityAndLimits(t *testing.T) {
 	must.False(got.SandboxIdentityToken)
 }
 
-// TestBuildLoopWithTransport_ExtraEnvOnlyWithSandboxIdentity pins the assumption the
-// k8s executor makes when it treats any ExtraEnv as sandbox identity: the
-// factory fills ExtraEnv only when executor.sandboxIdentity is configured.
+// TestBuildLoopWithTransport_ExtraEnvOnlyWithSandboxIdentity pins the
+// assumption the k8s executor makes when it treats any ExtraEnv as sandbox
+// identity: the factory fills ExtraEnv only when executor.sandboxIdentity is
+// configured.
 func TestBuildLoopWithTransport_ExtraEnvOnlyWithSandboxIdentity(t *testing.T) {
 	captureExtraEnv := func(t *testing.T) *[][]executor.EnvPair {
 		t.Helper()

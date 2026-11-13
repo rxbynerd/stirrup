@@ -139,8 +139,8 @@ type K8sExecutor struct {
 
 // NewK8sExecutor builds a kubernetes clientset, installs the egress
 // NetworkPolicy, creates a sandbox Pod, checks what admission did to it,
-// waits for it to become Ready, and runs the runtime profile's runtime
-// diagnostics. The policy is installed BEFORE the Pod so the
+// waits for it to become Ready, and runs the runtime diagnostics of its
+// runtime profile. The policy is installed BEFORE the Pod so the
 // Pod never runs with unrestricted egress. Any failure after the Pod create
 // tears down through the same contract as Close.
 func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, error) {
