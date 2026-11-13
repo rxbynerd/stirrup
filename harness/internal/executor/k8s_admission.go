@@ -87,10 +87,18 @@ type admissionMismatchError struct {
 	mismatches []admissionMismatch
 }
 
+// admissionMismatchesShown bounds how many mismatches an admission error
+// renders; the rest are counted.
+const admissionMismatchesShown = 10
+
 func (e *admissionMismatchError) Error() string {
-	parts := make([]string, len(e.mismatches))
-	for i, m := range e.mismatches {
+	shown := e.mismatches[:min(len(e.mismatches), admissionMismatchesShown)]
+	parts := make([]string, len(shown), len(shown)+1)
+	for i, m := range shown {
 		parts[i] = fmt.Sprintf("%s: expected %s, observed %s", m.field, m.expected, clusterText(m.observed))
+	}
+	if rest := len(e.mismatches) - len(shown); rest > 0 {
+		parts = append(parts, fmt.Sprintf("and %d more (%d mismatches)", rest, len(e.mismatches)))
 	}
 	return fmt.Sprintf("%s: %s", e.prefix, strings.Join(parts, "; "))
 }

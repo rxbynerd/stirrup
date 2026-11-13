@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -243,6 +244,22 @@ func TestPodAdmission_StrictBoundsObservedValues(t *testing.T) {
 	must.Error(err)
 	must.NotContains(err.Error(), "\n")
 	must.Less(len(err.Error()), 3*k8sClusterTextMax+300)
+}
+
+func TestPodAdmission_StrictBoundsTheNumberOfMismatchesShown(t *testing.T) {
+	must := require.New(t)
+	profile := k8sRuntimeProfiles["nitro-isolated"]
+	submitted, admitted := syntheticAdmittedNitroPod()
+	for i := range 5000 {
+		admitted.Annotations[fmt.Sprintf("sandbox.amazonaws.com/k%05d", i)] = "x"
+	}
+
+	err := newPodAdmission(submitted, admitted, profile).checkCreate()
+
+	must.ErrorContains(err, "metadata.annotations[sandbox.amazonaws.com/k00009]")
+	must.NotContains(err.Error(), "sandbox.amazonaws.com/k00010")
+	must.ErrorContains(err, "; and 4990 more (5000 mismatches)")
+	must.Less(len(err.Error()), 20*k8sClusterTextMax)
 }
 
 func TestPodAdmission_BaseProfileIgnoresStrictFields(t *testing.T) {
