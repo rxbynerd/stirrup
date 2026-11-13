@@ -2067,9 +2067,11 @@ harness received it) or expired, the harness sends another
 token instead. That request counts toward the eight and waits up to 60
 seconds inside the run's deadline. A 15-minute token reaches its
 refresh point 12 minutes after receipt, so only tokens shorter than
-about 6 minutes can reach it during a 5-minute startup. A failed
-re-exchange, or a fresh token that has already expired, fails the run's
-construction and tears the sandbox down (on `k8s`, under the
+about 6 minutes can reach it during a 5-minute startup. Only a fresh
+token that has already expired is refused; one that expires seconds
+later is delivered, and the refresher then asks for another within seconds. A
+failed re-exchange, or a fresh token that has already expired, fails the
+run's construction and tears the sandbox down (on `k8s`, under the
 [teardown rules](executors/k8s.md#teardown), which can retain its egress
 policy). The sandbox's environment variable keeps the first token,
 which may already be past its refresh point; only the file holds the
