@@ -76,9 +76,9 @@ func (t podTeardown) reconcileAmbiguousCreate(submitted map[string]string) error
 	ctx, cancel := context.WithTimeout(context.Background(), t.timing.teardownTimeout)
 	defer cancel()
 
-	pod, err := t.getPod(ctx)
+	pod, err := t.lookUpPod(ctx)
 	if err != nil {
-		return t.retain(fmt.Errorf("look up pod after an ambiguous create: %w", boundClusterErr(err)))
+		return t.retain(fmt.Errorf("look up pod after an ambiguous create: %w", err))
 	}
 	if pod == nil {
 		return t.removePolicy()
@@ -144,6 +144,20 @@ func (t podTeardown) waitForTermination(ctx context.Context) error {
 				return fmt.Errorf("pod termination not confirmed within %s: %w", t.timing.teardownTimeout, boundClusterErr(lastErr))
 			}
 			return fmt.Errorf("pod termination not confirmed within %s", t.timing.teardownTimeout)
+		}
+	}
+}
+
+// lookUpPod is getPod retrying transient errors until ctx ends; Forbidden and
+// Unauthorized stop at once.
+func (t podTeardown) lookUpPod(ctx context.Context) (*corev1.Pod, error) {
+	for {
+		pod, err := t.getPod(ctx)
+		if err == nil || apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
+			return pod, boundClusterErr(err)
+		}
+		if !sleepCtx(ctx, t.timing.pollPeriod) {
+			return nil, boundClusterErr(err)
 		}
 	}
 }

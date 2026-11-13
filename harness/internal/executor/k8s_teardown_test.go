@@ -229,6 +229,24 @@ func TestPodTeardown_ReconcileAmbiguousCreate(t *testing.T) {
 		must.False(trackerHas(t, cs, networkPoliciesResource, policyName))
 	})
 
+	t.Run("lookup retried after a transient error", func(t *testing.T) {
+		must := require.New(t)
+		cs := fake.NewClientset(readyPod("uid-7"), testPolicy())
+		failures := 0
+		cs.PrependReactor("get", "pods", func(clienttesting.Action) (bool, runtime.Object, error) {
+			if failures == 0 {
+				failures++
+				return true, nil, errors.New("connection reset")
+			}
+			return false, nil, nil
+		})
+
+		logger, _ := testLogger()
+		must.NoError(testTeardown(cs, "", logger).reconcileAmbiguousCreate(ours))
+		must.Len(podDeletes(cs), 1)
+		must.False(trackerHas(t, cs, networkPoliciesResource, policyName))
+	})
+
 	t.Run("lookup keeps failing", func(t *testing.T) {
 		must := require.New(t)
 		cs := fake.NewClientset(testPolicy())
