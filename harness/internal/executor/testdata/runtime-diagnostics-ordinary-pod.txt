@@ -1,0 +1,15 @@
+begin /sys/class/dmi/id/product_name
+ kind
+end /sys/class/dmi/id/product_name
+begin /proc/net/dev
+ Inter-|   Receive                                                |  Transmit
+  face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed
+     lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0
+   eth0:     446       5    0    0    0     0          0         0      796      10    0    0    0     0       0          0
+end /proc/net/dev
+begin /proc/net/route
+ Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask		MTU	Window	IRTT                                                       
+ eth0	00000000	0100F40A	0003	0	0	0	00000000	0	0	0                                                                               
+ eth0	0000F40A	0100F40A	0003	0	0	0	00FFFFFF	0	0	0                                                                               
+ eth0	0100F40A	00000000	0005	0	0	0	FFFFFFFF	0	0	0                                                                               
+end /proc/net/route
