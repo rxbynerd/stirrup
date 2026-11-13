@@ -384,11 +384,11 @@ A mismatch fails the run, emits `sandbox_runtime_diagnostic_failed` with
 annotation and platform-mark mismatches, together with the first
 differing spec field, each with expected and observed values, scrubbed
 and cut to 256 characters. It shows at most the first ten mismatches,
-followed by `and N more` for the rest. A container list is shown by
-container names, and an environment difference names the variable and
-says whether its value or its source changed, never the value. A
-passing check emits no
-event; the `sandbox_runtime_diagnostic_passed` event after the runtime
+followed by `and N more (M mismatches)` with the total. A container
+list is shown by container names, and an environment difference names
+the variable and says whether its value or its source changed, never
+the value. A passing check emits no event; the
+`sandbox_runtime_diagnostic_passed` event after the runtime
 diagnostics implies it. A create error, such as a quota rejection or a
 missing RuntimeClass, is an ordinary create failure and emits no event.
 
@@ -2075,7 +2075,7 @@ defaulting to the kind-friendly values when a variable is unset:
 | `STIRRUP_TEST_NAMESPACE` | `default` | Sandbox namespace (use `stirrup-sandbox` for the restricted-PSS path). |
 | `STIRRUP_TEST_RUNTIME_CLASS` | *(empty)* | `executor.runtime` value for the generic tests (`gvisor` on GKE Sandbox — a no-RuntimeClass Pod is unschedulable on a fully tainted cluster). Runtime values equal RuntimeClass names except `nitro-isolated`, which the generic tests do not support; use `STIRRUP_TEST_NITRO_ISOLATED`. |
 | `STIRRUP_TEST_RUNTIME_CLASSES` | `,runc,gvisor` | Comma-separated `executor.runtime` values for `TestK8sRuntimeClass_Admitted` (e.g. `gvisor` alone on GKE). |
-| `STIRRUP_TEST_NITRO_ISOLATED` | *(unset → skip)* | Set to run `TestK8sNitroIsolated_EndToEnd` on an EKS cluster with Nitro Sandboxes, pinned to `m5d.xlarge`: the Pod passes the whole-Pod admission check and the runtime diagnostics, then the group runs the generic exec, timeout, process-tree kill, output-cap, file round-trip, writable-workspace and teardown checks, probes for a guest network with `wget` (an image without `wget` fails the probe), and logs the workspace capacity. Once the Pod is constructed, the subtests share a fresh context sized from the sum of their timeouts (including `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT`), and the Pod's lifetime is the readiness ceiling plus that sum; the group logs the budget when it starts. It skips everywhere else; for whether it has run on EKS see [Status](#status). |
+| `STIRRUP_TEST_NITRO_ISOLATED` | *(unset → skip)* | Set to run `TestK8sNitroIsolated_EndToEnd` on an EKS cluster with Nitro Sandboxes, pinned to `m5d.xlarge`: the Pod passes the whole-Pod admission check and the runtime diagnostics, then the group runs the generic exec, timeout, process-tree kill, output-cap, file round-trip, writable-workspace and teardown checks, probes for a guest network with `wget` (an image without `wget` fails the probe), and logs the workspace capacity. Once the Pod is constructed, the subtests share a fresh context sized from the sum of their timeouts (including `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT`), and the Pod's lifetime is the readiness ceiling plus that sum; the group logs the budget when it starts. With the defaults its bounds add up to about 20 minutes, so run it with `-timeout 30m` as in the example below. It skips everywhere else; for whether it has run on EKS see [Status](#status). |
 | `STIRRUP_TEST_EVIDENCE_DIR` | *(unset → nothing written)* | Directory the Nitro group writes its evidence to: `submitted-pod.json`, `create-response.json` (the Pod as admission returned it), `ready-pod.json` and `workspace-df.txt`; when `Create` fails, its error text goes to `create-error.txt`. The Pod files are the API objects as submitted and as the cluster returned them, with `apiVersion: v1` and `kind: Pod` set and every environment value replaced by a fixed marker. They hold infrastructure identifiers, so review them before sharing or committing them. |
 | `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT` | `30s` | Command timeout for the output-cap case, as a Go duration. A runtime that throttles exec output may need longer. At the platform default `log-bandwidth` of `2M` the `nitro-isolated` probes returned the cap error only with a `90s` timeout (an 11 MiB output took 44 s); the executor submits `20M`, where 11 MiB took 4.48 s, so the default `30s` is expected to be enough (unverified on EKS through the executor). |
 | `STIRRUP_TEST_IMAGE` | `busybox:latest` | Sandbox image (amd64/multi-arch for the Sandbox pool; `curlimages/curl:latest` for the allowlist TLS test). |
