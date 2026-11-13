@@ -23,7 +23,9 @@ func (e *k8sRuntimeDiagnosticError) Unwrap() error { return e.err }
 
 // runK8sRuntimeDiagnostics runs the profile's runtime diagnostics over core's
 // exec path and reports the outcome as a sandbox runtime diagnostic event.
-// A profile without diagnostics passes without an event.
+// A profile without diagnostics passes without an event. A failure while the
+// caller's ctx is done is an interruption, not a runtime problem: it returns
+// the context error and emits no event.
 func runK8sRuntimeDiagnostics(ctx context.Context, runtime string, profile k8sRuntimeProfile, core *podExecCore) error {
 	if profile.diagnose == nil {
 		return nil
@@ -34,6 +36,9 @@ func runK8sRuntimeDiagnostics(ctx context.Context, runtime string, profile k8sRu
 			core.Security.SandboxRuntimeDiagnostic(runtime, true, "", "", observed)
 		}
 		return nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return fmt.Errorf("runtime diagnostics for executor.runtime %q interrupted: %w", runtime, ctxErr)
 	}
 	var diagErr *k8sRuntimeDiagnosticError
 	if !errors.As(err, &diagErr) {
@@ -98,11 +103,11 @@ type guestFile struct {
 	lines   []string
 }
 
-// readGuestFiles reads paths inside the sandbox in one exec bounded by
-// k8sFileIOTimeout. An exec, exit or framing failure is a
+// readGuestFiles reads paths inside the sandbox in one exec bounded by the
+// core's file I/O timeout. An exec, exit or framing failure is a
 // diagnostic_exec or diagnostic_output *k8sRuntimeDiagnosticError.
 func readGuestFiles(ctx context.Context, core *podExecCore, paths ...string) (map[string]guestFile, error) {
-	ctx, cancel := context.WithTimeout(ctx, k8sFileIOTimeout)
+	ctx, cancel := context.WithTimeout(ctx, core.fileIOBound())
 	defer cancel()
 
 	stdout := writeCapBuffer{limit: guestFileDumpOutputLimit}
