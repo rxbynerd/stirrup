@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	utilexec "k8s.io/client-go/util/exec"
+	"k8s.io/utils/ptr"
 )
 
 // procNetDevHeader is the two header lines Linux prints in /proc/net/dev.
@@ -54,14 +55,12 @@ func guestDump(files ...*string) string {
 	return b.String()
 }
 
-func text(s string) *string { return &s }
-
 // isolatedGuestDump is a network-isolated Nitro Sandbox guest: the
 // .enclave product name, only lo and dummy0, and an empty route table.
 var isolatedGuestDump = guestDump(
-	text("m5d.enclave\n"),
-	text(procNetDevHeader+procNetDevLo+procNetDevDummy0),
-	text(procNetRouteHeader),
+	ptr.To("m5d.enclave\n"),
+	ptr.To(procNetDevHeader+procNetDevLo+procNetDevDummy0),
+	ptr.To(procNetRouteHeader),
 )
 
 // fakeDiagnosticsCore returns a core whose exec returns stdout/err and
@@ -132,9 +131,9 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		{
 			name: "networked nitro guest",
 			stdout: guestDump(
-				text("m5d.enclave\n"),
-				text(procNetDevHeader+procNetDevLo+procNetDevDummy0+procNetDevEth0),
-				text(procNetRouteHeader+procNetRouteDflt),
+				ptr.To("m5d.enclave\n"),
+				ptr.To(procNetDevHeader+procNetDevLo+procNetDevDummy0+procNetDevEth0),
+				ptr.To(procNetRouteHeader+procNetRouteDflt),
 			),
 			wantCheck:    "network_interfaces",
 			wantReason:   "network interfaces eth0 beyond the allowed dummy0,lo",
@@ -143,9 +142,9 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		{
 			name: "dmi mismatch on an otherwise isolated guest",
 			stdout: guestDump(
-				text("m5d.xlarge\n"),
-				text(procNetDevHeader+procNetDevLo+procNetDevDummy0),
-				text(procNetRouteHeader),
+				ptr.To("m5d.xlarge\n"),
+				ptr.To(procNetDevHeader+procNetDevLo+procNetDevDummy0),
+				ptr.To(procNetRouteHeader),
 			),
 			wantCheck:    "dmi_product_name",
 			wantReason:   `DMI product name "m5d.xlarge" does not end in ".enclave"`,
@@ -154,9 +153,9 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		{
 			name: "route entry with only allowed interfaces",
 			stdout: guestDump(
-				text("m5d.enclave\n"),
-				text(procNetDevHeader+procNetDevLo+procNetDevDummy0),
-				text(procNetRouteHeader+"dummy0\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n"),
+				ptr.To("m5d.enclave\n"),
+				ptr.To(procNetDevHeader+procNetDevLo+procNetDevDummy0),
+				ptr.To(procNetRouteHeader+"dummy0\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0\n"),
 			),
 			wantCheck:    "route_table",
 			wantReason:   "1 IPv4 route entries (first: dummy0 00000000)",
@@ -166,8 +165,8 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 			name: "missing dmi file",
 			stdout: guestDump(
 				nil,
-				text(procNetDevHeader+procNetDevLo+procNetDevDummy0),
-				text(procNetRouteHeader),
+				ptr.To(procNetDevHeader+procNetDevLo+procNetDevDummy0),
+				ptr.To(procNetRouteHeader),
 			),
 			wantCheck:    "dmi_product_name",
 			wantReason:   "/sys/class/dmi/id/product_name is absent, unreadable or not a regular file",
@@ -176,8 +175,8 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		{
 			name: "missing route table",
 			stdout: guestDump(
-				text("m5d.enclave"),
-				text(procNetDevHeader+procNetDevLo),
+				ptr.To("m5d.enclave"),
+				ptr.To(procNetDevHeader+procNetDevLo),
 				nil,
 			),
 			wantCheck:    "route_table",
@@ -187,9 +186,9 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		{
 			name: "missing interface table",
 			stdout: guestDump(
-				text("m5d.enclave\n"),
+				ptr.To("m5d.enclave\n"),
 				nil,
-				text(procNetRouteHeader),
+				ptr.To(procNetRouteHeader),
 			),
 			wantCheck:    "network_interfaces",
 			wantReason:   "/proc/net/dev is absent, unreadable or not a regular file",
@@ -198,9 +197,9 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		{
 			name: "route table without its header",
 			stdout: guestDump(
-				text("m5d.enclave\n"),
-				text(procNetDevHeader+procNetDevLo),
-				text(procNetRouteDflt),
+				ptr.To("m5d.enclave\n"),
+				ptr.To(procNetDevHeader+procNetDevLo),
+				ptr.To(procNetRouteDflt),
 			),
 			wantCheck:    "route_table",
 			wantReason:   "/proc/net/route does not start with its header line",
@@ -209,9 +208,9 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		{
 			name: "malformed route line",
 			stdout: guestDump(
-				text("m5d.enclave\n"),
-				text(procNetDevHeader+procNetDevLo),
-				text(procNetRouteHeader+"dummy0\n"),
+				ptr.To("m5d.enclave\n"),
+				ptr.To(procNetDevHeader+procNetDevLo),
+				ptr.To(procNetRouteHeader+"dummy0\n"),
 			),
 			wantCheck:    "route_table",
 			wantReason:   `unrecognised /proc/net/route line "dummy0"`,
@@ -220,9 +219,9 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		{
 			name: "interface table with a wrong first header line",
 			stdout: guestDump(
-				text("m5d.enclave\n"),
-				text("Inter|   Receive\n"+strings.SplitAfter(procNetDevHeader, "\n")[1]+procNetDevLo),
-				text(procNetRouteHeader),
+				ptr.To("m5d.enclave\n"),
+				ptr.To("Inter|   Receive\n"+strings.SplitAfter(procNetDevHeader, "\n")[1]+procNetDevLo),
+				ptr.To(procNetRouteHeader),
 			),
 			wantCheck:    "network_interfaces",
 			wantReason:   "/proc/net/dev does not start with its two header lines",
@@ -231,9 +230,9 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		{
 			name: "interface table with a wrong second header line",
 			stdout: guestDump(
-				text("m5d.enclave\n"),
-				text(strings.SplitAfter(procNetDevHeader, "\n")[0]+" face bytes\n"+procNetDevLo),
-				text(procNetRouteHeader),
+				ptr.To("m5d.enclave\n"),
+				ptr.To(strings.SplitAfter(procNetDevHeader, "\n")[0]+" face bytes\n"+procNetDevLo),
+				ptr.To(procNetRouteHeader),
 			),
 			wantCheck:    "network_interfaces",
 			wantReason:   "/proc/net/dev does not start with its two header lines",
@@ -242,9 +241,9 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		{
 			name: "interface table with headers only",
 			stdout: guestDump(
-				text("m5d.enclave\n"),
-				text(procNetDevHeader),
-				text(procNetRouteHeader),
+				ptr.To("m5d.enclave\n"),
+				ptr.To(procNetDevHeader),
+				ptr.To(procNetRouteHeader),
 			),
 			wantCheck:    "network_interfaces",
 			wantReason:   "/proc/net/dev lists no interfaces",
@@ -253,9 +252,9 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		{
 			name: "non-numeric interface counters",
 			stdout: guestDump(
-				text("m5d.enclave\n"),
-				text(procNetDevHeader+"    lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 x\n"),
-				text(procNetRouteHeader),
+				ptr.To("m5d.enclave\n"),
+				ptr.To(procNetDevHeader+"    lo: 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 x\n"),
+				ptr.To(procNetRouteHeader),
 			),
 			wantCheck:    "network_interfaces",
 			wantReason:   `unrecognised /proc/net/dev line`,
@@ -264,9 +263,9 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		{
 			name: "malformed interface line",
 			stdout: guestDump(
-				text("m5d.enclave\n"),
-				text(procNetDevHeader+"    lo:       0       0\n"),
-				text(procNetRouteHeader),
+				ptr.To("m5d.enclave\n"),
+				ptr.To(procNetDevHeader+"    lo:       0       0\n"),
+				ptr.To(procNetRouteHeader),
 			),
 			wantCheck:    "network_interfaces",
 			wantReason:   `unrecognised /proc/net/dev line`,
@@ -275,9 +274,9 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		{
 			name: "interface table without headers",
 			stdout: guestDump(
-				text("m5d.enclave\n"),
-				text(procNetDevLo),
-				text(procNetRouteHeader),
+				ptr.To("m5d.enclave\n"),
+				ptr.To(procNetDevLo),
+				ptr.To(procNetRouteHeader),
 			),
 			wantCheck:    "network_interfaces",
 			wantReason:   "/proc/net/dev does not start with its two header lines",
@@ -286,9 +285,9 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		{
 			name: "empty dmi file",
 			stdout: guestDump(
-				text(""),
-				text(procNetDevHeader+procNetDevLo+procNetDevDummy0),
-				text(procNetRouteHeader),
+				ptr.To(""),
+				ptr.To(procNetDevHeader+procNetDevLo+procNetDevDummy0),
+				ptr.To(procNetRouteHeader),
 			),
 			wantCheck:    "dmi_product_name",
 			wantReason:   `DMI product name "" does not end in ".enclave"`,
@@ -378,7 +377,7 @@ func TestRunK8sRuntimeDiagnostics_DMIProductNameIsOneLineEndingInEnclave(t *test
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			dump := guestDump(text(tc.content), text(procNetDevHeader+procNetDevLo+procNetDevDummy0), text(procNetRouteHeader))
+			dump := guestDump(ptr.To(tc.content), ptr.To(procNetDevHeader+procNetDevLo+procNetDevDummy0), ptr.To(procNetRouteHeader))
 			core, security, _ := fakeDiagnosticsCore(t, dump, nil)
 
 			err := runK8sRuntimeDiagnostics(context.Background(), "nitro-isolated", k8sRuntimeProfiles["nitro-isolated"], core)
@@ -405,7 +404,7 @@ func TestRunK8sRuntimeDiagnostics_ProfileWithoutDiagnosticsRunsNothing(t *testin
 
 func TestRunK8sRuntimeDiagnostics_NilSecurityStillFailsClosed(t *testing.T) {
 	must := require.New(t)
-	core, _, _ := fakeDiagnosticsCore(t, guestDump(text("kind\n"), text(procNetDevHeader+procNetDevLo), text(procNetRouteHeader)), nil)
+	core, _, _ := fakeDiagnosticsCore(t, guestDump(ptr.To("kind\n"), ptr.To(procNetDevHeader+procNetDevLo), ptr.To(procNetRouteHeader)), nil)
 	core.Security = nil
 	err := runK8sRuntimeDiagnostics(context.Background(), "nitro-isolated", k8sRuntimeProfiles["nitro-isolated"], core)
 	must.ErrorContains(err, "dmi_product_name")
@@ -414,7 +413,7 @@ func TestRunK8sRuntimeDiagnostics_NilSecurityStillFailsClosed(t *testing.T) {
 func TestRunK8sRuntimeDiagnostics_BoundsGuestValues(t *testing.T) {
 	must := require.New(t)
 	long := strings.Repeat("é", 2*k8sClusterTextMax)
-	core, security, _ := fakeDiagnosticsCore(t, guestDump(text(long), text(procNetDevHeader+procNetDevLo), text(procNetRouteHeader)), nil)
+	core, security, _ := fakeDiagnosticsCore(t, guestDump(ptr.To(long), ptr.To(procNetDevHeader+procNetDevLo), ptr.To(procNetRouteHeader)), nil)
 
 	err := runK8sRuntimeDiagnostics(context.Background(), "nitro-isolated", k8sRuntimeProfiles["nitro-isolated"], core)
 	must.Error(err)
@@ -446,19 +445,19 @@ func TestRunK8sRuntimeDiagnostics_SanitisesGuestTextInTheError(t *testing.T) {
 		execErr error
 	}{
 		{name: "interface name", stdout: guestDump(
-			text("m5d.enclave\n"),
-			text(procNetDevHeader+procNetDevLo+"eth0"+escapes+": 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"),
-			text(procNetRouteHeader),
+			ptr.To("m5d.enclave\n"),
+			ptr.To(procNetDevHeader+procNetDevLo+"eth0"+escapes+": 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n"),
+			ptr.To(procNetRouteHeader),
 		)},
 		{name: "route field", stdout: guestDump(
-			text("m5d.enclave\n"),
-			text(procNetDevHeader+procNetDevLo),
-			text(procNetRouteHeader+"dummy0"+escapes+"\t00000000\t0\n"),
+			ptr.To("m5d.enclave\n"),
+			ptr.To(procNetDevHeader+procNetDevLo),
+			ptr.To(procNetRouteHeader+"dummy0"+escapes+"\t00000000\t0\n"),
 		)},
 		{name: "unrecognised line", stdout: guestDump(
-			text("m5d.enclave\n"),
-			text(procNetDevHeader+"lo"+escapes+"\n"),
-			text(procNetRouteHeader),
+			ptr.To("m5d.enclave\n"),
+			ptr.To(procNetDevHeader+"lo"+escapes+"\n"),
+			ptr.To(procNetRouteHeader),
 		)},
 		{name: "framing line", stdout: "begin /x" + escapes + "\n"},
 		{name: "stderr after a non-zero exit", execErr: utilexec.CodeExitError{Err: errors.New("command terminated with exit code 2"), Code: 2}},

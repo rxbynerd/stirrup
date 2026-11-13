@@ -6301,7 +6301,7 @@ func validateExecutorRuntime(cfg ExecutorConfig, errs *[]string) {
 // K8sRuntimeRequirementErrors returns the executor settings a k8s
 // executor.runtime value rules out, one message per violated rule, or nil.
 // ValidateRunConfig and the k8s executor constructor both call it, so a
-// caller that bypasses validation meets the same rules. sandboxIdentity
+// caller that bypasses validation meets the same rules. identityConfigured
 // reports whether executor.sandboxIdentity or executor.gitProxy is set. A
 // nil network, an unknown network mode and a non-finite cpus value are not
 // reported here: the shared validation reports each once for every runtime,
@@ -6311,7 +6311,7 @@ func validateExecutorRuntime(cfg ExecutorConfig, errs *[]string) {
 // CPU and memory requests at boot, the first supported shape is offline
 // (no guest IP network), and an ephemeral-storage limit is not an enforced
 // quota inside the guest. See docs/executors/k8s.md#eks-with-nitro-sandboxes.
-func K8sRuntimeRequirementErrors(runtime string, network *NetworkConfig, resources *ResourceLimits, sandboxIdentity bool) []string {
+func K8sRuntimeRequirementErrors(runtime string, network *NetworkConfig, resources *ResourceLimits, identityConfigured bool) []string {
 	if runtime != "nitro-isolated" {
 		return nil
 	}
@@ -6341,7 +6341,7 @@ func K8sRuntimeRequirementErrors(runtime string, network *NetworkConfig, resourc
 			`executor.resources.diskMb must be unset for executor.runtime="nitro-isolated" (got %d); an ephemeral-storage limit is not an enforced quota inside the guest`,
 			r.DiskMB))
 	}
-	if sandboxIdentity {
+	if identityConfigured {
 		errs = append(errs, `executor.sandboxIdentity and executor.gitProxy must be unset for executor.runtime="nitro-isolated"; the runtime runs offline, so nothing in the guest could present the token`)
 	}
 	return errs

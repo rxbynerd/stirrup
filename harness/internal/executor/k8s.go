@@ -203,7 +203,6 @@ func prepareK8sExecutor(cfg K8sExecutorConfig) (k8sRuntimeProfile, []corev1.EnvV
 // newK8sExecutor is NewK8sExecutor after prepareK8sExecutor and the clientset.
 // execFn, when non-nil, replaces the pods/exec round trip (see podExecCore).
 func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRuntimeProfile, proxyEnv []corev1.EnvVar, clientset kubernetes.Interface, restCfg *rest.Config, execFn podExecFunc, timing k8sTiming, logger *slog.Logger) (*K8sExecutor, error) {
-
 	// An empty runtime selects the cluster-default RuntimeClass, which may be
 	// plain runc with no sandbox isolation. Warn so the opt-out is visible.
 	if profile.runtimeClassName == "" {

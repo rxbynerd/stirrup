@@ -596,8 +596,8 @@ func TestK8sRuntimeClass_Admitted(t *testing.T) {
 		}
 	}
 
-	for _, runtimeClass := range runtimeClasses {
-		name := runtimeClass
+	for _, runtime := range runtimeClasses {
+		name := runtime
 		if name == "" {
 			name = "cluster-default"
 		}
@@ -610,13 +610,13 @@ func TestK8sRuntimeClass_Admitted(t *testing.T) {
 				Image:      cfg.image,
 				Namespace:  cfg.namespace,
 				Kubeconfig: cfg.kubeconfig,
-				Runtime:    runtimeClass,
+				Runtime:    runtime,
 				Network:    &types.NetworkConfig{Mode: "none"},
 			})
 			// An unregistered RuntimeClass surfaces as the friendly
 			// admission wrap; skip rather than fail.
-			if err != nil && runtimeClass != "" && strings.Contains(err.Error(), "RuntimeClass") {
-				t.Skipf("RuntimeClass %q not registered on this cluster: %v", runtimeClass, err)
+			if err != nil && runtime != "" && strings.Contains(err.Error(), "RuntimeClass") {
+				t.Skipf("RuntimeClass %q not registered on this cluster: %v", runtime, err)
 			}
 			must.NoError(err, "NewK8sExecutor")
 			t.Cleanup(func() { _ = exec.Close() })
@@ -629,7 +629,7 @@ func TestK8sRuntimeClass_Admitted(t *testing.T) {
 			// stable across releases) and the synthetic uname -r kernel
 			// version (logged, not hard-asserted, since it tracks the runsc
 			// build).
-			if runtimeClass == "gvisor" {
+			if runtime == "gvisor" {
 				dmesgRes, dmesgErr := exec.Exec(ctx, "dmesg 2>/dev/null | head -n 50", 10*time.Second)
 				must.NoError(dmesgErr, "dmesg under gvisor")
 				must.Contains(strings.ToLower(dmesgRes.Stdout), "gvisor",
