@@ -140,7 +140,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// 2b. Sandbox identity token exchange and env composition, deliberately
 	// ahead of buildExecutor: the composed env carries the secret token into
 	// the executor's construction so no sandbox comes up without it, and a
-	// declined or timed-out exchange aborts before any sandbox exists.
+	// declined or timed-out first exchange aborts before any sandbox exists.
 	var (
 		sandboxExtraEnv  []executor.EnvPair
 		sandboxExchanger *sandboxidentity.Exchanger
@@ -186,10 +186,12 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		ownedClosers = append(ownedClosers, closer)
 	}
 
-	// 3b. Initial sandbox identity token delivery. The composed git
-	// credential helper reads the token file, not the env var, so the
-	// sandbox is unusable for git until this lands; a failure tears the
-	// sandbox down rather than leaving one that cannot authenticate.
+	// 3b. Initial sandbox identity token delivery, preceded by a
+	// re-exchange when sandbox startup took the token past its refresh
+	// point. The composed git credential helper reads the token file, not
+	// the env var, so the sandbox is unusable for git until this lands; a
+	// failure of either step tears the sandbox down rather than leaving one
+	// that cannot authenticate.
 	var sandboxTokenWriter executor.SandboxIdentityTokenWriter
 	if config.Executor.SandboxIdentity != nil {
 		writer, ok := exec.(executor.SandboxIdentityTokenWriter)
@@ -205,6 +207,18 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 				cleanup()
 				return nil, fmt.Errorf("executor.sandboxIdentity: token neared expiry during sandbox startup and could not be re-exchanged: %w", exchErr)
 			}
+			// The fresh token is checked against its own receipt time, so
+			// only one that is already expired is refused.
+			freshIssuedAt := time.Now()
+			if sandboxidentity.DueForRefresh(freshIssuedAt, freshIssuedAt, fresh.ExpiresAt) {
+				cleanup()
+				return nil, fmt.Errorf("executor.sandboxIdentity: the token re-exchanged during sandbox startup had already expired (expires_at %d)", *fresh.ExpiresAt)
+			}
+			attrs := []any{"startup", freshIssuedAt.Sub(sandboxIssuedAt).Round(time.Millisecond)}
+			if fresh.ExpiresAt != nil {
+				attrs = append(attrs, "tokenExpiresAtUnix", *fresh.ExpiresAt)
+			}
+			slog.Default().Info("sandbox identity token re-exchanged before first delivery; sandbox startup passed the first token's refresh point", attrs...)
 			sandboxToken = fresh
 		}
 		if err := writer.WriteSandboxIdentityToken(ctx, sandboxToken.Token); err != nil {

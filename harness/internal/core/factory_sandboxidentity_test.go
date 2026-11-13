@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -49,6 +50,9 @@ type fakeControlPlaneTransport struct {
 	// respondTTL, when positive, sets expires_at to now+respondTTL on every
 	// response; zero leaves expires_at unset.
 	respondTTL time.Duration
+	// respondTTLs, when set, overrides respondTTL per request ordinal (the
+	// last entry repeats); a negative entry yields an expires_at in the past.
+	respondTTLs []time.Duration
 
 	// respondIsError/respondReason, when respondIsError is true, deliver a
 	// control-plane decline instead of a success response.
@@ -85,8 +89,12 @@ func (f *fakeControlPlaneTransport) Emit(event types.HarnessEvent) error {
 			RequestID: event.RequestID,
 			Token:     f.tokenFor(ordinal),
 		}
-		if f.respondTTL > 0 {
-			exp := time.Now().Add(f.respondTTL).Unix()
+		ttl := f.respondTTL
+		if len(f.respondTTLs) > 0 {
+			ttl = f.respondTTLs[min(ordinal, len(f.respondTTLs))-1]
+		}
+		if ttl != 0 {
+			exp := time.Now().Add(ttl).Unix()
 			resp.ExpiresAt = &exp
 		}
 		if f.respondIsError || (f.declineFromRequest > 0 && ordinal >= f.declineFromRequest) {
@@ -509,6 +517,7 @@ func TestBuildLoopWithTransport_SandboxIdentity_ReexchangesTokenExpiringDuringSt
 
 	tp := &fakeControlPlaneTransport{respondToken: "jwt", respondTokenPerRequest: true, respondTTL: time.Second}
 	config := sandboxIdentityContainerConfig(t, "sandboxidentity-startup-expiry-test", server.URL)
+	logs := captureDefaultLog(t)
 
 	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
 	must.NoError(err)
@@ -517,6 +526,88 @@ func TestBuildLoopWithTransport_SandboxIdentity_ReexchangesTokenExpiringDuringSt
 
 	must.Equal("jwt-2", deliveries[0], "the token issued before the slow start was delivered")
 	must.NotContains(deliveries, "jwt-1")
+	must.Contains(logs.String(), "sandbox identity token re-exchanged before first delivery")
+	must.Contains(logs.String(), "tokenExpiresAtUnix=")
+	must.NotContains(logs.String(), "jwt-", "a token value reached the log")
+}
+
+// captureDefaultLog routes slog.Default to a buffer for the test.
+func captureDefaultLog(t *testing.T) *lockedBuffer {
+	t.Helper()
+	buf := &lockedBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+// lockedBuffer is a goroutine-safe log sink.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestBuildLoopWithTransport_SandboxIdentity_RefresherStartsFromReexchangedExpiry
+// delivers a long-lived token after a startup re-exchange and checks the
+// refresher schedules from that token: no further request follows at once,
+// as one would if it started from the first token's expired lifetime.
+func TestBuildLoopWithTransport_SandboxIdentity_RefresherStartsFromReexchangedExpiry(t *testing.T) {
+	must := require.New(t)
+	sock, capture, cleanupEngine := fakeDockerEngine(t)
+	defer cleanupEngine()
+	capture.createDelay = 1200 * time.Millisecond
+	t.Setenv("DOCKER_HOST", "unix://"+sock)
+
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	tp := &fakeControlPlaneTransport{respondToken: "jwt", respondTokenPerRequest: true, respondTTLs: []time.Duration{time.Second, time.Hour}}
+	config := sandboxIdentityContainerConfig(t, "sandboxidentity-refresher-expiry-test", server.URL)
+
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	must.NoError(err)
+	defer func() { _ = loop.Close() }()
+	must.Equal([]string{"jwt-2"}, capture.waitForStdin(t, 1, 5*time.Second))
+
+	time.Sleep(time.Second)
+	must.Len(tp.emittedOfType("sandbox_token_request"), 2, "the refresher started from the first token's expiry")
+	must.Equal([]string{"jwt-2"}, capture.stdinSeen())
+}
+
+// TestBuildLoopWithTransport_SandboxIdentity_RejectsExpiredReexchangedToken
+// covers a control plane that answers the startup re-exchange with a token
+// that has already expired: construction fails, the sandbox is removed and
+// no token is delivered.
+func TestBuildLoopWithTransport_SandboxIdentity_RejectsExpiredReexchangedToken(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	sock, capture, cleanupEngine := fakeDockerEngine(t)
+	defer cleanupEngine()
+	capture.createDelay = 1200 * time.Millisecond
+	t.Setenv("DOCKER_HOST", "unix://"+sock)
+
+	tp := &fakeControlPlaneTransport{respondToken: "jwt", respondTTLs: []time.Duration{time.Second, -time.Hour}}
+	config := sandboxIdentityFailClosedConfig(t, "sandboxidentity-expired-reexchange-test")
+
+	_, err := BuildLoopWithTransport(context.Background(), config, tp)
+
+	must.Error(err)
+	must.ErrorContains(err, "re-exchanged during sandbox startup had already expired")
+	check.NotContains(err.Error(), "jwt", "a token value reached the error")
+	check.Positive(capture.deleteCallCount(), "the sandbox was not removed")
+	check.Empty(capture.stdinSeen(), "an expired token was delivered")
 }
 
 // TestBuildLoopWithTransport_SandboxIdentity_FailedReexchangeClosesSandbox
