@@ -272,13 +272,16 @@ kubelet (an error containing `error dialing backend`, for example
 internal error`) or while an attempt times out; each attempt is bounded
 at 10 seconds. The first retry logs `k8s executor waiting for exec to
 reach the sandbox pod` at info level with `namespace`, `pod`, `timeout`
-and `err`. Any other outcome, such as a non-zero exit, a `Forbidden`
-answer or a missing container, ends the wait without an error and is
-left to the first real `exec` to report, so a missing `pods/exec`
-permission fails as fast as without the wait. The wait is bounded at one
-minute, within the caller's context. When the kubelet stays unreachable
-for that minute, construction fails with the last error, cleaned like
-other cluster text, and the Pod is torn down:
+and `err`, and a wait that then succeeds logs `k8s executor exec reached
+the sandbox pod` with `attempts` and `waited`. Any other outcome, such
+as a non-zero exit, a `Forbidden` answer or a missing container, ends
+the wait without an error, is logged at warn level as `k8s executor exec
+probe failed; leaving the failure to the next exec`, and is left to the
+next `exec` to report, so a missing `pods/exec` permission fails as fast
+as without the wait. The wait is bounded at one minute, within the
+caller's context. When the kubelet stays unreachable for that minute,
+construction fails with the last dial error, cleaned like other cluster
+text, and the Pod is torn down:
 
 ```
 pod stirrup-sandbox/stirrup-0123456789ab is not reachable for exec within 1m0s:
