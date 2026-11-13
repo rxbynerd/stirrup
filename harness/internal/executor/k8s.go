@@ -198,7 +198,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev
 		return nil, err
 	}
 	if _, err := clientset.NetworkingV1().NetworkPolicies(cfg.Namespace).Create(ctx, policy, metav1.CreateOptions{}); err != nil {
-		return nil, fmt.Errorf("install egress NetworkPolicy for pod %s/%s: %w", cfg.Namespace, podName, err)
+		return nil, fmt.Errorf("install egress NetworkPolicy for pod %s/%s: %w", cfg.Namespace, podName, boundClusterErr(err))
 	}
 
 	teardown := podTeardown{
@@ -572,18 +572,6 @@ func cpuQuantity(cpus float64) resource.Quantity {
 		milli = 1
 	}
 	return resource.MustParse(fmt.Sprintf("%dm", milli))
-}
-
-// deleteNetworkPolicyBestEffort attempts to delete the egress NetworkPolicy,
-// logging (but not returning) any error. It is only for constructor failures
-// after which no workload the policy selects can exist.
-func deleteNetworkPolicyBestEffort(clientset kubernetes.Interface, namespace, name string, logger *slog.Logger) {
-	ctx, cancel := context.WithTimeout(context.Background(), k8sCloseTimeout)
-	defer cancel()
-	err := clientset.NetworkingV1().NetworkPolicies(namespace).Delete(ctx, name, metav1.DeleteOptions{})
-	if err != nil && !apierrors.IsNotFound(err) {
-		logger.Warn("k8s executor cleanup networkpolicy delete failed", "namespace", namespace, "networkpolicy", name, "err", err)
-	}
 }
 
 var _ Executor = (*K8sExecutor)(nil)

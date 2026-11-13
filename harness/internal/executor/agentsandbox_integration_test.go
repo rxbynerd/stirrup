@@ -165,7 +165,7 @@ func TestAgentSandbox_CommandOutputSpill(t *testing.T) {
 	must.NoError(err, "create agent sandbox executor")
 	t.Cleanup(func() { _ = exec.Close() })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
 	defer cancel()
 	assertCommandOutputSpill(t, ctx, exec)
 }
@@ -213,7 +213,7 @@ func TestAgentSandbox_AllowlistEnforced(t *testing.T) {
 		t.Skip("STIRRUP_TEST_ENFORCE_EGRESS not set; skipping egress-enforcement test (requires a NetworkPolicy-enforcing CNI)")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
 	defer cancel()
 
 	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
