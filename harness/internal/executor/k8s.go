@@ -407,13 +407,10 @@ func buildRESTConfig(kubeconfig string) (*rest.Config, error) {
 	return cfg, nil
 }
 
-// classifyPodCreateError wraps a Pod-create failure, adding a RuntimeClass
-// hint only when the API server's response names the requested class: an
-// Invalid cause on spec.runtimeClassName, or the RuntimeClass admission
-// plugin's Forbidden "RuntimeClass %q not found". Any other rejection (a
-// LimitRange, a quota, Pod Security, a webhook) passes through behind the
-// wrap. The message is length-capped but otherwise unchanged, and the original
-// error stays reachable through errors.As.
+// classifyPodCreateError wraps a Pod-create failure with its message
+// length-capped, adding a RuntimeClass hint only when the response names the
+// requested class (see createErrorNamesRuntimeClass). The original error stays
+// reachable through errors.As.
 func classifyPodCreateError(runtimeClass string, err error) error {
 	if runtimeClass != "" && createErrorNamesRuntimeClass(runtimeClass, err) {
 		return fmt.Errorf(
@@ -424,6 +421,9 @@ func classifyPodCreateError(runtimeClass string, err error) error {
 	return fmt.Errorf("create pod: %w", boundClusterErr(err))
 }
 
+// createErrorNamesRuntimeClass matches an Invalid cause on
+// spec.runtimeClassName, or the RuntimeClass admission plugin's Forbidden
+// "RuntimeClass %q not found"; Forbidden responses carry no field causes.
 func createErrorNamesRuntimeClass(runtimeClass string, err error) bool {
 	var status apierrors.APIStatus
 	if !errors.As(err, &status) {

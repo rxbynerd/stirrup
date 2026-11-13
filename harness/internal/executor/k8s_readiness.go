@@ -13,11 +13,9 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// permanentWaitingReasons are agent container waiting reasons that no retry
-// within the Pod's lifetime can clear: the image reference cannot be parsed,
-// or imagePullPolicy Never forbids the pull that would supply the image on
-// the node the Pod is bound to. ErrImagePull and ImagePullBackOff are absent
-// because a registry outage clears on its own.
+// permanentWaitingReasons are agent container waiting reasons no retry can
+// clear: an unparseable image reference, or imagePullPolicy Never with the
+// image absent from the Pod's node. Image pull errors stay retryable.
 var permanentWaitingReasons = map[string]bool{
 	"InvalidImageName":  true,
 	"ErrImageNeverPull": true,
@@ -37,11 +35,10 @@ type podReadiness struct {
 	sawPod     bool
 }
 
-// waitForPodReady polls the Pod until it is Running with the agent container
-// Ready, re-checking the admission contract on every observation. It fails at
-// once on a terminal state, an admission mismatch, a missing Pod, or an RBAC
-// denial; other API errors are retried until timing.readyTimeout or ctx ends.
-// It returns the Ready Pod.
+// waitForPodReady polls until the Pod is Running with the agent container
+// Ready, re-checking the admission contract on every observation. A terminal
+// state, a mismatch, a missing Pod or an RBAC denial fails at once; other API
+// errors are retried until timing.readyTimeout or ctx ends.
 func waitForPodReady(ctx context.Context, clientset kubernetes.Interface, namespace, name string, admission podAdmission, timing k8sTiming, logger *slog.Logger) (*corev1.Pod, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, timing.readyTimeout)
 	defer cancel()
