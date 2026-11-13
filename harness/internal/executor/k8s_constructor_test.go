@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -162,6 +163,19 @@ func TestNewK8sExecutor_RejectsUnsupportedConfigBeforeAnyClusterCall(t *testing.
 			wantErr: `executor.resources.diskMb must be unset`,
 		},
 		{
+			name:    "nitro-isolated with infinite cpus",
+			mutate:  func(cfg *K8sExecutorConfig) { cfg.Resources.CPUs = math.Inf(1) },
+			wantErr: `executor.resources.cpus must be a finite number (got +Inf)`,
+		},
+		{
+			name: "gvisor with not-a-number cpus",
+			mutate: func(cfg *K8sExecutorConfig) {
+				cfg.Runtime = "gvisor"
+				cfg.Resources.CPUs = math.NaN()
+			},
+			wantErr: `executor.resources.cpus must be a finite number (got NaN)`,
+		},
+		{
 			name:    "nitro-isolated with a sandbox identity token",
 			mutate:  func(cfg *K8sExecutorConfig) { cfg.SandboxIdentityToken = true },
 			wantErr: `executor.sandboxIdentity and executor.gitProxy must be unset`,
@@ -211,6 +225,11 @@ func TestNewK8sExecutor_RejectsUnsupportedRuntimeBeforeBuildingAClient(t *testin
 	_, err := NewK8sExecutor(context.Background(), cfg)
 
 	must.ErrorContains(err, "executor.resources.cpus must be positive")
+	must.NotContains(err.Error(), "kube rest config")
+
+	cfg.Resources = &types.ResourceLimits{CPUs: math.Inf(1), MemoryMB: 1024}
+	_, err = NewK8sExecutor(context.Background(), cfg)
+	must.ErrorContains(err, "executor.resources.cpus must be a finite number (got +Inf)")
 	must.NotContains(err.Error(), "kube rest config")
 }
 
