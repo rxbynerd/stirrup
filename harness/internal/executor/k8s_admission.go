@@ -39,10 +39,10 @@ type podAdmission struct {
 
 // newPodAdmission returns the two-stage contract for a Pod submitted as
 // submitted and returned by Create as admitted: the base checks, plus the
-// whole-Pod checks of strictAdmissionChecks at both stages when the runtime
-// profile asks for strict admission. Ephemeral containers cannot be set at
-// creation, so the strict tier sees one only if it is added before the Pod
-// is Ready.
+// whole-Pod admission checks of strictAdmissionChecks at both stages when the
+// runtime profile sets strictAdmission. Ephemeral containers cannot be set at
+// creation, so the whole-Pod admission check sees one only if it is added
+// before the Pod is Ready.
 func newPodAdmission(submitted, admitted *corev1.Pod, profile k8sRuntimeProfile) podAdmission {
 	checks := slices.Clone(baseAdmissionChecks)
 	if profile.strictAdmission {

@@ -6342,7 +6342,7 @@ func K8sRuntimeRequirementErrors(runtime string, network *NetworkConfig, resourc
 			r.DiskMB))
 	}
 	if identityConfigured {
-		errs = append(errs, `executor.sandboxIdentity and executor.gitProxy must be unset for executor.runtime="nitro-isolated"; the runtime runs offline, so nothing in the guest could present the token`)
+		errs = append(errs, `executor.sandboxIdentity and executor.gitProxy must be unset for executor.runtime="nitro-isolated"; no network service is reachable from the guest, so there is nothing to present the token to`)
 	}
 	return errs
 }

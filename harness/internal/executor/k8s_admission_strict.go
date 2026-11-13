@@ -12,7 +12,7 @@ import (
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 )
 
-// admissionFieldRule says how the strict admission tier treats one field.
+// admissionFieldRule says how the whole-Pod admission check treats one field.
 type admissionFieldRule int
 
 const (
