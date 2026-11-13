@@ -311,10 +311,10 @@ is the cluster operator's responsibility.
 stages: the `Create` response against the submitted Pod, and each Pod
 seen during the readiness wait against the `Create` response. Every
 field of the Pod spec and the container spec is classified in one table
-([`k8s_admission_strict.go`](../../harness/internal/executor/k8s_admission_strict.go))
-as compared, where the value must be semantically equal (so `1Gi`
-matches a submitted `1024Mi`), as owned by the platform and ignored, or
-as a set that may gain entries but not lose any.
+([`k8s_admission_strict.go`](../../harness/internal/executor/k8s_admission_strict.go)).
+A field is classified as compared, as owned by the platform and ignored,
+or as a set that may gain entries but not lose any. A compared value
+must be semantically equal, so `1Gi` matches a submitted `1024Mi`.
 
 - **Owned by the platform, not compared:** `nodeName`, `overhead`
   (except the required mark below), `schedulerName`, `priority`,
@@ -359,10 +359,10 @@ In the metadata:
 - every annotation under `sandbox.amazonaws.com/` must keep its submitted
   presence and value, so `network-isolated` must keep `"true"` and an
   added key such as `sandbox.amazonaws.com/policy` fails the run. The
-  prefix is matched without regard to case and key names byte for byte,
-  so every case variant of the prefix or of a key name that is not
-  byte-equal to a submitted or throttle key (such as
-  `Sandbox.amazonaws.com/network-isolated`) fails the run;
+  prefix is matched without regard to case, and key names are matched
+  byte for byte. A key under the prefix in any letter case that is not
+  byte-equal to a submitted key or a throttle key (such as
+  `Sandbox.amazonaws.com/network-isolated`) therefore fails the run;
 - the exception is the eleven throttle keys AWS documentation lists
   ([resource isolation](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-resource-isolation.html)):
   `log-bandwidth`, `ingress-bandwidth`, `egress-bandwidth`,
@@ -384,7 +384,7 @@ A mismatch fails the run, emits `sandbox_runtime_diagnostic_failed` with
 annotation and platform-mark mismatches, together with the first
 differing spec field, each with expected and observed values, scrubbed
 and cut to 256 characters. It shows at most the first ten mismatches,
-followed by `and N more (M mismatches)` with the total. A container
+followed by `and N more (M mismatches)`, where M is the total. A container
 list is shown by container names, and an environment difference names
 the variable and says whether its value or its source changed, never
 the value. A passing check emits no event; the
@@ -1357,11 +1357,11 @@ status, so the Pod status is not evidence of a guest network.
 The residual channel is vsock. AWS documentation says that `exec`,
 logs, stdin and stats travel over vsock, that guest processes can bind
 vsock ports, and that any process on the parent instance with access to
-the Firecracker vsock socket can connect to them
+the Firecracker vsock socket can connect to those ports
 ([network isolation](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-network-isolation.html));
 the [security model](https://docs.aws.amazon.com/eks/latest/userguide/sandboxing-security-model.html)
-page describes the same access as any root process on the parent
-instance. The node and its operator are trusted in this model.
+page describes that access as available to any root process on the
+parent instance. The node and its operator are trusted in this model.
 
 #### Cluster conditions that fail every run
 
@@ -1453,7 +1453,7 @@ it under the host shell and by a gated test that runs it on a non-Nitro
 Pod (see
 [Testing the executor against a real cluster](#testing-the-executor-against-a-real-cluster)).
 
-Security events, scrubbed like every other
+The security events are scrubbed like every other
 [security event](../security.md#runtime-diagnostics-on-kubernetes):
 
 - `sandbox_runtime_diagnostic_passed` (info, after every diagnostic
@@ -1507,9 +1507,10 @@ over exec (see [Architecture](#architecture)). The
 the [workspace export](../configuration.md#workspace-export) run in the
 orchestrator, not in the guest. The workspace export reads the files
 over the same exec stream, so the `log-bandwidth` setting in
-[Pod shape](#pod-shape) bounds how fast results leave. An offline run cannot clone or push (the example sets
-`gitStrategy: none`), cannot install packages from the network, and
-cannot use `gitProxy` or `sandboxIdentity`, which validation rejects.
+[Pod shape](#pod-shape) bounds how fast results leave. An offline run
+cannot clone or push (the example sets `gitStrategy: none`), cannot
+install packages from the network, and cannot use `gitProxy` or
+`sandboxIdentity`, which validation rejects.
 
 #### Cost and cleanup
 
@@ -1537,7 +1538,7 @@ Pod and the workspace size.
 - The executor end to end on the tested recipe, including mode `none`
   confinement and teardown.
 - Command timeout and kill behaviour, and the output-cap error, at
-  `log-bandwidth: 20M`. Under the default throttle the 2026-11-11 EKS
+  `log-bandwidth: 20M`. Under the default throttle, the 2026-11-11 EKS
   run logged
   `stirrup-kill: ... can't open /tmp/.stirrup-exec-<id>.pid` when killing
   a timed-out command, and that path was not re-run at `20M`.
@@ -1545,8 +1546,8 @@ Pod and the workspace size.
   on instance families other than `m5d`.
 - The whole-Pod admission check against a real EKS `Create` response,
   including whether that response already carries the overhead and
-  node-selector marks. Upstream the RuntimeClass admission plugin sets
-  both at admission, so it is expected to.
+  node-selector marks. Upstream, the RuntimeClass admission plugin sets
+  both at admission, so the response is expected to carry them.
 - The fields most likely to be written by the platform or a webhook at
   create time and not seen in the read-backs: `schedulingGates`,
   `readinessGates`, `affinity`, `topologySpreadConstraints` and container
