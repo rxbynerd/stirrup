@@ -340,7 +340,7 @@ func TestPreflight_K8sExecutors_ConstructorNotReached(t *testing.T) {
 	}
 }
 
-func TestPreflight_K8sExecutors_UnsupportedNetworkModeFailsConstruction(t *testing.T) {
+func TestPreflight_K8sExecutors_UnsupportedNetworkModeFailsConfigValidation(t *testing.T) {
 	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
 
 	for _, executorType := range []string{"k8s", "k8s-sandbox"} {
@@ -354,10 +354,12 @@ func TestPreflight_K8sExecutors_UnsupportedNetworkModeFailsConstruction(t *testi
 			report, err := Preflight(context.Background(), cfg, PreflightOptions{})
 			must.NoError(err)
 
-			status, _ := stepStatus(report, "executor")
+			status, _ := stepStatus(report, "config-validation")
 			check.Equal(PreflightFail, status)
-			detail, _ := stepDetail(report, "executor")
-			check.Contains(detail, `unsupported network mode "host"`)
+			detail, _ := stepDetail(report, "config-validation")
+			check.Contains(detail, `executor.network.mode must be "none" or "allowlist"`)
+			_, hasExecutorStep := stepStatus(report, "executor")
+			check.False(hasExecutorStep, "no component is built after a failed config-validation")
 			check.Empty(api.recorded(), "an invalid network mode must be rejected before any cluster call")
 		})
 	}

@@ -10,8 +10,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
-
-	"github.com/rxbynerd/stirrup/types"
 )
 
 // K8sProbeConfig selects what ProbeK8sAccess checks. Type is the executor
@@ -71,17 +69,6 @@ func k8sRequiredAccess(executorType string) []k8sAccess {
 	}
 	required := append(workload, k8sExecAccess)
 	return append(required, k8sNetworkPolicyAccess...)
-}
-
-// ValidateK8sNetwork applies the offline checks the k8s and k8s-sandbox
-// constructors make on the egress posture, without contacting a cluster: the
-// mode must be supported and allowlist mode needs a proxy URL.
-func ValidateK8sNetwork(network *types.NetworkConfig, proxyURL string) error {
-	if _, err := proxyEnvFor(network, proxyURL); err != nil {
-		return err
-	}
-	_, err := egressPolicyFor(network, "", "", "")
-	return err
 }
 
 // ProbeK8sAccess is the dry-run check for the k8s and k8s-sandbox executors.

@@ -361,9 +361,6 @@ func preflightExecutorConstruct(
 			detail: "container executor not constructed in dry-run; engine checked in executor-probe",
 		}
 	case "k8s", "k8s-sandbox":
-		if err := executor.ValidateK8sNetwork(config.Executor.Network, config.Executor.K8sEgressProxyURL); err != nil {
-			return executorBuildResult{err: err, hint: "set executor.network.mode to \"none\", or to \"allowlist\" with executor.k8sEgressProxyUrl"}
-		}
 		return executorBuildResult{
 			detail: fmt.Sprintf("%s executor not constructed in dry-run; cluster access checked in executor-probe", config.Executor.Type),
 		}

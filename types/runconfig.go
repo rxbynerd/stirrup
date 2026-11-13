@@ -6277,11 +6277,11 @@ func validateExecutorRuntime(cfg ExecutorConfig, errs *[]string) {
 	}
 }
 
-// isK8sFamily reports whether the executor Type runs the agent in a sandbox
+// IsK8sFamily reports whether the executor Type runs the agent in a sandbox
 // Pod and therefore shares the K8s* config surface and its cross-field
 // requirements. The "k8s" executor manages the Pod directly; "k8s-sandbox"
 // provisions it via the Agent Sandbox CRD. Both consume the same K8s* fields.
-func isK8sFamily(t string) bool {
+func IsK8sFamily(t string) bool {
 	return t == "k8s" || t == "k8s-sandbox"
 }
 
@@ -6291,7 +6291,7 @@ func isK8sFamily(t string) bool {
 // workspace lives inside the Pod at a fixed path (/workspace) rather than
 // mapping a host directory. The fields are a no-op for every other Type.
 func validateK8sExecutor(cfg ExecutorConfig, errs *[]string) {
-	if !isK8sFamily(cfg.Type) {
+	if !IsK8sFamily(cfg.Type) {
 		return
 	}
 	if cfg.Image == "" {
@@ -6311,6 +6311,10 @@ func validateK8sExecutor(cfg ExecutorConfig, errs *[]string) {
 	// valid when ..." line would be noise.
 	if cfg.Network == nil {
 		*errs = append(*errs, fmt.Sprintf("executor.network is required for executor.type=%q (set mode to \"none\" or \"allowlist\")", cfg.Type))
+		return
+	}
+	if cfg.Network.Mode != "none" && cfg.Network.Mode != "allowlist" {
+		*errs = append(*errs, fmt.Sprintf("executor.network.mode must be \"none\" or \"allowlist\" for executor.type=%q (got %q)", cfg.Type, cfg.Network.Mode))
 		return
 	}
 	validateK8sEgressProxy(cfg, errs)
