@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -159,6 +160,49 @@ func (sl *SecurityLogger) OutputTruncated(command string, originalSize, limit in
 		"originalSize": originalSize,
 		"limit":        limit,
 	})
+}
+
+// sandboxDiagnosticValueMaxBytes bounds each guest-reported value and the
+// failure reason in a sandbox runtime diagnostic event.
+const sandboxDiagnosticValueMaxBytes = 256
+
+// SandboxRuntimeDiagnostic emits the outcome of the guest-side checks the
+// k8s executor runs for a runtime after the sandbox Pod is Ready:
+// sandbox_runtime_diagnostic_passed at info, or
+// sandbox_runtime_diagnostic_failed at error with the failing check and
+// reason. observed holds values the sandbox image reported, so each is
+// scrubbed and bounded here; the map is converted to map[string]any
+// because ScrubMap does not descend into map[string]string.
+func (sl *SecurityLogger) SandboxRuntimeDiagnostic(runtime string, passed bool, check, reason string, observed map[string]string) {
+	obs := make(map[string]any, len(observed))
+	for k, v := range observed {
+		obs[k] = boundUTF8(Scrub(v), sandboxDiagnosticValueMaxBytes)
+	}
+	data := map[string]any{
+		"runtime":  runtime,
+		"observed": obs,
+	}
+	if passed {
+		sl.Emit("info", "sandbox_runtime_diagnostic_passed", data)
+		return
+	}
+	data["check"] = check
+	data["reason"] = boundUTF8(Scrub(reason), sandboxDiagnosticValueMaxBytes)
+	sl.Emit("error", "sandbox_runtime_diagnostic_failed", data)
+}
+
+// boundUTF8 cuts s to at most maxBytes bytes on a rune boundary, marking a
+// cut with a trailing "…".
+func boundUTF8(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	const marker = "…"
+	cut := max(maxBytes-len(marker), 0)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + marker
 }
 
 // ToolCallGuardTriggered emits when the prompt-injection tripwire rejects a

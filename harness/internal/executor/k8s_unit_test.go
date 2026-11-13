@@ -539,6 +539,14 @@ type recordingSecurityEmitter struct {
 	pathTraversalEvents []pathTraversalEvent
 	fileSizeEvents      []fileSizeEvent
 	outputTruncated     []outputTruncatedEvent
+	runtimeDiagnostics  []runtimeDiagnosticEvent
+}
+
+type runtimeDiagnosticEvent struct {
+	runtime       string
+	passed        bool
+	check, reason string
+	observed      map[string]string
 }
 
 type pathTraversalEvent struct{ path, workspace string }
@@ -561,6 +569,10 @@ func (r *recordingSecurityEmitter) FileSizeLimitExceeded(path string, size, limi
 
 func (r *recordingSecurityEmitter) OutputTruncated(command string, originalSize, limit int) {
 	r.outputTruncated = append(r.outputTruncated, outputTruncatedEvent{command, originalSize, limit})
+}
+
+func (r *recordingSecurityEmitter) SandboxRuntimeDiagnostic(runtime string, passed bool, check, reason string, observed map[string]string) {
+	r.runtimeDiagnostics = append(r.runtimeDiagnostics, runtimeDiagnosticEvent{runtime, passed, check, reason, observed})
 }
 
 var _ SecurityEventEmitter = (*recordingSecurityEmitter)(nil)
