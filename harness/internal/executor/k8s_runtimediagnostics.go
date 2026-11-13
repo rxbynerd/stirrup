@@ -218,11 +218,26 @@ func diagnoseNitroIsolatedGuest(ctx context.Context, core *podExecCore) (map[str
 	return observed, nil
 }
 
+// checkNitroDMIProductName requires the product name, the file's first line
+// trimmed, to end in nitroGuestDMISuffix. The kernel prints one line, so a
+// second non-empty line fails as unexpected output.
 func checkNitroDMIProductName(file guestFile, observed map[string]string) *k8sRuntimeDiagnosticError {
 	if !file.present {
 		return &k8sRuntimeDiagnosticError{check: diagnosticCheckDMI, reason: nitroDMIProductNamePath + " is absent, unreadable or not a regular file"}
 	}
-	name := strings.TrimSpace(strings.Join(file.lines, "\n"))
+	nonEmpty := 0
+	for _, line := range file.lines {
+		if strings.TrimSpace(line) != "" {
+			nonEmpty++
+		}
+	}
+	if nonEmpty > 1 {
+		return &k8sRuntimeDiagnosticError{check: diagnosticCheckOutput, reason: fmt.Sprintf("%s has %d non-empty lines; the kernel prints one", nitroDMIProductNamePath, nonEmpty)}
+	}
+	name := ""
+	if len(file.lines) > 0 {
+		name = strings.TrimSpace(file.lines[0])
+	}
 	observed["dmiProductName"] = clusterText(name)
 	if !strings.HasSuffix(name, nitroGuestDMISuffix) {
 		return &k8sRuntimeDiagnosticError{
