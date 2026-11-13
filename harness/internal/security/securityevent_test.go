@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/metric"
@@ -235,4 +237,93 @@ func TestSecurityLogger_Emit_JSONShapeWithCounter(t *testing.T) {
 	must.Equal("secret_redacted_in_output", got.Event)
 	must.Equal("anthropic_api_key", got.Data["pattern"])
 	must.Equal("transport.grpc.event.text", got.Data["location"])
+}
+
+func TestSecurityLogger_SandboxRuntimeDiagnostic_EventLevelAndKeys(t *testing.T) {
+	observed := map[string]string{"dmiProductName": "m5d.enclave", "interfaces": "lo,dummy0"}
+	cases := []struct {
+		name      string
+		passed    bool
+		wantEvent string
+		wantLevel string
+		wantKeys  []string
+	}{
+		{
+			name:      "passed",
+			passed:    true,
+			wantEvent: "sandbox_runtime_diagnostic_passed",
+			wantLevel: "info",
+			wantKeys:  []string{"observed", "runtime"},
+		},
+		{
+			name:      "failed",
+			passed:    false,
+			wantEvent: "sandbox_runtime_diagnostic_failed",
+			wantLevel: "error",
+			wantKeys:  []string{"check", "observed", "reason", "runtime"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			var buf bytes.Buffer
+			sl := NewSecurityLogger(&buf, "run-1")
+			sl.SandboxRuntimeDiagnostic("nitro-isolated", tc.passed, "dmi_product_name", "product name does not end in .enclave", observed)
+
+			var got SecurityEvent
+			must.NoError(json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &got), "output=%q", buf.String())
+			must.Equal(tc.wantEvent, got.Event)
+			must.Equal(tc.wantLevel, got.Level)
+			keys := make([]string, 0, len(got.Data))
+			for k := range got.Data {
+				keys = append(keys, k)
+			}
+			must.ElementsMatch(tc.wantKeys, keys)
+			must.Equal("nitro-isolated", got.Data["runtime"])
+			must.Equal(map[string]any{"dmiProductName": "m5d.enclave", "interfaces": "lo,dummy0"}, got.Data["observed"])
+			if !tc.passed {
+				must.Equal("dmi_product_name", got.Data["check"])
+				must.Equal("product name does not end in .enclave", got.Data["reason"])
+			}
+		})
+	}
+}
+
+// Observed values come from the sandbox image, so a secret-shaped value
+// must reach the event stream redacted, in the observed map and the reason.
+func TestSecurityLogger_SandboxRuntimeDiagnostic_RedactsObservedSecrets(t *testing.T) {
+	must := require.New(t)
+	var buf bytes.Buffer
+	sl := NewSecurityLogger(&buf, "run-1")
+	sl.SandboxRuntimeDiagnostic("nitro-isolated", false, "dmi_product_name",
+		`product name "sk-ant-abc123_DEF-456" does not end in .enclave`,
+		map[string]string{"dmiProductName": "sk-ant-abc123_DEF-456"})
+
+	must.NotContains(buf.String(), "sk-ant-abc123_DEF-456")
+	var got SecurityEvent
+	must.NoError(json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &got))
+	observed, ok := got.Data["observed"].(map[string]any)
+	must.True(ok, "observed is a JSON object: %#v", got.Data["observed"])
+	must.Contains(observed["dmiProductName"], redactedPlaceholder)
+	must.Contains(got.Data["reason"], redactedPlaceholder)
+}
+
+func TestSecurityLogger_SandboxRuntimeDiagnostic_BoundsObservedValues(t *testing.T) {
+	must := require.New(t)
+	var buf bytes.Buffer
+	sl := NewSecurityLogger(&buf, "run-1")
+	long := strings.Repeat("é", sandboxDiagnosticValueMaxBytes)
+	sl.SandboxRuntimeDiagnostic("nitro-isolated", false, "interfaces", long, map[string]string{"interfaces": long})
+
+	var got SecurityEvent
+	must.NoError(json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &got))
+	observed, ok := got.Data["observed"].(map[string]any)
+	must.True(ok, "observed is a JSON object: %#v", got.Data["observed"])
+	for _, v := range []any{observed["interfaces"], got.Data["reason"]} {
+		s, isString := v.(string)
+		must.True(isString, "bounded value is a string: %#v", v)
+		must.LessOrEqual(len(s), sandboxDiagnosticValueMaxBytes)
+		must.True(utf8.ValidString(s), "bounded value splits a rune: %q", s)
+		must.True(strings.HasSuffix(s, "…"), "bounded value is marked as cut: %q", s)
+	}
 }

@@ -304,6 +304,8 @@ func (e *capturingEmitter) OutputTruncated(_ string, originalSize, _ int) {
 	e.outputTruncCount++
 	e.lastOriginalSize = originalSize
 }
+func (e *capturingEmitter) SandboxRuntimeDiagnostic(_ string, _ bool, _, _ string, _ map[string]string) {
+}
 
 var _ SecurityEventEmitter = (*capturingEmitter)(nil)
 
@@ -615,6 +617,8 @@ type traversalCounter struct{ blocked int }
 func (c *traversalCounter) PathTraversalBlocked(_, _ string)           { c.blocked++ }
 func (c *traversalCounter) FileSizeLimitExceeded(_ string, _, _ int64) {}
 func (c *traversalCounter) OutputTruncated(_ string, _, _ int)         {}
+func (c *traversalCounter) SandboxRuntimeDiagnostic(_ string, _ bool, _, _ string, _ map[string]string) {
+}
 
 func TestResolvePathQuietly_RejectsEscapesWithoutSecurityEvent(t *testing.T) {
 	must := require.New(t)
