@@ -177,6 +177,9 @@ func buildSandboxObject(namespace, name, runID string, podSpec corev1.PodSpec, s
 // through Close, which removes the policy only once the Sandbox and its
 // backing Pod are gone; a failed create is reconciled by name first.
 func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*AgentSandboxExecutor, error) {
+	if err := checkAgentSandboxRuntime(cfg.Runtime); err != nil {
+		return nil, err
+	}
 	if cfg.Image == "" {
 		return nil, fmt.Errorf("agent sandbox executor requires an image")
 	}
@@ -213,11 +216,8 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 // newAgentSandboxExecutor is NewAgentSandboxExecutor after the clients are
 // built.
 func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, clientset kubernetes.Interface, dyn dynamic.Interface, restCfg *rest.Config, timing k8sTiming, logger *slog.Logger) (*AgentSandboxExecutor, error) {
-	if cfg.Runtime != "" && cfg.Runtime != gkeSandboxRuntimeValue {
-		logger.Warn(
-			"agent sandbox executor: overriding executor.runtime with gvisor — the Agent Sandbox path is gVisor-only",
-			"requested", cfg.Runtime,
-		)
+	if err := checkAgentSandboxRuntime(cfg.Runtime); err != nil {
+		return nil, err
 	}
 
 	name, err := generatePodName()
@@ -469,3 +469,14 @@ func (e *AgentSandboxExecutor) lookUpSandbox(ctx context.Context) (*metav1unstru
 }
 
 var _ Executor = (*AgentSandboxExecutor)(nil)
+
+// checkAgentSandboxRuntime rejects every runtime but gVisor, before any
+// cluster call: the Agent Sandbox path runs only under gVisor, so another
+// value would otherwise run the workload under a runtime the caller did not
+// name.
+func checkAgentSandboxRuntime(runtime string) error {
+	if runtime == "" || runtime == gkeSandboxRuntimeValue {
+		return nil
+	}
+	return fmt.Errorf("agent sandbox executor: executor.runtime must be %q or empty (got %q); the Agent Sandbox path is gVisor-only", gkeSandboxRuntimeValue, runtime)
+}

@@ -442,3 +442,31 @@ func TestNewAgentSandboxExecutor_ReconcilesFailedCreate(t *testing.T) {
 		f.requireRetained(t, err, logs, f.sandboxName(t))
 	})
 }
+
+func TestNewAgentSandboxExecutor_RejectsNonGVisorRuntimeBeforeAnyClusterCall(t *testing.T) {
+	for _, runtime := range []string{"nitro-isolated", "runc", "kata-qemu"} {
+		t.Run(runtime, func(t *testing.T) {
+			must := require.New(t)
+			f := newFakeAgentSandbox(t)
+			cfg := K8sExecutorConfig{
+				Image:     "busybox",
+				Namespace: testK8sNamespace,
+				Runtime:   runtime,
+				Network:   &types.NetworkConfig{Mode: "none"},
+				Lifecycle: Lifecycle{RunID: testK8sRunID},
+			}
+			logger, _ := testLogger()
+
+			_, err := newAgentSandboxExecutor(context.Background(), cfg, nil, f.cs, f.dyn, nil, fastK8sTiming, logger)
+
+			must.ErrorContains(err, `executor.runtime must be "gvisor" or empty (got "`+runtime+`")`)
+			must.Empty(f.cs.Actions(), "a rejected runtime reached the cluster")
+			must.Empty(f.dyn.Actions(), "a rejected runtime reached the cluster")
+		})
+	}
+	t.Run("public constructor rejects before building a client", func(t *testing.T) {
+		must := require.New(t)
+		_, err := NewAgentSandboxExecutor(context.Background(), K8sExecutorConfig{Runtime: "nitro-isolated", Kubeconfig: "/nonexistent/kubeconfig"})
+		must.ErrorContains(err, `executor.runtime must be "gvisor" or empty`)
+	})
+}
