@@ -422,7 +422,7 @@ func TestK8sExec_OutputCap(t *testing.T) {
 
 // outputCapTimeout is the command timeout the output-cap case allows,
 // STIRRUP_TEST_OUTPUT_CAP_TIMEOUT when set: a runtime that throttles exec
-// output needs longer than the 30-second default to stream 11 MB.
+// output may need longer than the 30-second default to stream 11 MB.
 func outputCapTimeout(t *testing.T) time.Duration {
 	t.Helper()
 	v := os.Getenv("STIRRUP_TEST_OUTPUT_CAP_TIMEOUT")

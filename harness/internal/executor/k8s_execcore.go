@@ -45,8 +45,9 @@ type podExecCore struct {
 	// execFn replaces the pods/exec round trip when set; unit tests use it to
 	// observe the exec calls without a cluster.
 	execFn podExecFunc
-	// fileIOTimeout bounds each file read, write or listing exec; zero means
-	// k8sFileIOTimeout.
+	// fileIOTimeout bounds each file read, write and listing exec, the
+	// sandbox identity token write and the runtime diagnostics read; zero
+	// means k8sFileIOTimeout.
 	fileIOTimeout time.Duration
 }
 

@@ -39,8 +39,8 @@ func TestStrictAdmissionFields_ClassifyEveryField(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			fields := map[string]bool{}
-			for i := 0; i < tc.typ.NumField(); i++ {
-				name := tc.typ.Field(i).Name
+			for _, f := range reflect.VisibleFields(tc.typ) {
+				name := f.Name
 				fields[name] = true
 				must.Contains(tc.table, name, "%s.%s is not classified", tc.typ.Name(), name)
 			}
@@ -70,13 +70,7 @@ func nitroFixtureCfg() K8sExecutorConfig {
 }
 
 // decodeAdmittedNitroPod decodes the admitted-Pod fixture as a client
-// decodes an API response. The fixture is modelled on Pods read back from
-// EKS (Kubernetes 1.36) after they were Ready, with identifiers rewritten
-// to the test's names; it is not a Create response. Its enableServiceLinks
-// is false, the value the executor submits; every other value follows the
-// read-backs, including what EKS and API defaulting added (1Gi for 1024Mi,
-// topology labels, the merged node selector, default tolerations, the
-// overhead and scheduling fields).
+// decodes an API response; testdata/README.md gives its provenance.
 func decodeAdmittedNitroPod(t *testing.T) *corev1.Pod {
 	t.Helper()
 	must := require.New(t)
@@ -434,15 +428,11 @@ func TestK8sRuntimeProfiles_StrictProfileAnnotationsAreGoverned(t *testing.T) {
 // start failure, not a runtime diagnostic.
 func TestNewK8sExecutor_StrictReadinessFailureEmitsNoDiagnostic(t *testing.T) {
 	cases := []struct {
-		name string
-		ctx  func() (context.Context, context.CancelFunc)
+		name            string
+		cancelOnPodRead bool
 	}{
-		{name: "readiness timeout", ctx: func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) }},
-		{name: "caller cancels during the wait", ctx: func() (context.Context, context.CancelFunc) {
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-			return ctx, cancel
-		}},
+		{name: "readiness timeout"},
+		{name: "caller cancels during the wait", cancelOnPodRead: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -450,8 +440,14 @@ func TestNewK8sExecutor_StrictReadinessFailureEmitsNoDiagnostic(t *testing.T) {
 			cs := fake.NewClientset()
 			admitPods(cs, func(p *corev1.Pod) { p.Status = corev1.PodStatus{Phase: corev1.PodPending} })
 			cfg, security := nitroConstructorCfg()
-			ctx, cancel := tc.ctx()
+			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
+			if tc.cancelOnPodRead {
+				cs.PrependReactor("get", "pods", func(clienttesting.Action) (bool, runtime.Object, error) {
+					cancel()
+					return false, nil, nil
+				})
+			}
 
 			_, err := newFakeK8sExecutor(ctx, cs, cfg)
 
@@ -598,7 +594,7 @@ func TestStrictAdmissionFields_UncomparedFieldsAreTheReasonedSet(t *testing.T) {
 			got["container."+name] = field.rule
 		}
 	}
-	must.Equal(wantUncomparedFields, got)
+	must.Equal(wantUncomparedFields, got, "the classification tables no longer match wantUncomparedFields; change the list only for a field that truly must not be compared, and give it a reason in the table")
 }
 
 // TestPodAdmission_StrictComparesEveryComparedField changes each field that

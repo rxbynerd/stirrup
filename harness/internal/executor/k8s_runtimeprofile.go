@@ -60,7 +60,7 @@ var k8sRuntimeProfiles = map[string]k8sRuntimeProfile{
 		runtimeClassName:        "isolated-sandbox",
 		runtimeClassMissingHint: "the isolated-sandbox RuntimeClass is installed by EKS Auto Mode on Kubernetes 1.36 or later; see docs/executors/k8s.md#eks-with-nitro-sandboxes",
 		// The default 2M log throttle also throttles exec stdout, the only
-		// path results leave an offline guest by.
+		// channel the executor reads results over.
 		podAnnotations:            map[string]string{"sandbox.amazonaws.com/log-bandwidth": "20M"},
 		noNetworkAnnotations:      map[string]string{"sandbox.amazonaws.com/network-isolated": "true"},
 		strictAdmission:           true,
