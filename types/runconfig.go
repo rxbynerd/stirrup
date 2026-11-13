@@ -6310,10 +6310,11 @@ func validateExecutorRuntime(cfg ExecutorConfig, errs *[]string) {
 // negative resource value is not reported here either: ResourceLimitErrors
 // reports it, and both ValidateRunConfig and the k8s constructor call that.
 //
-// Only "nitro-isolated" has requirements. Its guest VM is sized from the
-// CPU and memory requests at boot, the first supported shape is offline
-// (no guest IP network), and an ephemeral-storage limit is not an enforced
-// quota inside the guest. See docs/executors/k8s.md#eks-with-nitro-sandboxes.
+// Only "nitro-isolated" has requirements. AWS's sample sizes the guest VM
+// from the CPU and memory requests at boot, the supported shape is offline
+// (no guest network interface beyond lo and dummy0), and an
+// ephemeral-storage limit was not observed to bound writes inside the
+// guest. See docs/executors/k8s.md#eks-with-nitro-sandboxes.
 func K8sRuntimeRequirementErrors(runtime string, network *NetworkConfig, resources *ResourceLimits, identityConfigured bool) []string {
 	if runtime != "nitro-isolated" {
 		return nil
@@ -6341,7 +6342,7 @@ func K8sRuntimeRequirementErrors(runtime string, network *NetworkConfig, resourc
 	}
 	if r.DiskMB > 0 {
 		errs = append(errs, fmt.Sprintf(
-			`executor.resources.diskMb must be unset for executor.runtime="nitro-isolated" (got %d); an ephemeral-storage limit is not an enforced quota inside the guest`,
+			`executor.resources.diskMb must be unset for executor.runtime="nitro-isolated" (got %d); an ephemeral-storage limit was not observed to bound writes inside the guest`,
 			r.DiskMB))
 	}
 	if identityConfigured {
