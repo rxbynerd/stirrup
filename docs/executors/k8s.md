@@ -30,8 +30,16 @@ those files.
 - [When to use it](#when-to-use-it)
 - [Architecture](#architecture)
 - [Sandbox lifecycle](#sandbox-lifecycle)
+  - [Readiness](#readiness)
+  - [Admission check](#admission-check)
+  - [Diagnosing a slow or failed start](#diagnosing-a-slow-or-failed-start)
+  - [Teardown](#teardown)
+  - [Teardown edge cases](#teardown-edge-cases)
+  - [Cleaning up retained objects](#cleaning-up-retained-objects)
 - [Configuration reference](#configuration-reference)
 - [Deployment recipes](#deployment-recipes)
+- [Running the orchestrator in-cluster](#running-the-orchestrator-in-cluster)
+  - [Shutdown timing and grace period](#shutdown-timing-and-grace-period)
 - [RuntimeClass selection per run](#runtimeclass-selection-per-run)
 - [Egress](#egress)
 - [Safety rings on Kubernetes](#safety-rings-on-kubernetes)
@@ -154,22 +162,24 @@ them in sync. A run with a run ID also labels the Pod and its policy
 
 ## Sandbox lifecycle
 
-Construction installs the policy, creates the Pod, checks what admission
-did to it, and waits for it to become Ready. `Close` removes the Pod and
-then the policy. Every failure after the policy is installed goes
-through the same teardown as `Close`.
+A normal run goes like this. Construction installs the egress policy,
+creates the Pod, compares what admission returned with what was
+submitted, and waits up to 5 minutes for the Pod to become Ready.
+`Close` deletes the Pod with a 1-second grace period, reads the Pod
+until it is gone, and then deletes the policy; measured on kind 1.31
+this takes about 5 seconds. When `Close` returns no error, nothing is
+left to clean up. Every construction failure after the policy is
+installed goes through the same teardown as `Close`.
 
 ### Readiness
 
 The executor polls the Pod once a second until it is `Running` with the
 `agent` container Ready. The wait ends after **5 minutes**, or sooner
 when the caller's context ends. The ceiling allows for a first sandbox
-Pod that waits for a cluster autoscaler to provision a node. Both
-Kubernetes executors share it: the
-[`k8s-sandbox`](k8s-agent-sandbox.md) executor waits as long for its
-Sandbox. The wait logs one line at info level when it starts and a
-progress line every 30 seconds with the Pod's phase, its `PodScheduled`
-condition and the last waiting reason.
+Pod that waits for a cluster autoscaler to provision a node. The wait
+logs one line at info level when it starts and a progress line every 30
+seconds with the Pod's phase, its `PodScheduled` condition and the last
+waiting reason.
 
 The wait fails at once, without using the remaining time, when the Pod
 reaches one of these states:
@@ -191,16 +201,17 @@ deadline, because a registry outage can clear on its own. Every other
 waiting reason (including `ContainerCreating`,
 `CreateContainerConfigError` and `CreateContainerError`) is also waited
 out for the full five minutes and appears as the last waiting reason in
-the timeout error; its cause is in the Pod's Events. Other API errors
-from the poll (timeouts, throttling, a restarting API server) are also
-retried until the deadline.
+the timeout error; its cause is in the Pod's Events (see
+[Diagnosing a slow or failed start](#diagnosing-a-slow-or-failed-start)).
+Other API errors from the poll (timeouts, throttling, a restarting API
+server) are also retried until the deadline.
 
 When the wait times out, the error reports the Pod's phase, its
 `PodScheduled` condition (status, reason and message), the last waiting
 reason of the `agent` container, and the last API error, if any. Each
-cluster-supplied string is scrubbed of credentials, stripped of control
-characters and truncated to 256 characters. For example (one line in the
-log, wrapped here):
+cluster-supplied string is stripped of control characters, scrubbed of
+credentials, and cut to 256 characters with an ellipsis appended. For
+example (one line in the log, wrapped here):
 
 ```
 pod stirrup-sandbox/stirrup-0123456789ab not ready within 5m0s: phase Pending;
@@ -208,30 +219,11 @@ PodScheduled False (Unschedulable: 0/3 nodes are available: 3 Insufficient cpu.)
 context deadline exceeded
 ```
 
-The executor does not read Events, so the reference Role needs no
-`events` permission. Events are separate objects that outlive the Pod
-until the API server's event TTL (`--event-ttl`, one hour by default
-and cluster-configurable), so after teardown an operator can still read
-them with `kubectl -n <namespace> get events
---field-selector involvedObject.name=<pod>`. A Pod that is scheduled
-but whose sandbox never starts records `FailedCreatePodSandBox` there
-(for example a RuntimeClass whose handler is not installed on the node).
-Where the reason for not adding a node is published depends on the
-autoscaler: the Kubernetes Cluster Autoscaler records
-`NotTriggerScaleUp` and `TriggeredScaleUp` Events on the Pod; GKE
-publishes its scale-up decisions as visibility events in Cloud Logging;
-Karpenter-style provisioners report on their own objects.
-
-Two costs of the wait need planning:
-
-- **It counts against the run's deadline.** In `stirrup job` the run's
-  `timeout` starts at task assignment and covers component
-  construction, so time spent waiting for a node is time the agent does
-  not get.
-- **It consumes sandbox identity token lifetime.** The token is
-  exchanged before the sandbox is created. See
-  [Sandbox identity token exposure](#sandbox-identity-token-exposure)
-  for what the harness does when the token nears expiry during startup.
+The [`k8s-sandbox`](k8s-agent-sandbox.md) executor shares only the
+5-minute ceiling and the immediate failure on `Forbidden` or
+`Unauthorized`. It waits on the Sandbox's `Ready` condition and has none
+of the Pod states above, no progress lines and no admission check, so a
+permanently broken image there waits the full five minutes.
 
 ### Admission check
 
@@ -270,37 +262,96 @@ with a rewritten spec from starting, and it does not undo whatever that
 Pod did before the check. Keeping the Pod contract intact at admission
 is the cluster operator's responsibility.
 
+### Diagnosing a slow or failed start
+
+The executor does not read Events, so the reference Role needs no
+`events` permission. Events are separate objects that outlive the Pod
+until the API server's event TTL (`--event-ttl`, one hour by default
+and cluster-configurable), so after teardown an operator can still read
+them with `kubectl -n <namespace> get events
+--field-selector involvedObject.name=<pod>`. A Pod that is scheduled
+but whose sandbox never starts records `FailedCreatePodSandBox` there
+(for example a RuntimeClass whose handler is not installed on the node).
+Where the reason for not adding a node is published depends on the
+autoscaler: the Kubernetes Cluster Autoscaler records
+`NotTriggerScaleUp` and `TriggeredScaleUp` Events on the Pod, and GKE
+publishes its scale-up decisions as visibility events in Cloud Logging.
+
+Two costs of the wait need planning:
+
+- **It counts against the run's deadline.** In `stirrup job` the run's
+  `timeout` starts at task assignment and covers component
+  construction, so time spent waiting for a node is time the agent does
+  not get.
+- **It consumes sandbox identity token lifetime.** The token is
+  exchanged before the sandbox is created. See
+  [Sandbox identity token exposure](#sandbox-identity-token-exposure)
+  for what the harness does when the token nears expiry during startup.
+
 ### Teardown
 
 `Close`, and every construction failure after the policy is installed,
-follow one contract. The policy is not removed until a read finds the
-Pod object gone (or its name taken by another UID) after a graceful
-delete, which the kubelet allows only once the containers have stopped:
+follow one contract. The policy is removed only after a read shows the
+Pod is gone, or that its name belongs to another UID. A graceful delete
+makes that happen only after the kubelet has stopped the containers.
 
 1. Delete the Pod with a **1-second grace period** and a **UID
    precondition**, so a retry cannot delete a different Pod that reuses
    the name. With a non-zero grace period the API object stays, marked
-   terminating, until the kubelet reports the containers stopped. A
-   zero grace period would remove the object before the kubelet confirms
+   terminating, until the kubelet reports the containers stopped; a
+   zero grace period would remove it before the kubelet confirms
    anything. One second is enough because the `sleep infinity`
-   entrypoint ignores `SIGTERM` and holds no state; a longer grace only
-   delays teardown. The Pod spec carries the same
-   `terminationGracePeriodSeconds: 1`, so owner-reference garbage
-   collection, `activeDeadlineSeconds` expiry and eviction also stop the
-   sandbox in about a second.
+   entrypoint ignores `SIGTERM` and holds no state. The Pod spec carries
+   the same `terminationGracePeriodSeconds: 1`, so owner-reference
+   garbage collection, `activeDeadlineSeconds` expiry and eviction also
+   stop the sandbox in about a second.
 2. Read the Pod until it is `NotFound` or its name belongs to a
    different UID. The delete call's own response is never taken as
    proof: a webhook or a proxy can answer `404` or `409` while the Pod
    runs.
 3. Only then delete the egress `NetworkPolicy`.
 
-Steps 1 and 2 share a 30-second bound and retry transient API errors;
-step 3 is one attempt with its own 30-second bound. Both run on a
-context independent of the run's, so a cancelled or timed-out run still
-cleans up. Measured on kind 1.31, a teardown takes about 5 seconds; that
-is an observation, not a contract.
+Steps 1 and 2 share a 30-second bound; step 3 has its own 30-second
+bound. Each step retries transient API errors within its bound and stops
+at once on `Forbidden` or `Unauthorized`. All of it runs on contexts
+independent of the run's, so a cancelled or timed-out run still cleans
+up. The 5-second figure above is an observation on kind, not a
+contract.
 
-What the read in step 2 cannot cover:
+The executor never force-deletes the Pod. It **retains the policy**
+when any of these happens:
+
+- the Pod delete, the termination read, or the policy delete fails
+  (`Forbidden` or `Unauthorized` at once; other errors once the step's
+  30-second bound is spent);
+- termination is not established within the bound;
+- the lookup after a failed Pod create fails;
+- a Pod under the run's name lacks the run's labels;
+- a create whose outcome is unknown finds no Pod (see
+  [Teardown edge cases](#teardown-edge-cases)).
+
+It then logs a warning, `sandbox teardown incomplete; retaining the
+egress NetworkPolicy (fail closed)`, with `namespace`, `pod`,
+`networkpolicy`, `runId` and `err`, and returns an error of the form
+`tear down pod <ns>/<pod> (run ID "<id>"): <cause>; retained egress
+NetworkPolicy <ns>/<pod>-egress`. The `k8s-sandbox` executor logs the
+same warning and returns the same form beginning `tear down sandbox`. A
+later `Close` on the same executor repeats the whole teardown; after a
+successful one it does nothing. Retained objects are cleaned up with
+[the procedure below](#cleaning-up-retained-objects).
+
+A `Close` error at the end of a run does not change the run's outcome:
+the agentic loop joins it into its own `Close` error, which
+`stirrup job` and `stirrup harness` discard once the run's result is
+decided; when the shutdown watchdog is the one that closes the loop, it
+prints the error to stderr as a warning. The warning log is the durable
+record. When construction fails, the retained-object error is joined
+onto the construction error the caller receives, as
+`<build error>; cleanup: <close error>`.
+
+### Teardown edge cases
+
+What the read in step 2 cannot establish:
 
 - another actor force-deleting the Pod, or the Pod garbage collector
   removing it after its Node object was deleted or tainted
@@ -312,63 +363,44 @@ What the read in step 2 cannot cover:
   safe because nothing ran;
 - a Pod held by a finalizer stays terminating, so the policy is
   retained;
+- a Pod of another UID under the run's name counts as termination only
+  when it lacks the `stirrup.dev/pod` label; one that carries it is
+  still selected by the policy, which is then retained;
 - deleting the namespace removes the Pod and the policy independently,
   in no guaranteed order;
 - on a CNI that does not enforce NetworkPolicy, retaining a policy
   confines nothing (see
   [the kindnet caveat](#enforcement-caveat--kindnet-does-not-enforce-networkpolicy)).
 
-The executor **retains the policy** when any of these happens:
-
-- the Pod delete fails (`Forbidden` or `Unauthorized` at once; other
-  errors after retrying to the 30-second bound);
-- termination is not established within the bound (`Forbidden` or
-  `Unauthorized` on the read stops at once);
-- the lookup after a failed Pod create fails;
-- a Pod under the run's name lacks the run's labels;
-- a create whose outcome is unknown finds no Pod (see below);
-- the policy delete itself fails.
-
-It never force-deletes the Pod. It logs a warning, `sandbox teardown
-incomplete; retaining the egress NetworkPolicy (fail closed)`, with
-`namespace`, `pod`, `networkpolicy`, `runId` and `err`, and returns an
-error of the form `tear down pod <ns>/<pod> (run ID "<id>"): <cause>;
-retained egress NetworkPolicy <ns>/<pod>-egress`. The `k8s-sandbox`
-executor logs the same warning and returns the same form beginning
-`tear down sandbox`. On a cluster that enforces NetworkPolicy a retained
-policy keeps confining a Pod that is still running and is inert once the
-Pod is gone. The policy carries no owner reference to the Pod, because
-garbage collection would remove it as soon as the Pod object
-disappears, including after a force delete that does not wait for the
-workload to stop.
-
-A `Close` error at the end of a run does not change the run's outcome:
-the agentic loop joins it into its own `Close` error, which
-`stirrup job` and `stirrup harness` discard once the run's result is
-decided; when the shutdown watchdog is the one that closes the loop, it
-prints the error to stderr as a warning. The warning log above is the
-durable record. When construction fails, the
-retained-object error is joined onto the construction error the caller
-receives, as `<build error>; cleanup: <close error>`.
+On a cluster that enforces NetworkPolicy a retained policy keeps
+confining a Pod that is still running and is inert once the Pod is gone.
+The policy carries no owner reference to the Pod, because garbage
+collection would remove it as soon as the Pod object disappears,
+including after a force delete that does not wait for the workload to
+stop.
 
 Every Pod create error, whatever its status, is followed by a lookup of
 the Pod under its preselected name, because a client may retry a
-request whose first attempt was persisted:
+request whose first attempt was persisted. The lookup needs `get` on
+`pods`:
 
 | Create error | Lookup finds | Outcome |
 |---|---|---|
 | any | a Pod with every label the run submitted | torn down by UID as above; policy removed after |
 | any | a Pod without those labels | Pod left alone; policy retained |
-| any | lookup fails | policy retained |
-| a definitive rejection: a `4xx` status other than `408`, `409` or `429` | no Pod | policy removed; the server refused the request |
+| any | the lookup fails, including `Forbidden` after a definitive rejection | policy retained |
+| a definitive rejection: a `4xx` status other than `408`, `409` or `429` | no Pod | policy removed; the server refused the last attempt |
 | anything else: a timeout, `408`, `409` (`AlreadyExists` under the run's own random name), `429`, a `5xx`, a connection error, a cancelled context | no Pod | policy retained and reported by run ID |
 
 The last row is deliberate: a create that the API server persists after
-the lookup then starts under its policy. The cost is an occasional
-leftover policy with no Pod, which the
-[cleanup procedure](#cleaning-up-retained-objects) covers. A policy
-with no Pod can also come from a policy create whose own outcome was
-unknown (it timed out but was persisted); the same procedure applies.
+the lookup then starts under its policy. Its retention cause reads
+`pod <ns>/<pod> was not found after a create whose outcome is unknown`,
+and the [cleanup procedure](#cleaning-up-retained-objects) has a step for
+it. One residual is not covered: a first attempt that is still being
+written when a retry is refused and the lookup runs, and that commits
+only afterwards, starts an idle Pod with no policy. A policy with no Pod
+can also come from a policy create whose own outcome was unknown (it
+timed out but was persisted); the same procedure applies.
 
 Leftover Pods are bounded. For every run the harness builds from a
 validated `RunConfig`, `activeDeadlineSeconds` is set to the run's
@@ -386,6 +418,12 @@ its policy if the kill came before the Pod delete, or a terminating Pod
 and its policy if it came during the wait.
 
 ### Cleaning up retained objects
+
+A retained policy may be deleted only when its Pod is confirmed gone
+and the node it ran on is healthy or confirmed terminated, or when its
+Pod never started: a create with an unknown outcome whose policy is
+between 10 minutes and the event TTL old and whose Pod never appeared.
+Everything else keeps the policy. The steps below make those checks.
 
 Operators own the cleanup and run these commands with their own
 credentials; the reference orchestrator Role has no `list` permission.
@@ -409,10 +447,10 @@ sandbox, so the label holds the first run's ID.
    `kubectl -n "$NS" get pods,networkpolicies -l stirrup.dev/run-id=<label-safe-run-id>`.
 
 2. **Age guard.** Leave alone any policy whose `AGE` is under 10 minutes,
-   and any policy whose run is still active (its harness process or Job
-   has not finished). A run installs its policy immediately before
-   creating its Pod, so a live run has a policy with no Pod for as long
-   as its create call takes, and an API server can still persist a
+   and any policy whose run is still active (step 4 shows how to check
+   when the Pod has an owner). A run installs its policy immediately
+   before creating its Pod, so a live run has a policy with no Pod for as
+   long as its create call takes, and an API server can still persist a
    create after the harness gave up on it; 10 minutes is well past any
    create call's bound. Exact creation times:
 
@@ -430,58 +468,105 @@ sandbox, so the label holds the first run's ID.
      -o jsonpath='{.metadata.deletionTimestamp}{" node="}{.spec.nodeName}{" finalizers="}{.metadata.finalizers}{"\n"}'
    ```
 
-4. **Pod present and not terminating** (the first field is empty; the
-   harness was killed mid-run and its run is over). Delete it gracefully,
-   confirm it is gone, then remove the policy:
+4. **Pod present and not terminating** (the first field is empty). A
+   Pod in this state is also what a live run looks like. When the
+   harness runs in a Pod with the downward-API variables set, the
+   sandbox Pod names it as its owner; if that owner is `Pending` or
+   `Running`, the run is active, so stop:
 
    ```sh
-   kubectl -n "$NS" delete pod "$POD" --grace-period=1 --wait=true
+   kubectl -n "$NS" get pod "$POD" \
+     -o jsonpath='{range .metadata.ownerReferences[*]}{.kind}/{.name}{"\n"}{end}'
+   OWNER=<name from the previous command>
+   kubectl -n "$NS" get pod "$OWNER" -o jsonpath='{.status.phase}{"\n"}'
+   ```
+
+   With no owner reference, confirm from the orchestrator that the run is
+   over. Then delete the Pod gracefully, wait at most a minute for it to
+   go, confirm it is gone, and remove the policy:
+
+   ```sh
+   kubectl -n "$NS" delete pod "$POD" --grace-period=1 --wait=false
+   kubectl -n "$NS" wait --for=delete pod/"$POD" --timeout=60s
    kubectl -n "$NS" get pod "$POD"
    kubectl -n "$NS" delete networkpolicy "$POD-egress"
    ```
 
-   The second command must report `NotFound` before the third runs.
+   The third command must report `NotFound` before the fourth runs. If
+   the wait times out, the Pod is terminating: go to step 5.
 
 5. **Pod present and terminating** (the first field is a timestamp).
    Check the node it is bound to:
 
    ```sh
    NODE=<node from step 3>
-   kubectl get node "$NODE" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}{"\n"}'
+   kubectl get node "$NODE" -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{" heartbeat="}{.lastHeartbeatTime}{"\n"}{end}'
+   kubectl -n kube-node-lease get lease "$NODE" -o jsonpath='{.spec.renewTime}{"\n"}'
+   date -u +%Y-%m-%dT%H:%M:%SZ
    ```
 
-   - `True`: the kubelet is stopping the containers. Wait and repeat
-     step 3; once the Pod is `NotFound`, delete the policy.
-   - `False` or `Unknown`, or the node is not found: the workload may
-     still be running. Keep the policy. Restore the node, or confirm
-     from the infrastructure provider that its instance is terminated,
-     before going on.
-   - A non-empty `finalizers` list holds the Pod. Remove a finalizer
-     only once the controller that owns it agrees, then wait for
-     `NotFound`:
+   The node is healthy only if `Ready` is `True` **and** its Lease was
+   renewed within the last 40 seconds. A kubelet renews its Lease about
+   every 10 seconds, but `Ready` stays `True` for the node-monitor grace
+   period (40 to 50 seconds by default) after the kubelet stops
+   reporting, and the condition's `lastHeartbeatTime` is refreshed only
+   every few minutes on a healthy node, so neither alone shows the node
+   is reachable now. When in doubt, wait a minute and check again.
 
-     ```sh
-     kubectl -n "$NS" patch pod "$POD" --type=json -p='[{"op":"remove","path":"/metadata/finalizers"}]'
-     ```
+   - Healthy: the kubelet is stopping the containers. With the 1-second
+     grace period this takes seconds; repeat step 3, and once the Pod is
+     `NotFound`, delete the policy. A Pod still terminating after more
+     than a minute on a healthy node points to a finalizer or a stuck
+     container runtime.
+   - Not healthy, or the node is not found: the workload may still be
+     running. Keep the policy. Restore the node, or confirm from the
+     infrastructure provider that its instance is terminated, before
+     going on.
 
-6. **Pod absent** (`NotFound`). That alone is proof only if nobody
-   force-deleted the Pod and the Pod garbage collector did not remove it
-   after a node deletion or an `out-of-service` taint. Find the node the
-   Pod ran on, from an earlier inventory or from its `Scheduled` Event
-   while the event TTL lasts:
+   Independently of the node, a non-empty `finalizers` list holds the
+   Pod. Remove a finalizer only once the controller that owns it agrees,
+   then wait for `NotFound`:
 
    ```sh
-   kubectl -n "$NS" get events --field-selector involvedObject.name="$POD",reason=Scheduled \
-     -o jsonpath='{range .items[*]}{.message}{"\n"}{end}'
+   kubectl -n "$NS" patch pod "$POD" --type=json -p='[{"op":"remove","path":"/metadata/finalizers"}]'
+   kubectl -n "$NS" wait --for=delete pod/"$POD" --timeout=60s
    ```
 
-   Delete the policy only if that node is `Ready` (the check in step 5)
-   and has not been deleted and re-added since the Pod ran (its `AGE` in
-   `kubectl get node "$NODE"` is older than the policy), or if the node
-   is gone and its instance is confirmed terminated. No `Scheduled`
-   Event within the TTL and no other record of a node means the check
-   cannot be made; keep the policy unless the infrastructure shows no
-   node could have run the Pod. When the check passes:
+6. **Pod absent** (`NotFound`). Read the Pod's Events:
+
+   ```sh
+   kubectl -n "$NS" get events --field-selector involvedObject.name="$POD"
+   ```
+
+   - **The Pod never started.** The harness reported the retention cause
+     `pod <ns>/<pod> was not found after a create whose outcome is
+     unknown` (in its warning's `err` field or its error), the policy is
+     older than the 10-minute guard but younger than the event TTL (one
+     hour by default), and there are no Events for the Pod. A create
+     persisted late would have produced a Pod, and with it Events that
+     are still listed, so nothing ran under this name. Delete the policy.
+     Past the event TTL that evidence is gone, and the policy is handled
+     as in the next case, so this cleanup is best done within the hour.
+   - **The Pod ran.** `NotFound` alone is proof only if nobody
+     force-deleted the Pod and the Pod garbage collector did not remove
+     it after a node deletion or an `out-of-service` taint. Find the
+     node the Pod ran on, from an earlier inventory or from its
+     `Scheduled` Event while the event TTL lasts:
+
+     ```sh
+     kubectl -n "$NS" get events --field-selector involvedObject.name="$POD",reason=Scheduled \
+       -o jsonpath='{range .items[*]}{.message}{"\n"}{end}'
+     ```
+
+     Delete the policy only if that node is healthy (the check in step
+     5) and has not been deleted and re-added since the Pod ran (its
+     `AGE` in `kubectl get node "$NODE"` is older than the policy), or if
+     the node is gone and its instance is confirmed terminated. No
+     `Scheduled` Event within the TTL and no other record of a node
+     means the check cannot be made; keep the policy unless the
+     infrastructure shows no node could have run the Pod.
+
+   When either check passes:
 
    ```sh
    kubectl -n "$NS" delete networkpolicy "$POD-egress"
@@ -489,14 +574,14 @@ sandbox, so the label holds the first run's ID.
 
 7. **`k8s-sandbox`.** The Sandbox object must also be `NotFound` before
    its policy is deleted: `kubectl -n "$NS" get sandboxes.agents.x-k8s.io "$POD"`.
-   The Sandbox name equals the Pod name on the cold-create path.
+   The Sandbox name equals the Pod name on the cold-create path, and the
+   retention cause for a create with an unknown outcome begins
+   `sandbox <ns>/<name> was not found`.
 
 `kubectl delete pod --force --grace-period=0` and `kubectl delete node`
 remove API objects; neither establishes that a workload stopped, so
 neither is a reason to delete a policy. Whether a retained policy still
-confines a Pod whose API object is gone depends on the CNI: Calico and
-Cilium derive endpoint policy from the Pod object, so once it is gone
-the policy may no longer apply to a workload that is still running.
+confines a workload whose Pod object is gone depends on the CNI.
 
 ## Configuration reference
 
@@ -837,47 +922,6 @@ Two requirements are easy to miss:
   orchestrator Pod needs `runtimeClassName: gvisor` (which injects the pool
   toleration) or a dedicated untainted pool.
 
-**`terminationGracePeriodSeconds` on the orchestrator Pod.** Kubernetes
-sends one SIGTERM on Pod deletion, eviction or scale-down, then SIGKILL
-after the grace period (30 seconds when the field is unset). Stirrup's
-signal handler (`harness/cmd/stirrup/cmd/root.go::setupSignalHandler`)
-cancels the run's context on the first signal, so the agentic loop
-stops. Post-run work (git finalise, `postRun` hooks, the workspace
-handoff and the trace finish) runs on a context detached from the run
-with its own bounded budget, and stops early only on a second signal.
-What follows differs by command:
-
-- **`stirrup job`** arms a shutdown watchdog on the first signal. Five
-  seconds later it closes the loop even if `Run()` has not returned,
-  which cuts post-run work short and starts executor teardown.
-- **`stirrup harness`** arms the watchdog only on a second signal.
-  Kubernetes sends one SIGTERM, so teardown starts when `Run()` and its
-  post-run work return; a long `postRun` hook delays it by up to the
-  hook's budget (at most 1830 seconds).
-
-The watchdog starts teardown; it does not bound it. Closing the loop
-closes its resources in reverse build order: the sandbox identity token
-refresher (up to 5 seconds), the metrics exporter, the trace emitter,
-the MCP client, the transport, the log exporter, the command output
-store, and the executor last. [Teardown](#teardown) of the executor
-takes about 5 seconds normally and at most 30 seconds for the Pod plus
-30 for the policy delete. Each configured OTLP exporter (traces, metrics,
-logs) flushes on shutdown under the OpenTelemetry SDK's 30-second export
-timeout, so an unreachable collector delays executor teardown by up to
-30 seconds per exporter.
-
-For `stirrup job` the worst case without OTLP export is 5 + 5 + 30 + 30
-= 70 seconds after SIGTERM. Set `terminationGracePeriodSeconds` to at
-least 90 seconds, plus 30 for each OTLP exporter the run configures; for
-`stirrup harness`, add the post-run budget the run can spend after the
-signal. A SIGKILL before the Pod delete leaves a running sandbox Pod and
-its policy; one during the termination wait leaves a terminating Pod
-and its policy. Both fail closed and are cleaned up as described in
-[Cleaning up retained objects](#cleaning-up-retained-objects). A SIGTERM
-that arrives while the sandbox is still starting ends the readiness wait
-at once, and the same teardown follows. A cluster with a tighter
-eviction or preemption grace period should account for the same budget.
-
 Provider auth is **orthogonal to sandbox egress**. The orchestrator's
 provider call (to Anthropic / Vertex / an OpenAI-compatible endpoint) is
 made from the orchestrator Pod, not the sandbox, so a sandbox
@@ -886,6 +930,52 @@ run — the allowlist constrains only the sandbox Pod's own traffic. (When
 the orchestrator Pod is itself subject to a namespace egress
 `NetworkPolicy`, it needs its own allowances for the provider endpoint, the
 metadata server, DNS, and the in-cluster API server.)
+
+### Shutdown timing and grace period
+
+Kubernetes sends one SIGTERM on Pod deletion, eviction or scale-down,
+then SIGKILL after the Pod's `terminationGracePeriodSeconds` (30 seconds
+when the field is unset). Stirrup's signal handler
+(`harness/cmd/stirrup/cmd/root.go::setupSignalHandler`) cancels the run's
+context on the first signal, so the agentic loop stops. Post-run work
+(git finalise, `postRun` hooks, the workspace handoff and the trace
+finish) runs on a context detached from the run with its own bounded
+budget, and stops early only on a second signal. When executor teardown
+starts depends on the command:
+
+| Command | Teardown starts | Worst case after SIGTERM, no OTLP export | Recommended `terminationGracePeriodSeconds` |
+|---|---|---|---|
+| `stirrup job` | 5 s after the signal: the shutdown watchdog, armed on the first signal, closes the loop even if `Run()` has not returned, cutting post-run work short | 5 (watchdog) + 5 (refresher) + 30 (Pod) + 30 (policy) = 70 s | at least 90 s, plus 30 s per OTLP exporter |
+| `stirrup harness` | when `Run()` and its post-run work return; the watchdog arms only on a second signal, which Kubernetes does not send, so a long `postRun` hook delays teardown by up to its budget (at most 1830 s) | the post-run time spent after the signal, plus 5 (refresher) + 2 (transport) + 30 (Pod) + 30 (policy) = 67 s | the post-run budget plus 90 s, plus 30 s per OTLP exporter |
+
+The watchdog starts teardown; it does not bound it. Closing the loop
+closes its resources in reverse build order: the sandbox identity token
+refresher (up to 5 seconds), the metrics exporter, the trace emitter,
+the MCP client, the transport, the log exporter, the command output
+store, and the executor last. The transport is in that list only for
+`stirrup harness`, where a gRPC transport waits up to 2 seconds for the
+stream to end; `stirrup job` closes its control-plane transport
+separately, after the loop. [Teardown](#teardown) of the executor takes
+about 5 seconds normally and at most 30 seconds for the Pod plus 30 for
+the policy delete. Each configured OTLP exporter (traces, metrics, logs)
+flushes on shutdown under the OpenTelemetry Go SDK's default 30-second
+export timeout (trace `BatchSpanProcessor`, metric `PeriodicReader` and
+log `BatchProcessor` in SDK v1.47.0; read from the SDK source, not
+measured), so an unreachable collector delays executor teardown by up to
+30 seconds per exporter.
+
+When the first teardown retains the policy, the deferred close at the
+end of the command reaches the executor again and repeats the teardown,
+adding up to 60 seconds that the figures above do not include. A
+SIGKILL during that repeat is harmless: the policy is already retained.
+
+A SIGKILL before the Pod delete leaves a running sandbox Pod and its
+policy; one during the termination wait leaves a terminating Pod and its
+policy. Both fail closed and are cleaned up as described in
+[Cleaning up retained objects](#cleaning-up-retained-objects). A SIGTERM
+that arrives while the sandbox is still starting ends the readiness wait
+at once, and the same teardown follows. A cluster with a tighter
+eviction or preemption grace period should account for the same budget.
 
 ## RuntimeClass selection per run
 
@@ -1106,7 +1196,9 @@ relative to a `Secret`-backed credential:
   refresher then schedules from the fresh token's expiry. A failed
   re-exchange, or a fresh token that has already expired, fails
   construction and tears the sandbox down under the
-  [teardown](#teardown) rules. The Pod's environment variable still
+  [teardown](#teardown) rules. A fresh token that expires seconds
+  later is delivered, and the refresher then asks for another within
+  seconds. The Pod's environment variable still
   carries the first token, which may already be past its refresh
   point.
 
@@ -1128,17 +1220,17 @@ something the current implementation provides.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `RuntimeClass "<name>" was rejected by the cluster` | The API server named the RuntimeClass in its rejection: it is not registered, or the name is invalid. Other admission rejections (a LimitRange, a quota, Pod Security, a webhook) are reported as `create pod: ...` with the API server's message unchanged apart from a length cap. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) for the handlers actually installed, or pick a registered runtime. |
 | `executor.k8sNamespace is required for executor.type="k8s"` | `--k8s-namespace` / `executor.k8sNamespace` unset. | Set the namespace. |
 | `executor.k8sEgressProxyUrl is required when ... "allowlist"` | `network.mode: allowlist` without a proxy URL. | Set `--k8s-egress-proxy-url`, or use `network.mode: none`. |
 | `executor.k8sEgressProxyUrl is only valid when ... "allowlist"` | A proxy URL set while `network.mode` is `none`. | Remove the URL, or switch to `allowlist`. |
 | `executor.network is required for executor.type="k8s"` | No `network` block. | Set `executor.network.mode` to `none` or `allowlist`. |
 | `not in cluster and KUBECONFIG is unset` | No in-cluster config, no kubeconfig. | Set `--k8s-kubeconfig` or `$KUBECONFIG`, or run in-cluster. |
+| `open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory` (in-cluster orchestrator) | The orchestrator Pod's ServiceAccount has `automountServiceAccountToken: false` (the reference SA's default), so no token is projected for the in-cluster REST config. | Set `automountServiceAccountToken: true` on the orchestrator Pod spec. See [Running the orchestrator in-cluster](#running-the-orchestrator-in-cluster). |
+| `RuntimeClass "<name>" was rejected by the cluster` | The API server named the RuntimeClass in its rejection: it is not registered, or the name is invalid. Other admission rejections (a LimitRange, a quota, Pod Security, a webhook) are reported as `create pod: ...` with the API server's message stripped of control characters, scrubbed of credentials and cut to 256 characters. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) for the handlers actually installed, or pick a registered runtime. |
+| `pod <ns>/<pod> not ready within 5m0s: phase Pending; PodScheduled False (Unschedulable: ...): context deadline exceeded` | No node fits the Pod and the autoscaler (if any) did not add one in time, or the RuntimeClass's scheduling matches no node. | Read the `PodScheduled` message in the error. The Pod's Events (`kubectl -n <ns> get events --field-selector involvedObject.name=<pod>`) remain after teardown until the event TTL; where the scale-up decision is recorded depends on the autoscaler. See [Readiness](#readiness). |
+| `0/N nodes available: ... had untolerated taint(s)` (Pod Pending) | The schedulable nodes are tainted (GKE Sandbox pools taint `sandbox.gke.io/runtime=gvisor:NoSchedule`; arch-dedicated pools may add `kubernetes.io/arch=...`) and the Pod tolerates none. | For the Sandbox pool, set `--container-runtime gvisor` so the managed RuntimeClass injects the toleration. For other tainted pools, add a matching `--k8s-node-selector` and ensure a toleration is available (the executor does not inject arbitrary tolerations). |
 | `pod <ns>/<pod> not ready within 5m0s: phase Pending; PodScheduled True; last waiting reason ContainerCreating` | The Pod was scheduled but its sandbox never started, usually because the RuntimeClass handler is not installed on that node. | Read the `FailedCreatePodSandBox` Event: `kubectl -n <ns> get events --field-selector involvedObject.name=<pod>` (Events outlive the Pod until the event TTL). Install the handler, or restrict the RuntimeClass's `scheduling.nodeSelector` to nodes that have it. |
 | `pod <ns>/<pod> not ready within 5m0s: ...; last waiting reason CreateContainerConfigError` (or `CreateContainerError`) | The kubelet could not build the container: a missing ConfigMap or Secret, an invalid `securityContext` for the image, or a runtime error. | Read the Pod's Events as above; the `Failed` Event carries the kubelet's message. |
-| `0/N nodes available: ... had untolerated taint(s)` (Pod Pending) | The schedulable nodes are tainted (GKE Sandbox pools taint `sandbox.gke.io/runtime=gvisor:NoSchedule`; arch-dedicated pools may add `kubernetes.io/arch=...`) and the Pod tolerates none. | For the Sandbox pool, set `--container-runtime gvisor` so the managed RuntimeClass injects the toleration. For other tainted pools, add a matching `--k8s-node-selector` and ensure a toleration is available (the executor does not inject arbitrary tolerations). |
-| Egress not actually confined on `kind` | kindnet does not enforce NetworkPolicy. | Use a NetworkPolicy-enforcing CNI (Cilium, Calico) for real confinement. |
-| `pod <ns>/<pod> not ready within 5m0s: phase Pending; PodScheduled False (Unschedulable: ...): context deadline exceeded` | No node fits the Pod and the autoscaler (if any) did not add one in time, or the RuntimeClass's scheduling matches no node. | Read the `PodScheduled` message in the error. The Pod's Events (`kubectl -n <ns> get events --field-selector involvedObject.name=<pod>`) remain after teardown until the event TTL; where the scale-up decision is recorded depends on the autoscaler. See [Readiness](#readiness). |
 | `pod <ns>/<pod> not ready within 5m0s: ...; last waiting reason ImagePullBackOff (...)` | The image cannot be pulled (wrong name, missing credentials, registry unreachable). | Check the image reference and pull secret; the waiting message carries the registry's answer. |
 | `pod <ns>/<pod> not ready before the run context ended: <summary>: <context error>` | The run's own deadline or a cancellation ended the wait first. | In `stirrup job` raise `timeout`, which also covers sandbox startup. |
 | `pod <ns>/<pod> not ready: agent container terminated (exit code 128, StartError: ... exec: "/bin/sh": stat /bin/sh: no such file or directory: unknown)` | The image lacks `/bin/sh`. The exit code and wording come from the container runtime; this is containerd with runc. | Use an image shipping `/bin/sh`, `tar`, `ls`, `mkdir`, `readlink`. |
@@ -1146,9 +1238,9 @@ something the current implementation provides.
 | `pod <ns>/<pod> not ready: pod phase Failed (...)` | The Pod failed before it was Ready (eviction, `DeadlineExceeded`, a runtime error). | Read the reason in the error; check node pressure and the RuntimeClass handler. |
 | `admitted pod <ns>/<pod> does not match the submitted pod: spec.runtimeClassName: expected ..., observed ...` (or a `metadata.labels[...]` entry) | An admission webhook or policy rewrote the RuntimeClass or a policy-selected label. | Exclude the sandbox namespace from that webhook, or make it preserve the fields. See [Admission check](#admission-check). |
 | `pod <ns>/<pod> not ready: observed pod <ns>/<pod> no longer matches the admitted pod: metadata.uid: expected <uid>, observed <uid>` | The Pod was deleted and another created under its name during the readiness wait; no webhook acted. A label or RuntimeClass entry instead means a writer changed the Pod after admission. | Find what deleted or edited the Pod (audit log); the sandbox namespace should hold only harness-managed Pods. |
-| `tear down pod <ns>/<pod> (run ID "<id>"): <cause>; retained egress NetworkPolicy <ns>/<pod>-egress` (also in the warning `sandbox teardown incomplete; retaining the egress NetworkPolicy (fail closed)`), or the same beginning `tear down sandbox` for `k8s-sandbox` | Pod termination was not confirmed within the teardown bound, the delete or the post-create lookup failed, the Pod under the name was not the run's, a create with an unknown outcome found no Pod, or the policy delete failed. The cause names which. | Follow [Cleaning up retained objects](#cleaning-up-retained-objects). |
+| `tear down pod <ns>/<pod> (run ID "<id>"): <cause>; retained egress NetworkPolicy <ns>/<pod>-egress` (also in the warning `sandbox teardown incomplete; retaining the egress NetworkPolicy (fail closed)`), or the same beginning `tear down sandbox` for `k8s-sandbox` | Pod termination was not confirmed within the teardown bound, the delete or the post-create lookup failed, the Pod under the name was not the run's or a replacement still carried the policy's selector label, a create with an unknown outcome found no Pod, the policy delete failed, or (for `k8s-sandbox`) the backing Pod was still present after the Sandbox was gone. The cause names which. | Follow [Cleaning up retained objects](#cleaning-up-retained-objects). |
 | Exec/file I/O fails with API errors | The orchestrator lacks `pods/exec` create. | Apply [`rbac.yaml`](../../examples/k8s/rbac.yaml) (or grant the verb). |
-| `open /var/run/secrets/kubernetes.io/serviceaccount/token: no such file or directory` (in-cluster orchestrator) | The orchestrator Pod's ServiceAccount has `automountServiceAccountToken: false` (the reference SA's default), so no token is projected for the in-cluster REST config. | Set `automountServiceAccountToken: true` on the orchestrator Pod spec. See [Running the orchestrator in-cluster](#running-the-orchestrator-in-cluster). |
+| Egress not actually confined on `kind` | kindnet does not enforce NetworkPolicy. | Use a NetworkPolicy-enforcing CNI (Cilium, Calico) for real confinement. |
 
 ## Testing the executor against a real cluster
 
