@@ -36,7 +36,7 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 	}
 	must := require.New(t)
 	budget := nitroSubtestBudget(t)
-	t.Logf("subtest budget %s after construction; pod lifetime %s", budget, k8sReadyTimeout+budget)
+	t.Logf("subtest budget %s after construction; pod lifetime %s", budget, k8sReadyTimeout+k8sExecReachableTimeout+budget)
 	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
 	defer cancel()
 	evidence := evidenceDirFromEnv()
@@ -55,7 +55,7 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 		Resources:    &types.ResourceLimits{CPUs: 1, MemoryMB: 1024},
 		Network:      &types.NetworkConfig{Mode: "none"},
 		Security:     security,
-		Lifecycle:    Lifecycle{RunID: "nitro-end-to-end", MaxLifetime: k8sReadyTimeout + budget},
+		Lifecycle:    Lifecycle{RunID: "nitro-end-to-end", MaxLifetime: k8sReadyTimeout + k8sExecReachableTimeout + budget},
 		HarnessPod:   &HarnessPod{Namespace: cfg.namespace, Name: owner.Name, UID: string(owner.UID)},
 	}
 	record := &podCreateRecord{}
