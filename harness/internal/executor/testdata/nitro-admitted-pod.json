@@ -102,7 +102,7 @@
       }
     ],
     "priority": 0,
-    "enableServiceLinks": true,
+    "enableServiceLinks": false,
     "preemptionPolicy": "PreemptLowerPriority",
     "runtimeClassName": "isolated-sandbox",
     "overhead": {

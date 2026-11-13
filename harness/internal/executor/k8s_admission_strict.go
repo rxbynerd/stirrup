@@ -70,7 +70,7 @@ var strictPodSpecFields = map[string]admissionField{
 	"DNSConfig":                     comparedField,
 	"ReadinessGates":                comparedField,
 	"RuntimeClassName":              comparedField,
-	"EnableServiceLinks":            {fieldPlatformOwned, "API defaulting sets true"},
+	"EnableServiceLinks":            {fieldCompared, "the harness submits false, so API defaulting leaves it alone"},
 	"PreemptionPolicy":              {fieldPlatformOwned, "the Priority admission plugin sets it from the class"},
 	"Overhead":                      {fieldPlatformOwned, "the RuntimeClass admission plugin sets the RuntimeClass's overhead; the profile's required resource names are checked separately (checkPlatformMarks)"},
 	"TopologySpreadConstraints":     comparedField,
