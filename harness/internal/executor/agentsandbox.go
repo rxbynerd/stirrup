@@ -241,7 +241,7 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 
 	if _, err := dyn.Resource(sandboxGVR).Namespace(cfg.Namespace).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
 		createErr := fmt.Errorf("create sandbox %s/%s: %w", cfg.Namespace, name, err)
-		if podCreateOutcomeAmbiguous(err) {
+		if !podCreateRejectedDefinitively(err) {
 			return nil, rollback(createErr)
 		}
 		deleteNetworkPolicyBestEffort(clientset, cfg.Namespace, policy.Name, logger)

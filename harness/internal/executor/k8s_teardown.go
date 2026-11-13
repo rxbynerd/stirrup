@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -62,24 +63,36 @@ func (t podTeardown) run() error {
 	return t.removePolicy()
 }
 
-// reconcileAmbiguousCreate cleans up after a Pod create whose outcome is
-// unknown. A Pod found under the preselected name is torn down only when it
-// carries every label this run submitted; one that does not may still be
-// this run's Pod rewritten by admission, so the policy is retained.
-func (t podTeardown) reconcileAmbiguousCreate(submitted map[string]string) error {
+// reconcileFailedCreate cleans up after a Pod create that returned an error,
+// whatever the error: a client may have retried a request whose first
+// attempt was persisted. The Pod is looked up under its preselected name and
+// torn down only when it carries every label this run submitted; one that
+// does not may be this run's Pod rewritten by admission, so the policy is
+// retained. With no Pod found the policy is removed only after a definitive
+// rejection; after any other error a late-persisted create would start the
+// Pod, so the policy is retained.
+func (t podTeardown) reconcileFailedCreate(submitted map[string]string, createErr error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), t.timing.teardownTimeout)
 	defer cancel()
 
 	pod, err := t.lookUpPod(ctx)
 	if err != nil {
-		return t.retain(fmt.Errorf("look up pod after an ambiguous create: %w", err))
+		return t.retain(fmt.Errorf("look up pod after a failed create: %w", err))
 	}
 	if pod == nil {
-		return t.removePolicy()
+		if podCreateRejectedDefinitively(createErr) {
+			return t.removePolicy()
+		}
+		return t.retain(fmt.Errorf("pod %s/%s was not found after a create whose outcome is unknown; a create persisted later starts under the retained policy", t.namespace, t.podName))
 	}
-	for k, v := range submitted {
-		if got, ok := pod.Labels[k]; !ok || got != v {
-			return t.retain(fmt.Errorf("pod %s/%s exists but does not carry this run's label %s=%s, so it is not deleted", t.namespace, t.podName, k, v))
+	keys := make([]string, 0, len(submitted))
+	for k := range submitted {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if got, ok := pod.Labels[k]; !ok || got != submitted[k] {
+			return t.retain(fmt.Errorf("pod %s/%s exists but does not carry this run's label %s=%s, so it is not deleted", t.namespace, t.podName, k, submitted[k]))
 		}
 	}
 	t.podUID = pod.UID
@@ -197,22 +210,22 @@ func (t podTeardown) retain(cause error) error {
 		t.namespace, t.podName, t.runID, cause, t.namespace, t.policyName)
 }
 
-// podCreateOutcomeAmbiguous reports whether a Pod create error leaves it
-// unknown whether the Pod exists. Only a client-error status the API server
-// returns before persisting anything is definitive; a timeout, a transport
-// failure, a server error, a throttled request (which the client may have
-// retried) or an AlreadyExists under the run's own random name is not.
-func podCreateOutcomeAmbiguous(err error) bool {
+// podCreateRejectedDefinitively reports whether a Pod create error is a
+// client-error status the API server returns before persisting anything.
+// A timeout, a transport failure, a server error, a throttled request (which
+// the client may have retried) and a 409 (AlreadyExists under the run's own
+// random name, from such a retry) are not.
+func podCreateRejectedDefinitively(err error) bool {
 	var status apierrors.APIStatus
 	if !errors.As(err, &status) {
-		return true
+		return false
 	}
 	code := int(status.Status().Code)
 	switch code {
 	case http.StatusRequestTimeout, http.StatusConflict, http.StatusTooManyRequests:
-		return true
+		return false
 	}
-	return code < 400 || code >= 500
+	return code >= 400 && code < 500
 }
 
 // sleepCtx waits for d or until ctx ends, reporting whether the full wait

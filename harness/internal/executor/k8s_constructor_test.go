@@ -58,7 +58,15 @@ func createdPodName(t *testing.T, cs *fake.Clientset) string {
 }
 
 func newFakeK8sExecutor(ctx context.Context, cs *fake.Clientset, cfg K8sExecutorConfig) (*K8sExecutor, error) {
-	return newK8sExecutor(ctx, cfg, nil, cs, nil, fastK8sTiming)
+	exec, _, err := newLoggedFakeK8sExecutor(ctx, cs, cfg)
+	return exec, err
+}
+
+// newLoggedFakeK8sExecutor is newFakeK8sExecutor that also returns the log.
+func newLoggedFakeK8sExecutor(ctx context.Context, cs *fake.Clientset, cfg K8sExecutorConfig) (*K8sExecutor, *syncBuffer, error) {
+	logger, logs := testLogger()
+	exec, err := newK8sExecutor(ctx, cfg, nil, cs, nil, fastK8sTiming, logger)
+	return exec, logs, err
 }
 
 // requireTornDown asserts the constructor deleted the Pod gracefully under
@@ -239,49 +247,143 @@ func TestNewK8sExecutor_ReportsRetainedPolicyOnRollbackFailure(t *testing.T) {
 	check.Zero(countVerb(cs, "delete", "networkpolicies"))
 }
 
-func TestNewK8sExecutor_DefinitiveCreateRejectionRemovesPolicy(t *testing.T) {
+// createPersistedThenFail makes the fake API server persist the submitted Pod,
+// optionally relabelled, and then answer the create with err, as a client
+// sees when a retried request's first attempt was persisted.
+func createPersistedThenFail(t *testing.T, cs *fake.Clientset, err error, labels map[string]string) {
+	t.Helper()
 	must := require.New(t)
-	check := assert.New(t)
-	cs := fake.NewClientset()
-	quota := apierrors.NewForbidden(podsResource.GroupResource(), "stirrup-x", errors.New(`exceeded quota: compute, requested: limits.cpu=2, used: limits.cpu=8, limited: limits.cpu=8`))
-	failVerb(cs, "create", "pods", quota)
-
-	_, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
-
-	must.ErrorIs(err, quota)
-	check.NotContains(err.Error(), "kubectl get runtimeclass", "a quota rejection was blamed on the RuntimeClass")
-	check.Empty(podDeletes(cs), "no pod exists after a definitive rejection")
-	check.Equal(1, countVerb(cs, "delete", "networkpolicies"))
-	check.False(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(createdPodName(t, cs))))
+	cs.PrependReactor("create", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		pod := action.(clienttesting.CreateAction).GetObject().(*corev1.Pod).DeepCopy()
+		pod.UID = "uid-1"
+		if labels != nil {
+			pod.Labels = labels
+		}
+		must.NoError(cs.Tracker().Add(pod))
+		return true, nil, err
+	})
 }
 
-func TestNewK8sExecutor_ReconcilesAmbiguousCreate(t *testing.T) {
-	t.Run("pod created despite the error", func(t *testing.T) {
+func TestNewK8sExecutor_ReconcilesEveryCreateError(t *testing.T) {
+	quota := apierrors.NewForbidden(podsResource.GroupResource(), "stirrup-x", errors.New(`exceeded quota: compute, requested: limits.cpu=2, used: limits.cpu=8, limited: limits.cpu=8`))
+
+	t.Run("definitive rejection with no pod removes the policy", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		cs := fake.NewClientset()
+		failVerb(cs, "create", "pods", quota)
+
+		_, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
+
+		must.ErrorIs(err, quota)
+		check.NotContains(err.Error(), "kubectl get runtimeclass", "a quota rejection was blamed on the RuntimeClass")
+		check.Equal(1, countVerb(cs, "get", "pods"), "the create error was not reconciled")
+		check.Empty(podDeletes(cs), "no pod exists after a definitive rejection")
+		check.Equal(1, countVerb(cs, "delete", "networkpolicies"))
+		check.False(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(createdPodName(t, cs))))
+	})
+
+	t.Run("definitive rejection with the pod present tears it down", func(t *testing.T) {
 		must := require.New(t)
 		cs := fake.NewClientset()
-		cs.PrependReactor("create", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
-			pod := action.(clienttesting.CreateAction).GetObject().(*corev1.Pod).DeepCopy()
-			pod.UID = "uid-1"
-			must.NoError(cs.Tracker().Add(pod))
-			return true, nil, apierrors.NewServerTimeout(podsResource.GroupResource(), "create", 1)
+		createPersistedThenFail(t, cs, quota, nil)
+		lingering := lingerOnDelete(t, cs, 3)
+
+		_, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
+
+		must.ErrorIs(err, quota)
+		requireTornDown(t, cs)
+		requireRemovedAfterRelease(t, lingering)
+	})
+
+	ambiguous := map[string]error{
+		"server timeout":    apierrors.NewServerTimeout(podsResource.GroupResource(), "create", 1),
+		"request timeout":   apierrors.NewTimeoutError("timed out", 1),
+		"already exists":    apierrors.NewAlreadyExists(podsResource.GroupResource(), "stirrup-x"),
+		"too many requests": apierrors.NewTooManyRequests("slow down", 1),
+		"internal error":    apierrors.NewInternalError(errors.New("webhook failed")),
+		"transport error":   errors.New("net/http: request canceled (Client.Timeout exceeded while awaiting headers)"),
+		// The fake ignores contexts, so a cancelled caller is modelled by the
+		// error a real client returns for one.
+		"cancelled context": context.Canceled,
+	}
+	for name, createErr := range ambiguous {
+		t.Run(name+" with no pod retains the policy", func(t *testing.T) {
+			must := require.New(t)
+			cs := fake.NewClientset()
+			failVerb(cs, "create", "pods", createErr)
+
+			_, logs, err := newLoggedFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
+
+			podName := createdPodName(t, cs)
+			must.ErrorIs(err, createErr)
+			must.ErrorContains(err, "retained egress NetworkPolicy "+testK8sNamespace+"/"+networkPolicyName(podName))
+			must.ErrorContains(err, testK8sRunID)
+			must.Equal(1, countVerb(cs, "get", "pods"), "the create error was not reconciled")
+			must.Empty(podDeletes(cs))
+			must.True(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(podName)))
+			must.Contains(logs.String(), "level=WARN")
+		})
+
+		t.Run(name+" with the pod present tears it down", func(t *testing.T) {
+			must := require.New(t)
+			cs := fake.NewClientset()
+			createPersistedThenFail(t, cs, createErr, nil)
+			lingering := lingerOnDelete(t, cs, 3)
+
+			_, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
+
+			must.ErrorIs(err, createErr)
+			requireTornDown(t, cs)
+			requireRemovedAfterRelease(t, lingering)
+		})
+	}
+
+	t.Run("already exists under a pod without this run's labels", func(t *testing.T) {
+		must := require.New(t)
+		cs := fake.NewClientset()
+		createPersistedThenFail(t, cs, apierrors.NewAlreadyExists(podsResource.GroupResource(), "stirrup-x"), map[string]string{"app": "other"})
+
+		_, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
+
+		podName := createdPodName(t, cs)
+		must.ErrorContains(err, "does not carry this run's label")
+		must.ErrorContains(err, "retained egress NetworkPolicy")
+		must.Empty(podDeletes(cs), "a pod this run cannot prove it owns was deleted")
+		must.True(trackerHas(t, cs, podsResource, podName))
+		must.True(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(podName)))
+	})
+
+	t.Run("owned pod whose delete is forbidden", func(t *testing.T) {
+		must := require.New(t)
+		cs := fake.NewClientset()
+		createPersistedThenFail(t, cs, apierrors.NewServerTimeout(podsResource.GroupResource(), "create", 1), nil)
+		failVerb(cs, "delete", "pods", errForbiddenPods)
+
+		_, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
+
+		must.ErrorContains(err, "denied by RBAC")
+		must.ErrorContains(err, "retained egress NetworkPolicy")
+		must.True(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(createdPodName(t, cs))))
+	})
+
+	t.Run("lookup retried after a transient error", func(t *testing.T) {
+		must := require.New(t)
+		cs := fake.NewClientset()
+		createPersistedThenFail(t, cs, apierrors.NewTimeoutError("timed out", 1), nil)
+		failures := 0
+		cs.PrependReactor("get", "pods", func(clienttesting.Action) (bool, runtime.Object, error) {
+			if failures == 0 {
+				failures++
+				return true, nil, errors.New("connection reset")
+			}
+			return false, nil, nil
 		})
 
 		_, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
 
-		must.True(apierrors.IsServerTimeout(err))
+		must.Error(err)
+		must.NotContains(err.Error(), "retained")
 		requireTornDown(t, cs)
-	})
-
-	t.Run("pod absent", func(t *testing.T) {
-		must := require.New(t)
-		cs := fake.NewClientset()
-		failVerb(cs, "create", "pods", errors.New("net/http: request canceled (Client.Timeout exceeded while awaiting headers)"))
-
-		_, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
-
-		must.ErrorContains(err, "Client.Timeout exceeded")
-		must.Empty(podDeletes(cs))
-		must.Equal(1, countVerb(cs, "get", "pods"), "the ambiguous create was not reconciled")
-		must.False(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(createdPodName(t, cs))))
 	})
 }

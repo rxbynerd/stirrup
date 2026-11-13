@@ -166,12 +166,11 @@ func NewK8sExecutor(ctx context.Context, cfg K8sExecutorConfig) (*K8sExecutor, e
 		return nil, fmt.Errorf("build kube clientset: %w", err)
 	}
 
-	return newK8sExecutor(ctx, cfg, proxyEnv, clientset, restCfg, defaultK8sTiming)
+	return newK8sExecutor(ctx, cfg, proxyEnv, clientset, restCfg, defaultK8sTiming, slog.Default())
 }
 
 // newK8sExecutor is NewK8sExecutor after the clientset is built.
-func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, clientset kubernetes.Interface, restCfg *rest.Config, timing k8sTiming) (*K8sExecutor, error) {
-	logger := slog.Default()
+func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, clientset kubernetes.Interface, restCfg *rest.Config, timing k8sTiming, logger *slog.Logger) (*K8sExecutor, error) {
 
 	// An empty RuntimeClassName selects the cluster-default RuntimeClass,
 	// which may be plain runc with no sandbox isolation. Warn so the
@@ -214,14 +213,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev
 
 	created, err := clientset.CoreV1().Pods(cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
-		createErr := classifyPodCreateError(cfg.RuntimeClassName, err)
-		var cleanupErr error
-		if podCreateOutcomeAmbiguous(err) {
-			cleanupErr = teardown.reconcileAmbiguousCreate(pod.Labels)
-		} else {
-			cleanupErr = teardown.removePolicy()
-		}
-		return nil, withTeardownErr(createErr, cleanupErr)
+		return nil, withTeardownErr(classifyPodCreateError(cfg.RuntimeClassName, err), teardown.reconcileFailedCreate(pod.Labels, err))
 	}
 	teardown.podUID = created.UID
 

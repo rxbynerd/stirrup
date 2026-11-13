@@ -296,24 +296,42 @@ func TestPodTeardown_ReturnsPolicyDeleteFailure(t *testing.T) {
 	must.ErrorContains(err, "etcd unavailable")
 }
 
-func TestPodTeardown_ReconcileAmbiguousCreate(t *testing.T) {
+func TestPodTeardown_ReconcileFailedCreate(t *testing.T) {
 	policyName := networkPolicyName(testK8sPodName)
 	ours := podLabels(testK8sPodName, testK8sRunID)
+	ambiguous := apierrors.NewServerTimeout(podsResource.GroupResource(), "create", 1)
+	definitive := apierrors.NewForbidden(podsResource.GroupResource(), testK8sPodName, errors.New("exceeded quota: compute"))
 
-	t.Run("pod found and ours", func(t *testing.T) {
+	for name, createErr := range map[string]error{"ambiguous": ambiguous, "definitive": definitive} {
+		t.Run("pod found and ours after a "+name+" error", func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			cs := fake.NewClientset(readyPod("uid-7"), testPolicy())
+			lingering := lingerOnDelete(t, cs, 3)
+
+			logger, _ := testLogger()
+			must.NoError(testTeardown(cs, "", logger).reconcileFailedCreate(ours, createErr))
+
+			deletes := podDeletes(cs)
+			must.Len(deletes, 1)
+			must.NotNil(deletes[0].Preconditions)
+			check.EqualValues("uid-7", *deletes[0].Preconditions.UID, "delete must be pinned to the UID found")
+			requireRemovedAfterRelease(t, lingering)
+			check.False(trackerHas(t, cs, networkPoliciesResource, policyName))
+		})
+	}
+
+	t.Run("pod found and ours but never terminates", func(t *testing.T) {
 		must := require.New(t)
-		check := assert.New(t)
 		cs := fake.NewClientset(readyPod("uid-7"), testPolicy())
+		ignorePodDeletes(cs)
 
 		logger, _ := testLogger()
-		must.NoError(testTeardown(cs, "", logger).reconcileAmbiguousCreate(ours))
+		err := testTeardown(cs, "", logger).reconcileFailedCreate(ours, ambiguous)
 
-		deletes := podDeletes(cs)
-		must.Len(deletes, 1)
-		must.NotNil(deletes[0].Preconditions)
-		check.EqualValues("uid-7", *deletes[0].Preconditions.UID, "delete must be pinned to the UID found")
-		check.False(trackerHas(t, cs, podsResource, testK8sPodName))
-		check.False(trackerHas(t, cs, networkPoliciesResource, policyName))
+		must.ErrorContains(err, "pod termination not confirmed")
+		must.ErrorContains(err, "retained egress NetworkPolicy")
+		must.True(trackerHas(t, cs, networkPoliciesResource, policyName))
 	})
 
 	t.Run("pod found and not ours", func(t *testing.T) {
@@ -324,7 +342,7 @@ func TestPodTeardown_ReconcileAmbiguousCreate(t *testing.T) {
 		cs := fake.NewClientset(foreign, testPolicy())
 
 		logger, _ := testLogger()
-		err := testTeardown(cs, "", logger).reconcileAmbiguousCreate(ours)
+		err := testTeardown(cs, "", logger).reconcileFailedCreate(ours, ambiguous)
 
 		must.Error(err)
 		must.ErrorContains(err, "does not carry this run's label")
@@ -333,14 +351,46 @@ func TestPodTeardown_ReconcileAmbiguousCreate(t *testing.T) {
 		check.True(trackerHas(t, cs, networkPoliciesResource, policyName))
 	})
 
-	t.Run("pod absent", func(t *testing.T) {
+	t.Run("label mismatch is reported deterministically", func(t *testing.T) {
+		must := require.New(t)
+		foreign := readyPod("uid-9")
+		foreign.Labels = map[string]string{}
+		var first string
+		for range 20 {
+			cs := fake.NewClientset(foreign.DeepCopy(), testPolicy())
+			logger, _ := testLogger()
+			err := testTeardown(cs, "", logger).reconcileFailedCreate(ours, ambiguous)
+			must.Error(err)
+			if first == "" {
+				first = err.Error()
+			}
+			must.Equal(first, err.Error())
+		}
+	})
+
+	t.Run("pod absent after a definitive rejection", func(t *testing.T) {
 		must := require.New(t)
 		cs := fake.NewClientset(testPolicy())
 
 		logger, _ := testLogger()
-		must.NoError(testTeardown(cs, "", logger).reconcileAmbiguousCreate(ours))
+		must.NoError(testTeardown(cs, "", logger).reconcileFailedCreate(ours, definitive))
 		must.Empty(podDeletes(cs))
+		must.Equal(1, countVerb(cs, "get", "pods"))
 		must.False(trackerHas(t, cs, networkPoliciesResource, policyName))
+	})
+
+	t.Run("pod absent after an ambiguous error", func(t *testing.T) {
+		must := require.New(t)
+		cs := fake.NewClientset(testPolicy())
+
+		logger, logs := testLogger()
+		err := testTeardown(cs, "", logger).reconcileFailedCreate(ours, ambiguous)
+
+		must.ErrorContains(err, "was not found after a create whose outcome is unknown")
+		must.ErrorContains(err, "retained egress NetworkPolicy "+testK8sNamespace+"/"+policyName)
+		must.ErrorContains(err, testK8sRunID)
+		must.Contains(logs.String(), "level=WARN")
+		must.True(trackerHas(t, cs, networkPoliciesResource, policyName))
 	})
 
 	t.Run("lookup retried after a transient error", func(t *testing.T) {
@@ -356,7 +406,7 @@ func TestPodTeardown_ReconcileAmbiguousCreate(t *testing.T) {
 		})
 
 		logger, _ := testLogger()
-		must.NoError(testTeardown(cs, "", logger).reconcileAmbiguousCreate(ours))
+		must.NoError(testTeardown(cs, "", logger).reconcileFailedCreate(ours, ambiguous))
 		must.Len(podDeletes(cs), 1)
 		must.False(trackerHas(t, cs, networkPoliciesResource, policyName))
 	})
@@ -367,59 +417,57 @@ func TestPodTeardown_ReconcileAmbiguousCreate(t *testing.T) {
 		failVerb(cs, "get", "pods", errors.New("connection reset"))
 
 		logger, _ := testLogger()
-		err := testTeardown(cs, "", logger).reconcileAmbiguousCreate(ours)
+		err := testTeardown(cs, "", logger).reconcileFailedCreate(ours, definitive)
 		must.ErrorContains(err, "connection reset")
 		must.True(trackerHas(t, cs, networkPoliciesResource, policyName))
 	})
-}
 
-func TestK8sExecutor_CloseRetainsPolicyAndNamesIt(t *testing.T) {
-	must := require.New(t)
-	check := assert.New(t)
-	cs := fake.NewClientset(readyPod("uid-1"), testPolicy())
-	ignorePodDeletes(cs)
-	logger, logs := testLogger()
-	exec := &K8sExecutor{
-		podExecCore:       podExecCore{clientset: cs, namespace: testK8sNamespace, podName: testK8sPodName, logger: logger},
-		podUID:            "uid-1",
-		networkPolicyName: networkPolicyName(testK8sPodName),
-		runID:             testK8sRunID,
-		timing:            fastK8sTiming,
+	for name, denial := range map[string]error{"forbidden": errForbiddenPods, "unauthorized": apierrors.NewUnauthorized("token expired")} {
+		t.Run("lookup "+name, func(t *testing.T) {
+			must := require.New(t)
+			cs := fake.NewClientset(testPolicy())
+			failVerb(cs, "get", "pods", denial)
+
+			logger, _ := testLogger()
+			td := testTeardown(cs, "", logger)
+			td.timing.teardownTimeout = 10 * time.Second
+			start := time.Now()
+			err := td.reconcileFailedCreate(ours, definitive)
+
+			must.ErrorIs(err, denial)
+			must.ErrorContains(err, "retained egress NetworkPolicy")
+			must.Equal(1, countVerb(cs, "get", "pods"))
+			must.Less(time.Since(start), 5*time.Second)
+			must.True(trackerHas(t, cs, networkPoliciesResource, policyName))
+		})
 	}
-
-	err := exec.Close()
-
-	must.Error(err)
-	must.ErrorContains(err, "tear down pod "+testK8sNamespace+"/"+testK8sPodName)
-	must.ErrorContains(err, "retained egress NetworkPolicy "+testK8sNamespace+"/"+networkPolicyName(testK8sPodName))
-	check.Contains(logs.String(), "retaining its egress NetworkPolicy")
-	check.True(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(testK8sPodName)))
 }
 
-func TestPodCreateOutcomeAmbiguous_ClassifiesErrors(t *testing.T) {
+func TestPodCreateRejectedDefinitively_ClassifiesErrors(t *testing.T) {
 	gr := schema.GroupResource{Resource: "pods"}
 	cases := []struct {
 		name string
 		err  error
 		want bool
 	}{
-		{"invalid", apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, testK8sPodName, nil), false},
-		{"forbidden", apierrors.NewForbidden(gr, testK8sPodName, errors.New("exceeded quota")), false},
-		{"bad request", apierrors.NewBadRequest("malformed"), false},
-		{"namespace not found", apierrors.NewNotFound(schema.GroupResource{Resource: "namespaces"}, testK8sNamespace), false},
-		{"already exists", apierrors.NewAlreadyExists(gr, testK8sPodName), true},
-		{"too many requests", apierrors.NewTooManyRequests("slow down", 1), true},
-		{"request timeout", apierrors.NewTimeoutError("timed out", 1), true},
-		{"server timeout", apierrors.NewServerTimeout(gr, "create", 1), true},
-		{"internal error", apierrors.NewInternalError(errors.New("webhook failed")), true},
-		{"service unavailable", apierrors.NewServiceUnavailable("unavailable"), true},
-		{"transport error", errors.New("dial tcp: connection refused"), true},
-		{"context deadline", context.DeadlineExceeded, true},
+		{"invalid", apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, testK8sPodName, nil), true},
+		{"forbidden", apierrors.NewForbidden(gr, testK8sPodName, errors.New("exceeded quota")), true},
+		{"bad request", apierrors.NewBadRequest("malformed"), true},
+		{"namespace not found", apierrors.NewNotFound(schema.GroupResource{Resource: "namespaces"}, testK8sNamespace), true},
+		{"already exists", apierrors.NewAlreadyExists(gr, testK8sPodName), false},
+		{"too many requests", apierrors.NewTooManyRequests("slow down", 1), false},
+		{"request timeout", apierrors.NewTimeoutError("timed out", 1), false},
+		{"server timeout", apierrors.NewServerTimeout(gr, "create", 1), false},
+		{"internal error", apierrors.NewInternalError(errors.New("webhook failed")), false},
+		{"service unavailable", apierrors.NewServiceUnavailable("unavailable"), false},
+		{"transport error", errors.New("dial tcp: connection refused"), false},
+		{"context deadline", context.DeadlineExceeded, false},
+		{"context canceled", context.Canceled, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			must.Equal(tc.want, podCreateOutcomeAmbiguous(tc.err))
+			must.Equal(tc.want, podCreateRejectedDefinitively(tc.err))
 		})
 	}
 }
