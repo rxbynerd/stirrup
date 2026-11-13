@@ -187,6 +187,19 @@ func TestNewK8sExecutor_RejectsUnsupportedConfigBeforeAnyClusterCall(t *testing.
 	}
 }
 
+func TestNewK8sExecutor_MissingNitroRuntimeClassNamesTheClassAndEKS(t *testing.T) {
+	must := require.New(t)
+	cs := fake.NewClientset()
+	failVerb(cs, "create", "pods", apierrors.NewForbidden(podsResource.GroupResource(), testK8sPodName,
+		errors.New(`pod rejected: RuntimeClass "isolated-sandbox" not found`)))
+
+	_, err := newFakeK8sExecutor(context.Background(), cs, nitroCfg())
+
+	must.ErrorContains(err, `RuntimeClass "isolated-sandbox" was rejected by the cluster`)
+	must.ErrorContains(err, K8sRuntimeClassMissingHint("nitro-isolated"))
+	must.False(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(createdPodName(t, cs))), "policy left behind")
+}
+
 // The public constructor applies the same checks before it builds a client,
 // so a rejected config never needs a reachable cluster or kubeconfig.
 func TestNewK8sExecutor_RejectsUnsupportedRuntimeBeforeBuildingAClient(t *testing.T) {

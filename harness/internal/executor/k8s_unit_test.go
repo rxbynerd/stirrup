@@ -632,10 +632,10 @@ func TestClassifyPodCreateError_AttributesOnlyNamedRuntimeClass(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			check := assert.New(t)
-			err := classifyPodCreateError("gvisor", tc.err)
+			err := classifyPodCreateError(k8sRuntimeProfiles["gvisor"], tc.err)
 			must.ErrorIs(err, tc.err, "the original error must stay reachable")
 			check.Equal(tc.wantHint, containsHint(err), "RuntimeClass hint on %v", err)
-			check.False(containsHint(classifyPodCreateError("", tc.err)), "hint without a requested RuntimeClass")
+			check.False(containsHint(classifyPodCreateError(k8sRuntimeProfile{}, tc.err)), "hint without a requested RuntimeClass")
 		})
 	}
 }
@@ -646,7 +646,7 @@ func TestClassifyPodCreateError_BoundsWebhookMessage(t *testing.T) {
 	webhook := apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "stirrup-x",
 		errors.New("admission webhook \"policy.example.com\" denied the request:\n"+strings.Repeat("y", 10*k8sClusterTextMax)))
 
-	err := classifyPodCreateError("gvisor", webhook)
+	err := classifyPodCreateError(k8sRuntimeProfiles["gvisor"], webhook)
 
 	must.ErrorIs(err, webhook)
 	must.True(apierrors.IsForbidden(err))
@@ -686,16 +686,38 @@ func TestClassifyPodCreateError_GivesAdvicePerRejection(t *testing.T) {
 	pods := schema.GroupResource{Resource: "pods"}
 	t.Run("not found", func(t *testing.T) {
 		must := require.New(t)
-		err := classifyPodCreateError("gvisor", apierrors.NewForbidden(pods, "stirrup-x", errors.New(`pod rejected: RuntimeClass "gvisor" not found`)))
+		err := classifyPodCreateError(k8sRuntimeProfiles["gvisor"], apierrors.NewForbidden(pods, "stirrup-x", errors.New(`pod rejected: RuntimeClass "gvisor" not found`)))
 		must.ErrorContains(err, `create pod: RuntimeClass "gvisor" was rejected by the cluster — no RuntimeClass with that name is registered (kubectl get runtimeclass)`)
 		must.NotContains(err.Error(), "permitted")
+	})
+
+	t.Run("not found under a runtime with its own hint", func(t *testing.T) {
+		must := require.New(t)
+		err := classifyPodCreateError(k8sRuntimeProfiles["nitro-isolated"], apierrors.NewForbidden(pods, "stirrup-x", errors.New(`pod rejected: RuntimeClass "isolated-sandbox" not found`)))
+		must.ErrorContains(err, `create pod: RuntimeClass "isolated-sandbox" was rejected by the cluster — no RuntimeClass with that name is registered (kubectl get runtimeclass); `+K8sRuntimeClassMissingHint("nitro-isolated"))
+	})
+
+	t.Run("not found under a runtime without a hint", func(t *testing.T) {
+		must := require.New(t)
+		err := classifyPodCreateError(k8sRuntimeProfiles["gvisor"], apierrors.NewForbidden(pods, "stirrup-x", errors.New(`pod rejected: RuntimeClass "gvisor" not found`)))
+		must.NotContains(err.Error(), "EKS")
+	})
+
+	t.Run("invalid name carries no missing-class hint", func(t *testing.T) {
+		must := require.New(t)
+		profile := k8sRuntimeProfiles["nitro-isolated"]
+		err := classifyPodCreateError(profile, apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, "stirrup-x", field.ErrorList{
+			field.Invalid(field.NewPath("spec", "runtimeClassName"), "isolated-sandbox", "not allowed"),
+		}))
+		must.ErrorContains(err, "the name is not valid for spec.runtimeClassName")
+		must.NotContains(err.Error(), profile.runtimeClassMissingHint)
 	})
 
 	t.Run("invalid name keeps the field cause", func(t *testing.T) {
 		must := require.New(t)
 		cause := "a lowercase RFC 1123 subdomain must consist of lower case alphanumeric characters"
 		padding := strings.Repeat("z", 2*k8sClusterTextMax)
-		err := classifyPodCreateError("Bad_Name", apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, "stirrup-x", field.ErrorList{
+		err := classifyPodCreateError(k8sRuntimeProfile{runtimeClassName: "Bad_Name"}, apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, "stirrup-x", field.ErrorList{
 			field.Invalid(field.NewPath("metadata", "annotations"), padding, "too long"),
 			field.Invalid(field.NewPath("spec", "runtimeClassName"), "Bad_Name", cause),
 		}))
