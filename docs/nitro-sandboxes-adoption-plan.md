@@ -110,7 +110,7 @@ opened), `782f51ba` (adds the wait for exec to reach a Ready Pod) and
 
 | # | Item | Result |
 |---|---|---|
-| 1 | Guest workspace size with no `ephemeral-storage` declared | 10,367,980 KiB (9.89 GiB) on all 13 instance types tried; see [Guest disk](#guest-disk). |
+| 1 | Guest workspace size with no `ephemeral-storage` declared | 10,367,980 KiB (9.89 GiB) on all 14 instance types tried; see [Guest disk](#guest-disk). |
 | 2 | Offline acceptance cases against the implemented executor | `TestK8sNitroIsolated_EndToEnd` passed 10 times, every subtest: runtime diagnostics, Pod shape, exec, non-zero exit, timeout, process-tree kill, output cap, file round trip, UID write, no guest network, capacity, teardown. It failed twice before the cold-start fix, and on arm64 by design. |
 | 3 | Whole-Pod admission check against a real `Create` response | Passes. The `Create` response already carries both platform marks (`spec.overhead["eks.amazonaws.com/nitro-sandbox"]` and the node selector). |
 | 4 | Field classification | No false failure. At creation EKS added only API-server defaults, the node-selector entry, the two default tolerations, `priority: 0`, `preemptionPolicy` and `overhead`. `imagePullSecrets`, `priorityClassName`, `schedulingGates`, `readinessGates` and `affinity` were absent at creation and at readiness. The cluster's three mutating webhooks (`pod-identity-webhook`, `vpc-resource-mutating-webhook`, `eks-load-balancing-webhook`) changed nothing on these Pods. |
@@ -189,7 +189,7 @@ workspace and the container's writable layer.
   left on device`; the Pod stayed `Running` and was usable after the file was
   removed.
 - Undeclared: 8,388,608,000 bytes written to `/workspace` in 155.9 s (51.3
-  MB/s), then the same to `/tmp` in 155.7 s.
+  MiB/s), then the same to `/tmp` in 155.7 s.
 - The root filesystem is not writable by UID 65532; `/tmp` and `/workspace`
   are. `HOME` is `/`.
 
@@ -253,7 +253,7 @@ executor Pod on a warm node was created at 10:27:42 and Ready at 10:27:48.
   on an `xlarge`, 10 on `c8a.large`). Ten sandbox Pods (250m / 256Mi) ran on
   one `m5d.xlarge`, all Ready within 28 s of being created together.
 - **Auto Mode's built-in `general-purpose` pool hosts sandboxes with no custom
-  NodePool.** For a sandbox Pod selecting only that pool and `amd64` it
+  NodePool.** For a sandbox Pod selecting only the `general-purpose` pool and `amd64` it
   launched `c8a.large` (Ready in 25.3 s). The full executor group and a real
   `stirrup harness` run passed there. With every custom NodePool deleted, the
   unmodified example RunConfig (node selector `amd64` and `m5d.xlarge`) was
@@ -803,7 +803,7 @@ feature that AWS recommends for fast starts ("about two seconds"
 (`agentsandbox.go:263-270`), because its per-Pod egress policy would
 not bind to an adopted Pod.
 
-**G10. The tested `diskMb` mapping is not a hard workspace quota.** It maps to an
+**G10. Whether `diskMb` bounds the guest's disk (settled 2026-11-13: it does).** It maps to an
 `ephemeral-storage` limit (`k8s.go:435`), which the kubelet enforces by
 measuring usage. Usage inside a Nitro Sandbox reports as zero.
 [EKS-LIMITS] AWS's stated workaround is to set the limit anyway, which
@@ -1349,7 +1349,7 @@ builds `K8sExecutorConfig` directly and so bypasses the validation gap
 (G1), but on unmodified `main`:
 
 - readiness is 60 seconds and each test's context 90 seconds, so a cold
-  node or large image can fail the first test (hence the placeholder Pod);
+  node or large image can fail the first test (hence the placeholder Pod, which must itself be a sandbox Pod);
 - `TestK8sRuntimeClass_Admitted` iterates `""`, `runc`, `gvisor` unless
   `STIRRUP_TEST_RUNTIME_CLASSES` is set (`k8s_test.go:454-460`);
 - the egress tests skip unless `STIRRUP_TEST_ENFORCE_EGRESS` is set
