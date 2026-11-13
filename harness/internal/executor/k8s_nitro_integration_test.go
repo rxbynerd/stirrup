@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -30,6 +31,8 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 		t.Skip("STIRRUP_TEST_NITRO_ISOLATED not set; this group needs an EKS cluster with Nitro Sandboxes")
 	}
 	must := require.New(t)
+	budget := nitroSubtestBudget(t)
+	t.Logf("subtest budget %s after construction; pod lifetime %s", budget, k8sReadyTimeout+budget)
 	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
 	defer cancel()
 	evidence := evidenceDirFromEnv()
@@ -51,7 +54,7 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 		Resources:  &types.ResourceLimits{CPUs: 1, MemoryMB: 1024},
 		Network:    &types.NetworkConfig{Mode: "none"},
 		Security:   security,
-		Lifecycle:  Lifecycle{RunID: "nitro-end-to-end", MaxLifetime: k8sIntegrationTimeout},
+		Lifecycle:  Lifecycle{RunID: "nitro-end-to-end", MaxLifetime: k8sReadyTimeout + budget},
 		HarnessPod: &HarnessPod{Namespace: cfg.namespace, Name: owner.Name, UID: string(owner.UID)},
 	}
 	record := &podCreateRecord{}
@@ -59,6 +62,11 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 	evidence.writeCreateEvidence(t, record)
 	must.NoError(err, "NewK8sExecutor: the admission check or the runtime diagnostics rejected the Pod")
 	t.Cleanup(func() { _ = exec.Close() })
+
+	// Cold start may have used most of the construction context, so the
+	// subtests get their own.
+	ctx, cancelSubtests := context.WithTimeout(context.Background(), budget)
+	defer cancelSubtests()
 
 	ready, err := clientset.CoreV1().Pods(cfg.namespace).Get(ctx, exec.podName, metav1.GetOptions{})
 	must.NoError(err)
@@ -97,7 +105,7 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 
 	t.Run("no guest network", func(t *testing.T) {
 		must := require.New(t)
-		res, err := exec.Exec(ctx, "command -v wget >/dev/null 2>&1 || { echo no-wget; exit 0; }; wget -q -T 5 -O /dev/null http://1.1.1.1/ && echo reached || echo unreachable", 0)
+		res, err := exec.Exec(ctx, "command -v wget >/dev/null 2>&1 || { echo no-wget; exit 0; }; wget -q -T 5 -O /dev/null http://1.1.1.1/ && echo reached || echo unreachable", nitroProbeTimeout)
 		must.NoError(err)
 		out := strings.TrimSpace(res.Stdout)
 		must.NotEqual("no-wget", out, "the image has no wget; set STIRRUP_TEST_IMAGE to an image that ships it (busybox does)")
@@ -106,7 +114,7 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 
 	t.Run("workspace capacity recorded", func(t *testing.T) {
 		must := require.New(t)
-		res, err := exec.Exec(ctx, "df -k /workspace && : > /workspace/.stirrup-capacity-probe && rm /workspace/.stirrup-capacity-probe", 0)
+		res, err := exec.Exec(ctx, "df -k /workspace && : > /workspace/.stirrup-capacity-probe && rm /workspace/.stirrup-capacity-probe", nitroProbeTimeout)
 		must.NoError(err)
 		t.Logf("workspace capacity with no ephemeral-storage declared:\n%s", res.Stdout)
 		evidence.writeText(t, "workspace-df.txt", res.Stdout)
@@ -116,6 +124,24 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 	t.Run("teardown observed", func(t *testing.T) {
 		assertCloseRemovesPolicyAfterPodIsGone(t, ctx, clientset, exec)
 	})
+}
+
+// nitroProbeTimeout bounds the group's own network and capacity probes.
+const nitroProbeTimeout = 30 * time.Second
+
+// nitroSubtestBudget is the sum of the subtests' own bounds, one term per
+// subtest in the order they run; the file round trip is four writes and
+// four reads.
+func nitroSubtestBudget(t *testing.T) time.Duration {
+	t.Helper()
+	return 2*10*time.Second +
+		4*time.Second +
+		(2*time.Second + 8*time.Second + 3*30*time.Second) +
+		outputCapTimeout(t) +
+		8*k8sFileIOTimeout +
+		30*time.Second +
+		2*nitroProbeTimeout +
+		k8sCloseTimeout
 }
 
 // newRecordedK8sExecutor is NewK8sExecutor with the clientset's Pod creates
