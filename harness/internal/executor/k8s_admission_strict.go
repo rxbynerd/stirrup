@@ -158,10 +158,13 @@ func checkPlatformMarks(overhead []corev1.ResourceName, nodeSelector map[string]
 	return out
 }
 
-// checkGovernedAnnotations compares the annotations under prefix: each must
-// be on the observed Pod exactly as on the expected Pod, absent included,
-// except a retunable key, which may be added or given another value but not
-// removed. Annotations outside prefix are not compared.
+// checkGovernedAnnotations compares the annotations under prefix, matched
+// case-insensitively because the API server accepts annotation keys in any
+// case: each must be on the observed Pod exactly as on the expected Pod,
+// absent included, except a key byte-equal to a retunable key, which may be
+// added or given another value but not removed. So every case variant of
+// the prefix or of a key name fails closed. Annotations outside prefix are
+// not compared.
 func checkGovernedAnnotations(prefix string, retunable []string, expected, observed *corev1.Pod) []admissionMismatch {
 	if prefix == "" {
 		return nil
@@ -169,7 +172,7 @@ func checkGovernedAnnotations(prefix string, retunable []string, expected, obser
 	keys := map[string]bool{}
 	for _, annotations := range []map[string]string{expected.Annotations, observed.Annotations} {
 		for k := range annotations {
-			if strings.HasPrefix(k, prefix) {
+			if strings.HasPrefix(strings.ToLower(k), strings.ToLower(prefix)) {
 				keys[k] = true
 			}
 		}
