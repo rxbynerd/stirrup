@@ -499,12 +499,12 @@ func boundClusterErr(err error) error {
 // secrets are scrubbed first, so truncation cannot cut one past recognition,
 // then control characters are dropped and the length is capped.
 func clusterText(s string) string {
-	cleaned := strings.Map(func(r rune) rune {
+	cleaned := security.Scrub(strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {
 			return -1
 		}
 		return r
-	}, security.Scrub(s))
+	}, s))
 	if runes := []rune(cleaned); len(runes) > k8sClusterTextMax {
 		return string(runes[:k8sClusterTextMax]) + "…"
 	}

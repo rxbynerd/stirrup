@@ -655,6 +655,17 @@ func TestClusterText_ScrubsBeforeTruncating(t *testing.T) {
 	must.Contains(got, "[REDACTED]")
 }
 
+func TestClusterText_StripsControlCharactersBeforeScrubbing(t *testing.T) {
+	must := require.New(t)
+	// Assembled at run time so no token-shaped literal sits in the source.
+	segment := strings.Repeat("B", 40)
+	split := "ey" + "J" + segment[:20] + "\r" + segment[20:] + "." + segment + "." + segment
+	got := clusterText("token " + split)
+
+	must.NotContains(got, segment[:20]+segment[20:], "a control character inside a token hid it from the scrubber")
+	must.Contains(got, "[REDACTED]")
+}
+
 func containsHint(err error) bool {
 	return strings.Contains(err.Error(), "was rejected by the cluster —")
 }
