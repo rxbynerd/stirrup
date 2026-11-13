@@ -1532,7 +1532,10 @@ func TestExampleRunConfig_LoadsAndValidates_K8sEKSNitro(t *testing.T) {
 	check.Equal(1024, cfg.Executor.Resources.MemoryMB)
 	check.Zero(cfg.Executor.Resources.DiskMB, "diskMb is rejected for nitro-isolated")
 	check.Contains(cfg.Executor.Image, "@sha256:", "the image must be pinned by digest")
-	check.Equal("amd64", cfg.Executor.K8sNodeSelector["kubernetes.io/arch"])
+	check.Equal(map[string]string{
+		"kubernetes.io/arch":               "amd64",
+		"node.kubernetes.io/instance-type": "m5d.xlarge",
+	}, cfg.Executor.K8sNodeSelector, "the selector pins the tested architecture and instance type")
 }
 
 // TestBuildHarnessRunConfig_SafetyRingFlags verifies that each safety-ring
