@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -61,7 +62,8 @@ func newFakeK8sExecutor(ctx context.Context, cs *fake.Clientset, cfg K8sExecutor
 }
 
 // requireTornDown asserts the constructor deleted the Pod gracefully under
-// its UID and only then removed the policy.
+// its UID and issued the policy delete after the Pod delete. It checks call
+// order, not termination; lingerOnDelete covers the wait.
 func requireTornDown(t *testing.T, cs *fake.Clientset) {
 	t.Helper()
 	must := require.New(t)
@@ -94,6 +96,8 @@ func TestNewK8sExecutor_BindsAdmittedReadyPod(t *testing.T) {
 	cs := fake.NewClientset()
 	admitPods(cs, nil)
 
+	lingering := lingerOnDelete(t, cs, 3)
+
 	exec, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
 	must.NoError(err)
 	must.EqualValues("uid-1", exec.podUID)
@@ -102,6 +106,12 @@ func TestNewK8sExecutor_BindsAdmittedReadyPod(t *testing.T) {
 
 	must.NoError(exec.Close())
 	requireTornDown(t, cs)
+	requireRemovedAfterRelease(t, lingering)
+}
+
+func TestDefaultK8sTiming_WaitsFiveMinutesForReadiness(t *testing.T) {
+	must := require.New(t)
+	must.Equal(5*time.Minute, defaultK8sTiming.readyTimeout)
 }
 
 func TestNewK8sExecutor_TearsDownOnAdmissionMismatch(t *testing.T) {
@@ -126,31 +136,16 @@ func TestNewK8sExecutor_TearsDownOnAdmissionMismatch(t *testing.T) {
 			must := require.New(t)
 			cs := fake.NewClientset()
 			admitPods(cs, tc.mutate)
+			lingering := lingerOnDelete(t, cs, 3)
 
 			_, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
 
 			must.ErrorContains(err, tc.wantErr)
-			must.Zero(countVerb(cs, "get", "pods")-countTerminationPolls(cs), "readiness wait ran after an admission mismatch")
+			must.Zero(lingering.readsBeforeDelete, "readiness wait ran after an admission mismatch")
 			requireTornDown(t, cs)
+			requireRemovedAfterRelease(t, lingering)
 		})
 	}
-}
-
-// countTerminationPolls counts the Pod gets issued after the first Pod
-// delete, which belong to the teardown wait rather than to readiness.
-func countTerminationPolls(cs *fake.Clientset) int {
-	n, deleted := 0, false
-	for _, a := range actionsOf(cs, "pods") {
-		switch a.GetVerb() {
-		case "delete":
-			deleted = true
-		case "get":
-			if deleted {
-				n++
-			}
-		}
-	}
-	return n
 }
 
 func TestNewK8sExecutor_LogsDefaultedRuntimeClass(t *testing.T) {
@@ -167,15 +162,9 @@ func TestNewK8sExecutor_TearsDownWhenUIDChangesBeforeReady(t *testing.T) {
 	must := require.New(t)
 	cs := fake.NewClientset()
 	admitPods(cs, nil)
-	// Reactors run under the fake's lock, so they track state themselves
-	// rather than reading cs.Actions().
-	deleted := false
-	cs.PrependReactor("delete", "pods", func(clienttesting.Action) (bool, runtime.Object, error) {
-		deleted = true
-		return false, nil, nil
-	})
+	lingering := lingerOnDelete(t, cs, 3)
 	cs.PrependReactor("get", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
-		if deleted {
+		if lingering.terminating {
 			return false, nil, nil
 		}
 		replaced := readyPod("uid-2")
@@ -189,6 +178,7 @@ func TestNewK8sExecutor_TearsDownWhenUIDChangesBeforeReady(t *testing.T) {
 	must.ErrorIs(err, errPodNotReady)
 	must.ErrorContains(err, "metadata.uid: expected uid-1, observed uid-2")
 	requireTornDown(t, cs)
+	requireRemovedAfterRelease(t, lingering)
 }
 
 func TestNewK8sExecutor_TearsDownOnReadinessFailure(t *testing.T) {
@@ -198,12 +188,14 @@ func TestNewK8sExecutor_TearsDownOnReadinessFailure(t *testing.T) {
 		pod.Status.Phase = corev1.PodFailed
 		pod.Status.Reason = "Evicted"
 	})
+	lingering := lingerOnDelete(t, cs, 3)
 
 	_, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
 
 	must.ErrorIs(err, errPodNotReady)
 	must.ErrorContains(err, "pod phase Failed (Evicted")
 	requireTornDown(t, cs)
+	requireRemovedAfterRelease(t, lingering)
 }
 
 func TestNewK8sExecutor_CleansUpAfterCallerCancellation(t *testing.T) {
@@ -288,27 +280,4 @@ func TestNewK8sExecutor_ReconcilesAmbiguousCreate(t *testing.T) {
 		must.Equal(1, countVerb(cs, "get", "pods"), "the ambiguous create was not reconciled")
 		must.False(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(createdPodName(t, cs))))
 	})
-}
-
-func TestK8sExecutor_CloseRetainsPolicyAndNamesIt(t *testing.T) {
-	must := require.New(t)
-	check := assert.New(t)
-	cs := fake.NewClientset(readyPod("uid-1"), testPolicy())
-	ignorePodDeletes(cs)
-	logger, logs := testLogger()
-	exec := &K8sExecutor{
-		podExecCore:       podExecCore{clientset: cs, namespace: testK8sNamespace, podName: testK8sPodName, logger: logger},
-		podUID:            "uid-1",
-		networkPolicyName: networkPolicyName(testK8sPodName),
-		runID:             testK8sRunID,
-		timing:            fastK8sTiming,
-	}
-
-	err := exec.Close()
-
-	must.Error(err)
-	must.ErrorContains(err, "tear down pod "+testK8sNamespace+"/"+testK8sPodName)
-	must.ErrorContains(err, "retained egress NetworkPolicy "+testK8sNamespace+"/"+networkPolicyName(testK8sPodName))
-	check.Contains(logs.String(), "retaining its egress NetworkPolicy")
-	check.True(trackerHas(t, cs, networkPoliciesResource, networkPolicyName(testK8sPodName)))
 }

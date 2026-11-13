@@ -159,3 +159,77 @@ func failVerb(cs *fake.Clientset, verb, resource string, err error) {
 }
 
 var errForbiddenPods = apierrors.NewForbidden(podsResource.GroupResource(), testK8sPodName, errors.New("denied by RBAC"))
+
+// lingeringPod records how a teardown treated a Pod that, once deleted,
+// stays terminating for a number of reads before it disappears, as a Pod
+// does while the kubelet stops its containers.
+type lingeringPod struct {
+	terminating bool
+	released    bool
+	// policyDeletedEarly is set when the egress policy was deleted while
+	// the Pod was still terminating.
+	policyDeletedEarly bool
+	// readsBeforeDelete counts Pod reads issued before the first delete.
+	readsBeforeDelete int
+	readsLeft         int
+}
+
+// lingerOnDelete makes a Pod delete set the Pod's deletion timestamp instead
+// of removing it; the Pod is released (removed) on the reads-th read after
+// that. Reactors run under the fake's lock, so they use the tracker only.
+func lingerOnDelete(t *testing.T, cs *fake.Clientset, reads int) *lingeringPod {
+	t.Helper()
+	l := &lingeringPod{readsLeft: reads}
+	cs.PrependReactor("delete", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		del := action.(clienttesting.DeleteAction)
+		obj, err := cs.Tracker().Get(podsResource, del.GetNamespace(), del.GetName())
+		if err != nil {
+			return false, nil, nil
+		}
+		pod := obj.(*corev1.Pod).DeepCopy()
+		if pod.DeletionTimestamp == nil {
+			pod.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+			if err := cs.Tracker().Update(podsResource, pod, del.GetNamespace()); err != nil {
+				return true, nil, err
+			}
+		}
+		l.terminating = true
+		return true, nil, nil
+	})
+	cs.PrependReactor("get", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if !l.terminating {
+			l.readsBeforeDelete++
+			return false, nil, nil
+		}
+		if l.released {
+			return false, nil, nil
+		}
+		if l.readsLeft > 0 {
+			l.readsLeft--
+			return false, nil, nil
+		}
+		get := action.(clienttesting.GetAction)
+		if err := cs.Tracker().Delete(podsResource, get.GetNamespace(), get.GetName()); err != nil && !apierrors.IsNotFound(err) {
+			return true, nil, err
+		}
+		l.released = true
+		return false, nil, nil
+	})
+	cs.PrependReactor("delete", "networkpolicies", func(clienttesting.Action) (bool, runtime.Object, error) {
+		if l.terminating && !l.released {
+			l.policyDeletedEarly = true
+		}
+		return false, nil, nil
+	})
+	return l
+}
+
+// requireRemovedAfterRelease asserts the Pod lingered, was released, and that
+// the policy was deleted only after the release.
+func requireRemovedAfterRelease(t *testing.T, l *lingeringPod) {
+	t.Helper()
+	must := require.New(t)
+	must.True(l.terminating, "the pod was never deleted")
+	must.True(l.released, "the teardown stopped reading before the pod disappeared")
+	must.False(l.policyDeletedEarly, "the policy was deleted while the pod was still terminating")
+}
