@@ -147,6 +147,33 @@ func TestPodTeardown_RetainsPolicy(t *testing.T) {
 			wantDeletes: 1,
 		},
 		{
+			name: "delete answers NotFound while the same pod remains",
+			arrange: func(_ *testing.T, cs *fake.Clientset) {
+				failVerb(cs, "delete", "pods", apierrors.NewNotFound(podsResource.GroupResource(), testK8sPodName))
+			},
+			wantErr:     []string{"pod termination not confirmed"},
+			wantDeletes: 1,
+		},
+		{
+			name: "delete answers a UID conflict while the same pod remains",
+			arrange: func(_ *testing.T, cs *fake.Clientset) {
+				failVerb(cs, "delete", "pods", apierrors.NewConflict(podsResource.GroupResource(), testK8sPodName, errors.New("the UID in the precondition does not match")))
+			},
+			wantErr:     []string{"pod termination not confirmed"},
+			wantDeletes: 1,
+		},
+		{
+			name: "termination read unauthorized",
+			arrange: func(_ *testing.T, cs *fake.Clientset) {
+				ignorePodDeletes(cs)
+				failVerb(cs, "get", "pods", apierrors.NewUnauthorized("token expired"))
+			},
+			wantErr:     []string{"confirm pod termination", "token expired"},
+			wantDeletes: 1,
+			wantReads:   1,
+			failsFast:   true,
+		},
+		{
 			name: "pod held terminating by a finalizer",
 			arrange: func(t *testing.T, cs *fake.Clientset) {
 				pod := readyPod("uid-1")
