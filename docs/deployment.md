@@ -228,8 +228,10 @@ IMDS, GitHub Actions OIDC). See
     repeat for that run. See
     [Run budgets and precedence](#run-budgets-and-precedence).
 11. **Exit.** The liveness probe file is removed; the process exits 0
-    when the primary run succeeded or non-zero on transport / build /
-    runtime failure. Before the connection closes the harness
+    when the primary run succeeded, `5` when it completed with another
+    outcome, or another non-zero status on transport / build / runtime
+    failure (see [Exit status and Kubernetes
+    Jobs](#exit-status-and-kubernetes-jobs)). Before the connection closes the harness
     half-closes the stream and waits up to 2 seconds (not
     configurable) for the control plane to end `RunTask`, so a
     terminal `done` is not lost to an abrupt teardown. A control plane
@@ -264,6 +266,30 @@ export failing on any run, follow-up included, fails the process.
 The full event vocabulary lives in
 [`proto/harness/v1/harness.proto`](../proto/harness/v1/harness.proto) —
 that is the source of truth for the wire contract.
+
+### Exit status and Kubernetes Jobs
+
+The exit status of `stirrup job` tells the runtime whether the harness
+worked, and the `done` event tells the control plane how the run went.
+
+| Status | Meaning |
+|---|---|
+| `0` | The primary run succeeded. |
+| `5` | The primary run completed and reported an outcome other than `success` (`max_turns`, `verification_failed`, `cancelled`, `timeout`, `error`, and the rest). Its `done` and `RunResult` were produced as for any run. |
+| other non-zero | The harness failed to start or finish the run: a `RunConfig` that could not be built, a transport failure, or a lost control stream (`control_stream_lost`). |
+
+The full scheme, shared with `stirrup harness`, is in
+[Exit codes](configuration.md#exit-codes).
+
+A Kubernetes Job reports `Failed` for any non-zero exit, so a run that
+ended at `max_turns` or was cancelled by the operator also produces a
+`Failed` Job. That condition does not mean the harness malfunctioned.
+Alerts and reconciliation loops that act on a failed Job distinguish the
+two by exit code. A Job whose pod template sets `restartPolicy: Never`
+(as [`examples/k8s/harness-job.yaml`](../examples/k8s/harness-job.yaml)
+does) can also add a `podFailurePolicy` rule with `onExitCodes` that
+matches `5`, so an ordinary run outcome does not spend `backoffLimit` on
+a retry.
 
 ### Health probes
 

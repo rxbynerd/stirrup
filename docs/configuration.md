@@ -733,7 +733,7 @@ counterpart. Under `job`, `resultSink.type` alone controls the
 `STIRRUP_RESULT` line: `"none"` or unset omits it.
 
 The exit code reflects the run outcome regardless of `--output`: a
-failed or cancelled run still exits non-zero. A cancellation
+failed or cancelled run still exits `5`. A cancellation
 mid-flight emits a partial `RunResult` carrying the cancellation
 outcome rather than nothing, so callers parsing the JSON line always
 see a structured record.
@@ -1005,28 +1005,35 @@ and `healthcheck`:
 
 | Code | Class | Examples |
 |---|---|---|
-| `0` | Success | The command completed; for `harness`, a run reached a terminal outcome; for `healthcheck`, the marker file is present and readable. |
+| `0` | Success | The command completed; for `harness` and `job`, the run's outcome was `success`; for `healthcheck`, the marker file is present and readable. |
 | `1` | Validation / precondition | `ValidateRunConfig` (or `run-config --validate`) rejected the resolved config; a required prompt had no source; `job` ran without `CONTROL_PLANE_ADDR`; `healthcheck` found no marker file. Also the default for any failure not in a more specific class. |
 | `2` | Parse error | The JSON in a `--config` file or piped stdin failed to decode (syntax error, unknown field, type mismatch). |
 | `3` | I/O error | A `--config` or `--prompt-file` path could not be opened, read, or stat'd; an empty / oversize input; an `--output-runconfig` write or close failure; `healthcheck` found a marker file it could not open (e.g. a permission error). |
 | `4` | Usage error | An invalid flag combination — currently a `--dry-run` probe gate (`--no-probe-provider`/`--no-probe-mcp`/`--no-probe-trace`/`--no-probe-egress`/`--no-probe-executor`) or `--dry-run-timeout` supplied without `--dry-run`. See [Dry-run preflight](#dry-run-preflight). |
+| `5` | Run outcome | `harness` or `job` completed a run whose `RunTrace.Outcome` is not `success` (`max_turns`, `verification_failed`, `cancelled`, `timeout`, `error`, and the rest) and reported it. The harness itself did not fail. |
 
 A failed `--dry-run` (one or more probes reported `fail`) exits `1` on
 the default path, not `4`: code `4` is reserved for the command-line
 combination itself being incoherent, not for a probe finding a real
 misconfiguration.
 
-A failed or cancelled *run* (as opposed to a configuration failure)
-exits non-zero on the same `1` default path; the `RunResult` on stdout
-carries the run's outcome for callers that need finer detail than the
-exit code. The interactive first-contact hints (a bare `stirrup` or a
+A run that completes with a non-success outcome (as opposed to a
+configuration or infrastructure failure) exits `5`; the `RunResult` on
+stdout, or the `done` event under `stirrup job`, carries the outcome for
+callers that need finer detail than the exit code. A failure before any
+run starts (a `RunConfig` that cannot be built, a control plane that
+cannot be reached) keeps its own class, as does a run that fails with
+an error rather than an outcome. The one outcome that stays on the `1`
+default path is `control_stream_lost`: the stream that would have
+carried the outcome to the control plane is the thing that failed. The
+interactive first-contact hints (a bare `stirrup` or a
 bare `stirrup harness` on a terminal) are a success surface and exit
 `0`.
 
 Process exit code uses a binary success/non-success split on
 `RunTrace.Outcome` ("success" is the only success value; every other
 documented outcome — hard errors, exhausted resource limits, or an
-interruption — exits non-zero) deliberately distinct from the eval
+interruption — exits non-zero, with class `5` above) deliberately distinct from the eval
 suite's passed/failed/inconclusive taxonomy
 ([`docs/eval.md`](eval.md)). Eval outcome answers "was the change any
 good", folding limit-hit and cancelled runs into a separate
