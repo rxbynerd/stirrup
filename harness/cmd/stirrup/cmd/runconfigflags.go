@@ -86,7 +86,12 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.Bool("otel-capture-content", false, "Opt the otel trace emitter into recording prompt/completion content on spans via the GenAI semconv attributes (gen_ai.input.messages, gen_ai.output.messages, gen_ai.system_instructions). OFF by default: message content is likely to contain PII. Content is scrubbed for secret-shaped substrings before export. Mirrors traceEmitter.captureContent.")
 	f.Int("otel-capture-content-max-bytes", 0, "Cap each captured content attribute (gen_ai.input.messages, gen_ai.output.messages, gen_ai.system_instructions, gen_ai.tool.call.arguments/result) at this many bytes, shortening at a message or part boundary so JSON stays valid and marking the span with stirrup.<attribute>.truncated. 0 (the default) means no cap; otherwise at least 256. Requires --otel-capture-content. Mirrors traceEmitter.captureContentMaxBytes.")
 
-	f.String("container-runtime", "", "Sandbox runtime (sets executor.runtime); the accepted set depends on --executor. container: an OCI runtime registered with the host Docker/Podman daemon, one of "+strings.Join(types.ValidExecutorRuntimeValues(), ", ")+" (runsc is gVisor). k8s: a runtime mapped to the Pod RuntimeClassName, one of "+strings.Join(types.ValidK8sExecutorRuntimeValues(), ", ")+"; every value but nitro-isolated is also the RuntimeClass name, and nitro-isolated selects AWS's isolated-sandbox class on EKS; it needs these RunConfig fields set in the config file (there are no flags for them): executor.network.mode none, positive executor.resources.cpus and memoryMb, and no sandboxIdentity or gitProxy (see docs/executors/k8s.md#eks-with-nitro-sandboxes). k8s-sandbox: gvisor or empty; any other value is rejected. Empty means the platform default: the engine default (typically runc) for container, and for k8s the cluster-default RuntimeClass, which may be unsandboxed; set this (e.g. gvisor for k8s) for guaranteed isolation. Shell completion offers the container set only. See docs/safety-rings.md.")
+	f.String("container-runtime", "", "Sandbox runtime (sets executor.runtime); the accepted set depends on --executor. container: an OCI runtime registered with the host Docker/Podman daemon, one of "+strings.Join(types.ValidExecutorRuntimeValues(), ", ")+" (runsc is gVisor). k8s: a runtime mapped to the Pod RuntimeClassName, one of "+strings.Join(types.ValidK8sExecutorRuntimeValues(), ", ")+"; every value but nitro-isolated is also the RuntimeClass name, and nitro-isolated selects AWS's isolated-sandbox class on EKS; it needs --network-mode none, positive --cpus and --memory-mb, and no sandboxIdentity or gitProxy (see docs/executors/k8s.md#eks-with-nitro-sandboxes). k8s-sandbox: gvisor or empty; any other value is rejected. Empty means the platform default: the engine default (typically runc) for container, and for k8s the cluster-default RuntimeClass, which may be unsandboxed; set this (e.g. gvisor for k8s) for guaranteed isolation. Shell completion offers the set matching the --executor already typed on the command line. See docs/safety-rings.md.")
+	f.String("image", "", "Sandbox container image for the container, k8s and k8s-sandbox executors (sets executor.image). Required for k8s and k8s-sandbox; must ship /bin/sh, tar, ls, mkdir and readlink.")
+	f.Float64("cpus", 0, "CPU limit for the sandbox, in cores (sets executor.resources.cpus; fractions allowed, e.g. 0.5). 0 leaves the CPU unbounded (the namespace defaults apply on k8s). Required positive for --container-runtime nitro-isolated.")
+	f.Int("memory-mb", 0, "Memory limit for the sandbox, in MiB (sets executor.resources.memoryMb). 0 leaves memory unbounded (the namespace defaults apply on k8s). Required positive for --container-runtime nitro-isolated.")
+	f.Int("disk-mb", 0, "Ephemeral-storage limit for the k8s and k8s-sandbox sandbox Pod, in MiB (sets executor.resources.diskMb); for nitro-isolated, the size of the guest's disk. 0 leaves it unbounded.")
+	f.String("network-mode", "", "Sandbox egress mode (sets executor.network.mode): \"none\" denies all egress; \"allowlist\" routes through the egress proxy (the allowlist entries themselves, executor.network.allowlist, are set in --config; the k8s executors also need --k8s-egress-proxy-url). Required for k8s and k8s-sandbox. Keeps any allowlist already present in --config.")
 	f.String("k8s-namespace", "", "Kubernetes namespace for the k8s and k8s-sandbox executors' sandbox Pod. Required when --executor=k8s or --executor=k8s-sandbox. Mirrors executor.k8sNamespace.")
 	f.String("k8s-kubeconfig", "", "Path to a kubeconfig file for the k8s and k8s-sandbox executors. Empty prefers in-cluster config, then $KUBECONFIG. Mirrors executor.k8sKubeconfig.")
 	f.StringArray("k8s-node-selector", nil, "Repeatable key=value nodeSelector label constraining where the k8s and k8s-sandbox executors' Pod schedules (e.g. --k8s-node-selector disktype=ssd). Mirrors executor.k8sNodeSelector.")
@@ -162,13 +167,20 @@ func addRunConfigFlagCompletions(cmd *cobra.Command) {
 	staticValues("otel-metrics-temporality", types.ValidTraceEmitterMetricsTemporalityValues())
 	staticValues("otel-platform", types.ValidTraceEmitterPlatformValues())
 	staticValues("log-export", types.ValidLogsExportTypeValues())
-	staticValues("container-runtime", types.ValidExecutorRuntimeValues())
+	staticValues("network-mode", types.ValidExecutorNetworkModeValues())
 	staticValues("code-scanner", types.ValidCodeScannerTypeValues())
 	staticValues("guardrail", types.ValidGuardRailTypeValues())
 	staticValues("provider-compat-profile", types.ValidCompatProfileValues())
 	staticValues("provider-endpoint-profile", types.ValidEndpointProfileValues())
 	staticValues("tools-profile", types.ValidToolsProfileValues())
 	staticValues("lazy-tools-strategy", types.ValidLazyToolStrategyValues())
+
+	_ = cmd.RegisterFlagCompletionFunc("container-runtime", func(cmd *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		if executor, _ := cmd.Flags().GetString("executor"); types.IsK8sFamily(executor) {
+			return types.ValidK8sExecutorRuntimeValues(), cobra.ShellCompDirectiveNoFileComp
+		}
+		return types.ValidExecutorRuntimeValues(), cobra.ShellCompDirectiveNoFileComp
+	})
 
 	// log-level and api-key-header are not validator-closed sets in
 	// types/runconfig.go, but operators benefit from a hinted completion.

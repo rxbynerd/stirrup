@@ -32,6 +32,10 @@ func ValidExecutorRuntimeValues() []string { return sortedNonEmptyKeys(validCont
 // value, which leaves the Pod's RuntimeClassName unset, is also accepted.
 func ValidK8sExecutorRuntimeValues() []string { return sortedNonEmptyKeys(validK8sRuntimes) }
 
+// ValidExecutorNetworkModeValues returns the egress modes accepted on
+// RunConfig.Executor.Network.Mode.
+func ValidExecutorNetworkModeValues() []string { return []string{"allowlist", "none"} }
+
 // ValidEditStrategyTypeValues returns the edit-strategy types accepted
 // on RunConfig.EditStrategy.Type.
 func ValidEditStrategyTypeValues() []string { return sortedKeys(validEditStrategyTypes) }
