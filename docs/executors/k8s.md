@@ -922,8 +922,8 @@ stirrup harness \
 
 `scripts/dev/kind-up.sh` installs gVisor (`runsc` + the containerd shim)
 into the kind node and registers a `gvisor` RuntimeClass, so a Pod can
-schedule onto a kernel-isolated runtime. Egress on kindnet is not an
-egress guarantee — combine gVisor with a production CNI for the full
+schedule onto a kernel-isolated runtime. Kindnet does not guarantee
+egress confinement — combine gVisor with a production CNI for the full
 posture.
 
 ```sh
@@ -1933,7 +1933,7 @@ allowlisted destination on the other side of it.
 cluster can accept the objects without enforcing them. The executor
 cannot tell the difference: it installs the policy either way.
 
-- **kindnet**, the default CNI for `kind`, enforces NetworkPolicy since
+- **kindnet**, the default CNI for `kind`, enforces `NetworkPolicy` since
   kind v0.24.0 (2024-08-15), through
   [kube-network-policies](https://github.com/kubernetes-sigs/kube-network-policies).
   It is a development CNI, not a production one, and its dataplane is
