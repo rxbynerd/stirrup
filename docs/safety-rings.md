@@ -1320,11 +1320,15 @@ cross-namespace proxy is denied (more restrictive, not a bypass). Deploy
 it from [`examples/k8s/egress-proxy/`](../examples/k8s/egress-proxy/) or
 run it standalone with `stirrup egress-proxy`.
 
-> **Enforcement depends on the CNI.** kindnet — the default CNI for
-> `kind` — accepts `NetworkPolicy` objects but does **not** enforce
-> them, so on a stock kind cluster the deny/allowlist policy is inert
-> and the Pod keeps cluster-default egress. The confinement holds only
-> on a NetworkPolicy-enforcing CNI such as
+> **Enforcement depends on the CNI.** kindnet, the default CNI for
+> `kind`, enforces `NetworkPolicy` since kind v0.24.0 (2024-08-15),
+> through [kube-network-policies](https://github.com/kubernetes-sigs/kube-network-policies).
+> It is a development CNI, not a production one, and its dataplane is
+> configured to fail open: if the policy controller cannot start, kindnet
+> logs the error and skips network policies, and if the controller stops,
+> packets are no longer dropped. A kind run is therefore not evidence
+> of an egress guarantee. The confinement is meant to hold on a
+> production NetworkPolicy-enforcing CNI such as
 > [Cilium](https://cilium.io/) or
 > [Calico](https://www.tigera.io/project-calico/). This is the K8s
 > analogue of the `container` executor's honest fail-open note around

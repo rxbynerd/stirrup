@@ -899,10 +899,11 @@ fill in the provider/model and prompt as for any run.
 
 ### kind + runc (manifest-shape smoke test)
 
-A stock `kind` cluster runs every Pod under `runc` and does **not**
-enforce `NetworkPolicy` (its default CNI, kindnet, accepts policy objects
-but ignores them). This recipe proves the executor can create, exec
-into, and tear down a Pod — it does **not** prove egress confinement.
+A stock `kind` cluster runs every Pod under `runc`. Its default CNI,
+kindnet, enforces `NetworkPolicy` but is a development CNI configured to
+fail open (see the [enforcement caveat](#enforcement-caveat--networkpolicy-may-be-accepted-but-not-enforced)).
+This recipe proves the executor can create, exec into, and tear down a
+Pod — it does **not** prove egress confinement.
 
 ```sh
 ./scripts/dev/kind-up.sh        # or: just kind-up
@@ -921,8 +922,9 @@ stirrup harness \
 
 `scripts/dev/kind-up.sh` installs gVisor (`runsc` + the containerd shim)
 into the kind node and registers a `gvisor` RuntimeClass, so a Pod can
-schedule onto a kernel-isolated runtime. Egress is still unenforced on
-kindnet — combine gVisor with a real CNI for the full posture.
+schedule onto a kernel-isolated runtime. Egress on kindnet is not an
+egress guarantee — combine gVisor with a production CNI for the full
+posture.
 
 ```sh
 ./scripts/dev/kind-up.sh        # installs gVisor + RuntimeClasses
@@ -1931,10 +1933,18 @@ allowlisted destination on the other side of it.
 cluster can accept the objects without enforcing them. The executor
 cannot tell the difference: it installs the policy either way.
 
-- **kindnet**, the default CNI for `kind`, accepts NetworkPolicy objects
-  but does not enforce them. On a stock kind cluster the deny-all and
-  allowlist policies are inert, and a sandbox Pod retains
-  cluster-default egress. The confinement holds only on a
+- **kindnet**, the default CNI for `kind`, enforces NetworkPolicy since
+  kind v0.24.0 (2024-08-15), through
+  [kube-network-policies](https://github.com/kubernetes-sigs/kube-network-policies).
+  It is a development CNI, not a production one, and its dataplane is
+  configured to fail open: if the policy controller cannot start,
+  kindnet logs the error and skips network policies, and if the
+  controller stops, packets are no longer dropped. A kind run is not
+  evidence of an egress guarantee. On a one-node kind v0.33.0 cluster
+  (kindnetd `v20240813-c6f155d6`), a deny-all egress policy blocked a
+  sandbox Pod's connections to another Pod and to an external address
+  but not to the control-plane node's own address (measured once, not
+  generalised). The confinement is meant to hold on a production
   NetworkPolicy-enforcing CNI such as [Cilium](https://cilium.io/) or
   [Calico](https://www.tigera.io/project-calico/).
 - **EKS Auto Mode**: AWS documentation says the network policy
@@ -2200,7 +2210,7 @@ it, the probe uses the same kubeconfig resolution as a run:
 | `pod <ns>/<pod> not ready: observed pod <ns>/<pod> no longer matches the admitted pod: metadata.uid: expected <uid>, observed <uid>` | The Pod was deleted and another created under its name during the readiness wait; no webhook acted. A label or RuntimeClass entry instead means a writer changed the Pod after admission. | Find what deleted or edited the Pod (audit log); the sandbox namespace should hold only harness-managed Pods. |
 | `tear down pod <ns>/<pod> (run ID "<id>"): <cause>; retained egress NetworkPolicy <ns>/<pod>-egress` (also in the warning `sandbox teardown incomplete; retaining the egress NetworkPolicy (fail closed)`), or the same beginning `tear down sandbox` for `k8s-sandbox` | Pod termination was not confirmed within the teardown bound, the delete or the post-create lookup failed, the Pod under the name was not the run's or a replacement still carried the policy's selector label, a create with an unknown outcome found no Pod, the policy delete failed, or (for `k8s-sandbox`) the backing Pod was still present after the Sandbox was gone. The cause names which. | Follow [Cleaning up retained objects](#cleaning-up-retained-objects). |
 | Exec/file I/O fails with API errors | The orchestrator lacks `pods/exec` create. | Apply [`rbac.yaml`](../../examples/k8s/rbac.yaml) (or grant the verb). |
-| Egress not actually confined on `kind` or EKS Auto Mode | kindnet does not enforce NetworkPolicy; Auto Mode does not until its network policy controller is enabled, and with the controller enabled and a `DefaultAllow` NodeClass startup traffic escaped a policy once. | Use a NetworkPolicy-enforcing CNI (Cilium, Calico); on Auto Mode enable enforcement with a `DefaultDeny` NodeClass (measured once; see the [Enforcement caveat](#enforcement-caveat--networkpolicy-may-be-accepted-but-not-enforced)), or use a runtime that removes the guest network, such as [`nitro-isolated`](#network-mode-none-on-this-runtime). |
+| Egress not actually confined on `kind` or EKS Auto Mode | kindnet is a development CNI that fails open and is not evidence of confinement; Auto Mode does not enforce until its network policy controller is enabled, and with the controller enabled and a `DefaultAllow` NodeClass startup traffic escaped a policy once. | Use a production NetworkPolicy-enforcing CNI (Cilium, Calico); on Auto Mode enable enforcement with a `DefaultDeny` NodeClass (measured once; see the [Enforcement caveat](#enforcement-caveat--networkpolicy-may-be-accepted-but-not-enforced)), or use a runtime that removes the guest network, such as [`nitro-isolated`](#network-mode-none-on-this-runtime). |
 | Validation errors naming `executor.runtime="nitro-isolated"` | The run sets a network mode, resources, `sandboxIdentity` or `gitProxy` the runtime does not accept. | See [What the runtime accepts](#what-the-runtime-accepts); Nitro-specific run failures are under [Troubleshooting on Nitro](#troubleshooting-on-nitro). |
 
 ## Testing the executor against a real cluster
