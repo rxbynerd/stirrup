@@ -48,8 +48,13 @@ never contains anything that could be replayed against a provider.
 ### `LogScrubber`
 
 The `harness/internal/observability/ScrubHandler` wraps any
-`slog.Handler` and runs `security.Scrub()` on every string attribute
-value before delegation. Nineteen regex patterns are scrubbed,
+`slog.Handler` and runs `security.Scrub()` on the message and every
+attribute value before delegation. `LogValuer` values are resolved
+first; errors, `fmt.Stringer` values and byte slices become scrubbed
+strings, groups are scrubbed recursively, and any other composite value
+(map, slice, struct) is rendered as one scrubbed JSON string. Numeric,
+boolean, time and duration values are unchanged. Nineteen regex patterns
+are scrubbed,
 covering:
 
 - Anthropic API keys

@@ -296,9 +296,10 @@ component construction, post-run hooks, result/export flushing, and —
 with a follow-up grace window — each follow-up run's own `timeout`
 plus the idle windows between runs.
 The process writes `/tmp/healthy`, but the published distroless image
-contains no `test` or shell binary; inspect that file from a sidecar
-sharing the volume, or use a custom image/probe helper. The wire
-heartbeat is the control plane's direct run-liveness signal.
+contains no `test` or shell binary, so an exec probe runs
+`stirrup healthcheck --file=/tmp/healthy` instead (see
+[Health probes](deployment.md#health-probes)). The wire heartbeat is the
+control plane's direct run-liveness signal.
 
 ### Detecting a stalled or orphaned run
 
