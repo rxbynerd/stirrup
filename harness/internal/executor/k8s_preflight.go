@@ -107,6 +107,7 @@ func k8sRequiredAccess(executorType string) []k8sAccess {
 			{resource: "pods", verb: "create"},
 			{resource: "pods", verb: "get"},
 			{resource: "pods", verb: "delete"},
+			{group: "networking.k8s.io", resource: "networkpolicies", verb: "patch"},
 		}
 	case "k8s-sandbox":
 		workload = []k8sAccess{
