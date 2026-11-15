@@ -361,7 +361,7 @@ func trailingNumber(s string) (string, bool) {
 
 // parseLintIgnores reads the @stirrupLintIgnore annotation into a rule set.
 func parseLintIgnores(annotations cedar.Annotations) map[string]bool {
-	raw, ok := annotations[cedartypes.Ident(lintIgnoreAnnotation)]
+	raw, ok := annotations[cedartypes.AnnotationKey(lintIgnoreAnnotation)]
 	if !ok {
 		return nil
 	}
