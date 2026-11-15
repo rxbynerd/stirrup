@@ -1940,8 +1940,9 @@ cannot tell the difference: it installs the policy either way.
   configured to fail open: if the policy controller cannot start,
   kindnet logs the error and skips network policies, and if the
   controller stops, packets are no longer dropped. A kind run is not
-  evidence of an egress guarantee. On a one-node kind v0.33.0 cluster
-  (kindnetd `v20240813-c6f155d6`), a deny-all egress policy blocked a
+  evidence of an egress guarantee. On a one-node cluster created by kind v0.33.0
+  from its default Kubernetes v1.31.0 node image (kindnetd
+  `v20240813-c6f155d6`), a deny-all egress policy blocked a
   sandbox Pod's connections to another Pod and to an external address
   but not to the control-plane node's own address (measured once, not
   generalised). The confinement is meant to hold on a production

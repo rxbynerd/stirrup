@@ -2534,7 +2534,10 @@ func (x *RuleOfTwoConfig) GetRuntime() *RuleOfTwoRuntimeConfig {
 // With this message absent, or with classifier "", the harness arms the
 // pattern classifier itself whenever the run holds untrusted input and
 // external communication, and the default on_detect is "block-external".
-// classifier "none" disables runtime classification.
+// classifier "none" disables runtime classification. Whether the run
+// enforces the action or only observes depends on the static
+// Rule-of-Two state; see "When the classifier arms" in
+// docs/safety-rings.md.
 type RuleOfTwoRuntimeConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The detector implementation.

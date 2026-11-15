@@ -468,9 +468,9 @@ type RuleOfTwoConfig struct {
 }
 
 // RuleOfTwoRuntimeConfig selects the runtime sensitive-data classifier
-// and the action taken when it detects sensitive content. Only the
-// config surface and its validation ship today; the detector, monitor,
-// and enforcement semantics land in follow-up changes.
+// and the action taken when it detects sensitive content. The factory
+// arms the classifier from the static Rule-of-Two state; see
+// docs/safety-rings.md for the arming table.
 type RuleOfTwoRuntimeConfig struct {
 	// Classifier selects the detector implementation. Valid values:
 	// "" (automatic — the factory decides from the static Rule-of-Two
