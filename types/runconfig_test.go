@@ -811,55 +811,6 @@ func TestValidateRunConfig_TokenBudgetBound(t *testing.T) {
 	must.NoError(ValidateRunConfig(c))
 }
 
-// TestValidateRunConfig_CostBudgetBoundAndWarning pins both halves of the
-// maxCostBudget contract: the $100 bound still rejects, and any value at
-// all produces the warning that says the budget is not enforced, so the
-// field can never look like a working spend cap.
-func TestValidateRunConfig_CostBudgetBoundAndWarning(t *testing.T) {
-	const wantMsg = "maxCostBudget is accepted and bounded but not enforced"
-	for _, tc := range []struct {
-		name    string
-		set     bool
-		budget  float64
-		wantErr bool
-	}{
-		{"unset does not warn", false, 0, false},
-		{"within cap warns", true, 10, false},
-		{"at cap warns", true, 100, false},
-		{"above cap errors and warns", true, 100.01, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			must := require.New(t)
-			var logBuf bytes.Buffer
-			originalLogger := slog.Default()
-			t.Cleanup(func() { slog.SetDefault(originalLogger) })
-			slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-
-			c := validConfig()
-			if tc.set {
-				budget := tc.budget
-				c.MaxCostBudget = &budget
-			}
-
-			err := ValidateRunConfig(c)
-			if tc.wantErr {
-				must.ErrorContains(err, "maxCostBudget")
-			} else {
-				must.NoError(err)
-			}
-
-			logs := logBuf.String()
-			if tc.set {
-				must.Contains(logs, "level=WARN")
-				must.Contains(logs, wantMsg)
-				must.Contains(logs, fmt.Sprintf("maxCostBudget=%v", tc.budget))
-			} else {
-				must.NotContains(logs, wantMsg)
-			}
-		})
-	}
-}
-
 func TestValidateRunConfig_NilBudgetsPass(t *testing.T) {
 	must := require.New(t)
 	c := validConfig()

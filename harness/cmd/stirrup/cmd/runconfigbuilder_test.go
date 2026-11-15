@@ -365,6 +365,20 @@ func TestBuildRunConfig_RejectsUnknownStdinFields(t *testing.T) {
 	must.ErrorContains(err, "not_a_field")
 }
 
+// TestBuildRunConfig_RejectsRemovedMaxCostBudget pins that the removed
+// maxCostBudget field fails as an ordinary unknown field rather than being
+// accepted and ignored.
+func TestBuildRunConfig_RejectsRemovedMaxCostBudget(t *testing.T) {
+	must := require.New(t)
+	cmd := newTestHarnessCommand()
+	_, err := BuildRunConfig(RunConfigSources{
+		Stdin:   strings.NewReader(`{"mode":"planning","maxCostBudget":10}`),
+		Cmd:     cmd,
+		Resolve: ResolveBase,
+	})
+	must.ErrorContains(err, `unknown field "maxCostBudget"`)
+}
+
 // TestBuildRunConfig_StdinSizeCap pins that the 1 MiB cap on
 // loadRunConfigFile is reused for stdin so a hostile / runaway piped
 // input cannot OOM the harness.

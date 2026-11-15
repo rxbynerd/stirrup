@@ -1789,25 +1789,6 @@ func TestRunConfigFromProto_ToolsProfilePreserved(t *testing.T) {
 	must.Equal("coding-classic", runConfigFromProto(&decoded).Tools.Profile)
 }
 
-// TestRunConfigFromProto_MaxCostBudgetStillTranslated pins the deprecated
-// field's translation: the budget is not enforced, but dropping it here
-// would swallow the value before ValidateRunConfig can warn that the cap
-// does nothing.
-func TestRunConfigFromProto_MaxCostBudgetStillTranslated(t *testing.T) {
-	check := assert.New(t)
-	must := require.New(t)
-	budget := 42.5
-	//nolint:staticcheck // SA1019: exercising the deprecated field on purpose.
-	pc := &pb.RunConfig{MaxCostBudget: &budget}
-
-	rc := runConfigFromProto(pc)
-
-	must.NotNil(rc.MaxCostBudget, "MaxCostBudget dropped in translation")
-	check.InDelta(budget, *rc.MaxCostBudget, 1e-9)
-
-	check.Nil(runConfigFromProto(&pb.RunConfig{}).MaxCostBudget, "unset max_cost_budget maps to nil")
-}
-
 // TestRunTraceToProto_HandoffSummaryRoundTrip pins that the git handoff,
 // the export receipt and the run error reach the "done" trace summary.
 func TestRunTraceToProto_HandoffSummaryRoundTrip(t *testing.T) {

@@ -1162,13 +1162,6 @@ type RunConfig struct {
 	// terminates with stop_reason "budget_exceeded" if this is hit.
 	// Max: 50,000,000.
 	MaxTokenBudget *int32 `protobuf:"varint,17,opt,name=max_token_budget,json=maxTokenBudget,proto3,oneof" json:"max_token_budget,omitempty"`
-	// Optional. Accepted and bounded at 100.00, but NOT enforced: the harness
-	// computes no cost, so no run terminates on this budget. Setting it logs a
-	// warning at config validation. Cap spend in the control plane from
-	// provider billing data.
-	//
-	// Deprecated: Marked as deprecated in harness/v1/harness.proto.
-	MaxCostBudget *float64 `protobuf:"fixed64,18,opt,name=max_cost_budget,json=maxCostBudget,proto3,oneof" json:"max_cost_budget,omitempty"`
 	// Required. Wall-clock timeout in seconds for one run. The primary run's
 	// budget starts when this RunConfig is accepted (component construction
 	// counts against it); every follow-up run receives a fresh budget of
@@ -1484,14 +1477,6 @@ func (x *RunConfig) GetMaxTurns() int32 {
 func (x *RunConfig) GetMaxTokenBudget() int32 {
 	if x != nil && x.MaxTokenBudget != nil {
 		return *x.MaxTokenBudget
-	}
-	return 0
-}
-
-// Deprecated: Marked as deprecated in harness/v1/harness.proto.
-func (x *RunConfig) GetMaxCostBudget() float64 {
-	if x != nil && x.MaxCostBudget != nil {
-		return *x.MaxCostBudget
 	}
 	return 0
 }
@@ -3010,9 +2995,6 @@ type RunTrace struct {
 	InputTokens int32 `protobuf:"varint,3,opt,name=input_tokens,json=inputTokens,proto3" json:"input_tokens,omitempty"`
 	// Total output tokens consumed across all provider calls.
 	OutputTokens int32 `protobuf:"varint,4,opt,name=output_tokens,json=outputTokens,proto3" json:"output_tokens,omitempty"`
-	// Always 0: no cost accounting is implemented. The harness carries no
-	// pricing table and computes no cost.
-	CostUsd float64 `protobuf:"fixed64,5,opt,name=cost_usd,json=costUsd,proto3" json:"cost_usd,omitempty"`
 	// Wall-clock duration of the run in milliseconds.
 	DurationMs int64 `protobuf:"varint,6,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
 	// Deprecated for analytics: retained for backward compatibility. This
@@ -3154,13 +3136,6 @@ func (x *RunTrace) GetInputTokens() int32 {
 func (x *RunTrace) GetOutputTokens() int32 {
 	if x != nil {
 		return x.OutputTokens
-	}
-	return 0
-}
-
-func (x *RunTrace) GetCostUsd() float64 {
-	if x != nil {
-		return x.CostUsd
 	}
 	return 0
 }
@@ -7093,7 +7068,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"tracestate\x18\x02 \x01(\tR\n" +
 	"tracestateJ\x04\b\x03\x10\x04R\abaggage\"$\n" +
 	"\fOptionalBool\x12\x14\n" +
-	"\x05value\x18\x01 \x01(\bR\x05value\"\xa7\x16\n" +
+	"\x05value\x18\x01 \x01(\bR\x05value\"\xf9\x15\n" +
 	"\tRunConfig\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x16\n" +
@@ -7113,23 +7088,22 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\rtrace_emitter\x18\x0e \x01(\v2&.stirrup.harness.v1.TraceEmitterConfigR\ftraceEmitter\x125\n" +
 	"\x05tools\x18\x0f \x01(\v2\x1f.stirrup.harness.v1.ToolsConfigR\x05tools\x12\x1b\n" +
 	"\tmax_turns\x18\x10 \x01(\x05R\bmaxTurns\x12-\n" +
-	"\x10max_token_budget\x18\x11 \x01(\x05H\x00R\x0emaxTokenBudget\x88\x01\x01\x12/\n" +
-	"\x0fmax_cost_budget\x18\x12 \x01(\x01B\x02\x18\x01H\x01R\rmaxCostBudget\x88\x01\x01\x12\x1d\n" +
-	"\atimeout\x18\x13 \x01(\x05H\x02R\atimeout\x88\x01\x01\x12+\n" +
-	"\x0ffollow_up_grace\x18\x15 \x01(\x05H\x03R\rfollowUpGrace\x88\x01\x01\x12*\n" +
+	"\x10max_token_budget\x18\x11 \x01(\x05H\x00R\x0emaxTokenBudget\x88\x01\x01\x12\x1d\n" +
+	"\atimeout\x18\x13 \x01(\x05H\x01R\atimeout\x88\x01\x01\x12+\n" +
+	"\x0ffollow_up_grace\x18\x15 \x01(\x05H\x02R\rfollowUpGrace\x88\x01\x01\x12*\n" +
 	"\x11follow_up_history\x18< \x01(\tR\x0ffollowUpHistory\x12+\n" +
 	"\x11heartbeat_seconds\x18= \x01(\x05R\x10heartbeatSeconds\x12\x1b\n" +
 	"\tlog_level\x18\x16 \x01(\tR\blogLevel\x124\n" +
 	"\x16system_prompt_override\x18\x17 \x01(\tR\x14systemPromptOverride\x12&\n" +
-	"\fsession_name\x18\x18 \x01(\tH\x04R\vsessionName\x88\x01\x01\x12C\n" +
+	"\fsession_name\x18\x18 \x01(\tH\x03R\vsessionName\x88\x01\x01\x12C\n" +
 	"\vrule_of_two\x18\x19 \x01(\v2#.stirrup.harness.v1.RuleOfTwoConfigR\truleOfTwo\x12H\n" +
 	"\fcode_scanner\x18\x1a \x01(\v2%.stirrup.harness.v1.CodeScannerConfigR\vcodeScanner\x12*\n" +
-	"\x0esensitive_data\x18\x1b \x01(\bH\x05R\rsensitiveData\x88\x01\x01\x12B\n" +
+	"\x0esensitive_data\x18\x1b \x01(\bH\x04R\rsensitiveData\x88\x01\x01\x12B\n" +
 	"\n" +
 	"guard_rail\x18\x1c \x01(\v2#.stirrup.harness.v1.GuardRailConfigR\tguardRail\x12M\n" +
 	"\robservability\x18\x1d \x01(\v2'.stirrup.harness.v1.ObservabilityConfigR\robservability\x12K\n" +
 	"\rtool_dispatch\x18\x1e \x01(\v2&.stirrup.harness.v1.ToolDispatchConfigR\ftoolDispatch\x12%\n" +
-	"\vtemperature\x18\x1f \x01(\x01H\x06R\vtemperature\x88\x01\x01\x125\n" +
+	"\vtemperature\x18\x1f \x01(\x01H\x05R\vtemperature\x88\x01\x01\x125\n" +
 	"\x05hooks\x18  \x01(\v2\x1f.stirrup.harness.v1.HooksConfigR\x05hooks\x12)\n" +
 	"\x10reasoning_effort\x18! \x01(\tR\x0freasoningEffort\x12+\n" +
 	"\x11reasoning_summary\x18; \x01(\tR\x10reasoningSummary\x12E\n" +
@@ -7146,14 +7120,13 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x0eProvidersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x128\n" +
 	"\x05value\x18\x02 \x01(\v2\".stirrup.harness.v1.ProviderConfigR\x05value:\x028\x01B\x13\n" +
-	"\x11_max_token_budgetB\x12\n" +
-	"\x10_max_cost_budgetB\n" +
+	"\x11_max_token_budgetB\n" +
 	"\n" +
 	"\b_timeoutB\x12\n" +
 	"\x10_follow_up_graceB\x0f\n" +
 	"\r_session_nameB\x11\n" +
 	"\x0f_sensitive_dataB\x0e\n" +
-	"\f_temperature\"I\n" +
+	"\f_temperatureJ\x04\b\x12\x10\x13R\x0fmax_cost_budget\"I\n" +
 	"\x13DynamicContextValue\x12\x14\n" +
 	"\x05value\x18\x01 \x01(\tR\x05value\x12\x1c\n" +
 	"\tsensitive\x18\x02 \x01(\bR\tsensitive\"7\n" +
@@ -7255,13 +7228,12 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x11service_namespace\x18\x02 \x01(\tR\x10serviceNamespace\x12E\n" +
 	"\vlogs_export\x18\x03 \x01(\v2$.stirrup.harness.v1.LogsExportConfigR\n" +
 	"logsExport\x12!\n" +
-	"\fservice_name\x18\x04 \x01(\tR\vserviceName\"\xec\b\n" +
+	"\fservice_name\x18\x04 \x01(\tR\vserviceName\"\xe1\b\n" +
 	"\bRunTrace\x12\x15\n" +
 	"\x06run_id\x18\x01 \x01(\tR\x05runId\x12\x14\n" +
 	"\x05turns\x18\x02 \x01(\x05R\x05turns\x12!\n" +
 	"\finput_tokens\x18\x03 \x01(\x05R\vinputTokens\x12#\n" +
-	"\routput_tokens\x18\x04 \x01(\x05R\foutputTokens\x12\x19\n" +
-	"\bcost_usd\x18\x05 \x01(\x01R\acostUsd\x12\x1f\n" +
+	"\routput_tokens\x18\x04 \x01(\x05R\foutputTokens\x12\x1f\n" +
 	"\vduration_ms\x18\x06 \x01(\x03R\n" +
 	"durationMs\x12\x1f\n" +
 	"\vstop_reason\x18\a \x01(\tR\n" +
@@ -7281,7 +7253,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x10auxiliary_tokens\x18\x19 \x01(\v2\x1e.stirrup.harness.v1.TokenUsageR\x0fauxiliaryTokens\x12R\n" +
 	"\x15external_guard_tokens\x18\x1a \x01(\v2\x1e.stirrup.harness.v1.TokenUsageR\x13externalGuardTokens\x12R\n" +
 	"\x10post_edit_checks\x18# \x01(\v2(.stirrup.harness.v1.PostEditCheckSummaryR\x0epostEditChecks\x12K\n" +
-	"\x0ftrace_reference\x18% \x01(\v2\".stirrup.harness.v1.TraceReferenceR\x0etraceReference\"}\n" +
+	"\x0ftrace_reference\x18% \x01(\v2\".stirrup.harness.v1.TraceReferenceR\x0etraceReferenceJ\x04\b\x05\x10\x06R\bcost_usd\"}\n" +
 	"\n" +
 	"GitHandoff\x12\x16\n" +
 	"\x06branch\x18\x01 \x01(\tR\x06branch\x12\x10\n" +

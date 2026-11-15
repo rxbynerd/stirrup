@@ -278,13 +278,6 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		v := int(*pc.MaxTokenBudget)
 		rc.MaxTokenBudget = &v
 	}
-	// Deprecated and unenforced, but still translated: dropping it here
-	// would silently swallow the field before ValidateRunConfig can warn
-	// the operator that their spend cap does nothing.
-	//nolint:staticcheck // SA1019: intentional read of a deprecated field.
-	if pc.MaxCostBudget != nil {
-		rc.MaxCostBudget = pc.MaxCostBudget //nolint:staticcheck // SA1019: see above.
-	}
 	if pc.Temperature != nil {
 		rc.Temperature = pc.Temperature
 	}

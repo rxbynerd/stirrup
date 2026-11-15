@@ -755,11 +755,9 @@ message RunConfig {
   // Max: 50,000,000.
   optional int32 max_token_budget = 17;
 
-  // Optional. Accepted and bounded at 100.00, but NOT enforced: the harness
-  // computes no cost, so no run terminates on this budget. Setting it logs a
-  // warning at config validation. Cap spend in the control plane from
-  // provider billing data.
-  optional double max_cost_budget = 18 [deprecated = true];
+  // Cost budgeting belongs to the control plane; the harness computes no cost.
+  reserved 18;
+  reserved "max_cost_budget";
 
   // Required. Wall-clock timeout in seconds for one run. The primary run's
   // budget starts when this RunConfig is accepted (component construction
@@ -1440,9 +1438,9 @@ message RunTrace {
   // Total output tokens consumed across all provider calls.
   int32 output_tokens = 4;
 
-  // Always 0: no cost accounting is implemented. The harness carries no
-  // pricing table and computes no cost.
-  double cost_usd = 5;
+  // Cost accounting belongs to the control plane; the harness computes no cost.
+  reserved 5;
+  reserved "cost_usd";
 
   // Wall-clock duration of the run in milliseconds.
   int64 duration_ms = 6;

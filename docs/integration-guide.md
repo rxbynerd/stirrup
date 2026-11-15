@@ -199,8 +199,8 @@ without breaking the protocol.
 after the final git checkpoint, the workspace export and the trace
 upload have finished, so the summary includes their results and the
 run's `error`. Obtain verifier details and final assistant text from a
-configured `resultSink`, process stdout, or a trace emitter. `cost_usd`
-is not calculated by the harness.
+configured `resultSink`, process stdout, or a trace emitter. The harness
+computes no cost; cost accounting belongs to the control plane.
 A refusal's category and explanation reach operators through the trace
 emitters (the JSONL and GCS `RunTrace`, and the `stop.category`
 attribute on the OTel `provider.stream` span) and the `provider refused
@@ -625,11 +625,8 @@ hard — or different providers per mode.
 - The token budget is enforced between provider calls and terminates
   the run with `outcome: "budget_exceeded"`; wall-clock expiry yields
   `timeout`. Ceilings are 50 M tokens and 3600 s.
-- `maxCostBudget` is accepted and capped at $100, but the harness does
-  not currently calculate cost or enforce that budget; setting it logs a
-  WARN at config validation. `RunTrace.cost_usd` is unpopulated for the
-  same reason. Enforce money limits in the control plane using provider
-  billing/pricing data.
+- The harness computes no cost and has no cost budget. Enforce money
+  limits in the control plane using provider billing/pricing data.
 - `contextStrategy` bounds the conversation itself:
   `sliding-window` (default), `summarise`, `offload-to-file`, or `clear-tool-results`.
 - Pair `timeout` with an infrastructure-level deadline
@@ -1574,9 +1571,7 @@ to a newer harness unless the field is on the control plane's
 safe-to-omit list.
 
 `config_fields` says the harness parses a field, not that it implements
-a feature: gate features on `capabilities`. A listed field can also be
-accepted without effect, as `maxCostBudget` is (see
-[Limits and budgets](configuration.md#limits-and-budgets)). Accepted
+a feature: gate features on `capabilities`. Accepted
 values are not negotiated either: a new value of a listed field, such
 as a new executor type, is invisible in the list. A `ready` from
 `stirrup job` without `config_fields` comes from a harness that
