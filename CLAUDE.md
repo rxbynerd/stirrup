@@ -162,7 +162,7 @@ to make a feature easier:
 - **Cross-package invariants live in `harness/internal/invariants`.**
   Its `go/ast` tests pin these properties:
   - provider calls are charged to the run ledger;
-  - span errors and log handlers are scrubbed;
+  - span errors, log handlers and tool error text are scrubbed;
   - `git`, `prompt` and `workspaceexport` never touch the host;
   - HarnessEvents and tool results pass their byte bounds;
   - the proto mirror is complete;

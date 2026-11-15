@@ -184,6 +184,33 @@ func assignedValues(fn *ast.FuncDecl, name string) []ast.Expr {
 	return values
 }
 
+// TestToolErrors_AreScrubbed pins that a failed tool call's text is
+// scrubbed before it reaches the model: every ToolResult is built in a
+// function that calls core's scrubToolError before building it, and
+// scrubToolError runs the log scrubber. A new failure path cannot bypass
+// it because ToolResults are built only where results converge.
+func TestToolErrors_AreScrubbed(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
+	fset := token.NewFileSet()
+	files := parseProductionTree(t, fset, "harness")
+
+	results := 0
+	eachCompositeLit(files, func(sf *sourceFile, lit *ast.CompositeLit, litType ast.Expr) {
+		if !isPkgSelector(litType, importName(sf.file, "github.com/rxbynerd/stirrup/types"), "ToolResult") {
+			return
+		}
+		results++
+		encl, inFunc := enclosingFunc(sf, lit.Pos())
+		check.True(inFunc && callsBefore(encl.decl, "scrubToolError", lit.Pos()),
+			"%s: a ToolResult is built without scrubToolError running first", position(fset, lit.Pos()))
+	})
+	must.Positive(results, "no ToolResult construction found; the check would be vacuous")
+
+	scrubber := findFunc(t, parseProductionFiles(t, fset, "harness/internal/core"), "harness/internal/core/dispatch.go", "AgenticLoop.scrubToolError")
+	check.True(callsIn(scrubber.decl.Body, "ScrubWithStats"), "scrubToolError must run security.ScrubWithStats over the text")
+}
+
 // TestLogHandlers_AreScrubbed pins that every slog handler the harness
 // builds sits beneath a ScrubHandler: a JSON, text or OTLP-bridge leaf is
 // constructed as the argument of NewScrubHandler, every slog.New wraps a

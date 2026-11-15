@@ -210,6 +210,18 @@ func callsIn(body ast.Node, name string) bool {
 	return found
 }
 
+// callsBefore reports whether fd calls a function named name before pos.
+func callsBefore(fd *ast.FuncDecl, name string, pos token.Pos) bool {
+	found := false
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		if call, ok := n.(*ast.CallExpr); ok && calleeName(call) == name && call.Pos() < pos {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
 // allowList records the sites an invariant exempts, with the reason for
 // each, and fails the test for an entry no site used, so the list cannot
 // outlive the code it describes.
@@ -246,4 +258,57 @@ func position(fset *token.FileSet, pos token.Pos) string {
 		rel = p.Filename
 	}
 	return fmt.Sprintf("%s:%d", filepath.ToSlash(rel), p.Line)
+}
+
+// eachCompositeLit calls fn for every composite literal in files with its
+// type, taking the element type of the enclosing slice, array or map
+// literal for a literal written without one.
+func eachCompositeLit(files []sourceFile, fn func(sf *sourceFile, lit *ast.CompositeLit, litType ast.Expr)) {
+	for i := range files {
+		sf := &files[i]
+		implied := map[*ast.CompositeLit]ast.Expr{}
+		ast.Inspect(sf.file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.CompositeLit)
+			if !ok {
+				return true
+			}
+			litType := lit.Type
+			if litType == nil {
+				litType = implied[lit]
+			}
+			if elt := elementType(litType); elt != nil {
+				for _, e := range lit.Elts {
+					if kv, ok := e.(*ast.KeyValueExpr); ok {
+						e = kv.Value
+					}
+					if u, ok := e.(*ast.UnaryExpr); ok && u.Op == token.AND {
+						e = u.X
+					}
+					if inner, ok := e.(*ast.CompositeLit); ok && inner.Type == nil {
+						implied[inner] = elt
+					}
+				}
+			}
+			fn(sf, lit, litType)
+			return true
+		})
+	}
+}
+
+// elementType returns the element type of a slice, array or map type,
+// pointer stripped, or nil for any other type.
+func elementType(expr ast.Expr) ast.Expr {
+	var elt ast.Expr
+	switch t := expr.(type) {
+	case *ast.ArrayType:
+		elt = t.Elt
+	case *ast.MapType:
+		elt = t.Value
+	default:
+		return nil
+	}
+	if star, ok := elt.(*ast.StarExpr); ok {
+		return star.X
+	}
+	return elt
 }
