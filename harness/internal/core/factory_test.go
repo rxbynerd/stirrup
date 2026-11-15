@@ -1414,40 +1414,56 @@ func TestParseLogLevel_MapsNamesToLevels(t *testing.T) {
 	}
 }
 
-func TestToolEnabled_EmptyListEnablesAll(t *testing.T) {
-	must := require.New(t)
-	must.True(toolEnabled(nil, "read_file"), "nil list")
-	must.True(toolEnabled([]string{}, "read_file"), "empty slice")
-}
-
-func TestToolEnabled_ExplicitListEnablesOnlyListed(t *testing.T) {
-	must := require.New(t)
-	enabled := []string{"read_file", "run_command"}
-	must.True(toolEnabled(enabled, "read_file"))
-	must.False(toolEnabled(enabled, "write_file"))
-}
-
 func TestEditToolEnabled_EmptyListEnablesAll(t *testing.T) {
 	must := require.New(t)
-	must.True(editToolEnabled(nil, "write_file"))
+	must.True(editToolEnabled(types.ToolsConfig{}, "write_file"))
 }
 
 func TestEditToolEnabled_DirectMatch(t *testing.T) {
 	must := require.New(t)
-	must.True(editToolEnabled([]string{"edit_file"}, "edit_file"))
+	must.True(editToolEnabled(types.ToolsConfig{BuiltIn: []string{"edit_file"}}, "edit_file"))
 }
 
 func TestEditToolEnabled_AliasMatch(t *testing.T) {
 	must := require.New(t)
 	// "write_file" is an alias for edit tools.
-	must.True(editToolEnabled([]string{"write_file"}, "edit_file"), "write_file alias")
-	must.True(editToolEnabled([]string{"search_replace"}, "edit_file"), "search_replace alias")
-	must.True(editToolEnabled([]string{"apply_diff"}, "edit_file"), "apply_diff alias")
+	must.True(editToolEnabled(types.ToolsConfig{BuiltIn: []string{"write_file"}}, "edit_file"), "write_file alias")
+	must.True(editToolEnabled(types.ToolsConfig{BuiltIn: []string{"search_replace"}}, "edit_file"), "search_replace alias")
+	must.True(editToolEnabled(types.ToolsConfig{BuiltIn: []string{"apply_diff"}}, "edit_file"), "apply_diff alias")
 }
 
 func TestEditToolEnabled_NoMatch(t *testing.T) {
 	must := require.New(t)
-	must.False(editToolEnabled([]string{"read_file"}, "edit_file"))
+	must.False(editToolEnabled(types.ToolsConfig{BuiltIn: []string{"read_file"}}, "edit_file"))
+}
+
+func TestEditToolEnabled_NoBuiltInDisables(t *testing.T) {
+	must := require.New(t)
+	must.False(editToolEnabled(types.ToolsConfig{NoBuiltIn: true}, "edit_file"))
+}
+
+func TestBuildToolRegistry_NoBuiltInRegistersOnlyControlPlaneTools(t *testing.T) {
+	must := require.New(t)
+	exec, err := executor.NewLocalExecutor(t.TempDir())
+	must.NoError(err)
+	cfg := types.ToolsConfig{
+		NoBuiltIn: true,
+		ControlPlane: []types.ControlPlaneToolConfig{{
+			Name:        "lookup_ticket",
+			Description: "Look up a ticket.",
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+		}},
+	}
+
+	registry := buildToolRegistry(exec, edit.NewWholeFileStrategy(), cfg, nil)
+
+	names := make([]string, 0)
+	for _, def := range registry.List() {
+		names = append(names, def.Name)
+	}
+	must.Equal([]string{"lookup_ticket"}, names)
+	must.False(registerSpawnAgent(registry, cfg, nil), "spawn_agent must not register under noBuiltIn")
+	must.False(commandOutputStoreWanted(cfg), "no command output store without run_command")
 }
 
 func TestMutatingToolSet_ClassifiesWorkspaceTools(t *testing.T) {
