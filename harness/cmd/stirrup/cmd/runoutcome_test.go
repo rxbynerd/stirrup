@@ -18,7 +18,8 @@ import (
 // against every value documented on types.RunTrace.Outcome. "success"
 // is the only outcome that must not produce an error; a future outcome
 // added to the enum without updating runSuccessOutcomes fails this
-// test rather than silently exiting 0.
+// test rather than silently exiting 0. Every non-success outcome whose
+// result the run delivered exits with the run-outcome class.
 func TestRunOutcomeError_OnlySuccessIsNil(t *testing.T) {
 	nonSuccessCases := []struct {
 		name    string
@@ -46,9 +47,16 @@ func TestRunOutcomeError_OnlySuccessIsNil(t *testing.T) {
 			must := require.New(t)
 			err := runOutcomeError(&types.RunTrace{Outcome: tc.outcome})
 			must.Error(err)
-			must.Equal(1, classifyExitCode(err), "failed and cancelled runs exit 1")
+			must.Equal(exitRunOutcome, classifyExitCode(err), "a completed non-success run exits with the run-outcome class")
 		})
 	}
+
+	t.Run("control stream lost", func(t *testing.T) {
+		must := require.New(t)
+		err := runOutcomeError(&types.RunTrace{Outcome: "control_stream_lost"})
+		must.Error(err)
+		must.Equal(1, classifyExitCode(err), "an outcome the control plane never received keeps the default class")
+	})
 
 	t.Run("success", func(t *testing.T) {
 		must := require.New(t)
@@ -136,7 +144,7 @@ func TestRunWithConfig_ProviderErrorOutcome_ExitsNonZero(t *testing.T) {
 	stdout := stdoutDone()
 
 	must.Error(runErr, "an outcome of error must still fail the process")
-	check.Equal(1, classifyExitCode(runErr))
+	check.Equal(exitRunOutcome, classifyExitCode(runErr))
 
 	result := decodeStirrupResult(t, stdout)
 	check.Equal("error", result.Outcome)

@@ -97,7 +97,7 @@ func TestRunWithConfig_StructuredOutputFailureExitsNonZero(t *testing.T) {
 	stdout := stdoutDone()
 
 	must.Error(runErr)
-	check.Equal(1, classifyExitCode(runErr))
+	check.Equal(exitRunOutcome, classifyExitCode(runErr))
 	check.EqualValues(3, requests.Load(), "the answer and two corrective attempts")
 
 	result := decodeStirrupResult(t, stdout)
@@ -218,7 +218,7 @@ func TestRunJob_StructuredOutputFailureOnDone(t *testing.T) {
 
 	done, runErr := runStructuredJob(t, structuredJobTask(t, provider.URL))
 	must.Error(runErr)
-	check.Equal(1, classifyExitCode(runErr))
+	check.Equal(exitRunOutcome, classifyExitCode(runErr))
 	check.Equal("structured_output_failed", done.GetStopReason())
 	check.Empty(done.GetTrace().GetStructuredOutput())
 	check.Contains(done.GetTrace().GetError(), "not a single JSON document")

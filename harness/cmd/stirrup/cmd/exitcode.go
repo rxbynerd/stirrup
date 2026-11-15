@@ -12,6 +12,9 @@ import "errors"
 //	3  I/O error (stdin/stdout/file read/write)
 //	4  usage error (an invalid flag combination — e.g. a --dry-run probe
 //	   gate supplied without --dry-run)
+//	5  run outcome (the run completed and reported an outcome other than
+//	   success, e.g. max_turns, verification_failed or cancelled; the
+//	   harness itself did not malfunction)
 //
 // Code 0 is never carried by an exitError; the constants below are the
 // non-zero classes only.
@@ -20,6 +23,7 @@ const (
 	exitParse      = 2
 	exitIO         = 3
 	exitUsage      = 4
+	exitRunOutcome = 5
 )
 
 // exitError wraps a command error with the CLI exit code its failure
@@ -77,6 +81,18 @@ func usageError(err error) error {
 		return nil
 	}
 	return &exitError{code: exitUsage, err: err}
+}
+
+// runOutcomeFailure tags err as a run that completed and reported a
+// non-success outcome (exit 5). Distinct from the infrastructure classes
+// so an orchestrator can tell a run that ended in an ordinary non-success
+// outcome from a harness that failed to start or crashed. A nil err
+// returns nil.
+func runOutcomeFailure(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &exitError{code: exitRunOutcome, err: err}
 }
 
 // classifyExitCode maps a command error to its process exit code: nil

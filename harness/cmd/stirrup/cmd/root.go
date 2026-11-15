@@ -252,11 +252,18 @@ var runSuccessOutcomes = map[string]bool{
 // runSuccessOutcomes, returning a descriptive error if so. Called at
 // the tail of runWithConfig and runJob after every non-fatal post-run
 // step has run, so a non-success outcome always yields a non-zero exit.
+// The error carries exit class 5 because the run completed and its
+// outcome was reported; control_stream_lost keeps the default class
+// because the stream that carries the outcome is the thing that failed.
 func runOutcomeError(rt *types.RunTrace) error {
 	if rt == nil || runSuccessOutcomes[rt.Outcome] {
 		return nil
 	}
-	return fmt.Errorf("run outcome %q is not success", rt.Outcome)
+	err := fmt.Errorf("run outcome %q is not success", rt.Outcome)
+	if rt.Outcome == "control_stream_lost" {
+		return err
+	}
+	return runOutcomeFailure(err)
 }
 
 // newResultSink is the seam tests use to inject a stub ResultSink.

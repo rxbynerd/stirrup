@@ -27,6 +27,8 @@ func TestClassifyExitCode_MapsErrorClasses(t *testing.T) {
 		{name: "validation error", err: validationError(errors.New("bad config")), want: exitValidation},
 		{name: "parse error", err: parseError(errors.New("bad json")), want: exitParse},
 		{name: "io error", err: ioError(errors.New("no such file")), want: exitIO},
+		{name: "usage error", err: usageError(errors.New("bad flags")), want: exitUsage},
+		{name: "run outcome", err: runOutcomeFailure(errors.New("max_turns")), want: exitRunOutcome},
 		{
 			name: "re-stringed exitError loses its class",
 			err:  errors.New("outer: " + parseError(errors.New("inner")).Error()),
@@ -62,6 +64,8 @@ func TestExitErrorWrapper_PreservesMessageAndErrorsIs(t *testing.T) {
 		{name: "parseError", wrap: parseError},
 		{name: "ioError", wrap: ioError},
 		{name: "validationError", wrap: validationError},
+		{name: "usageError", wrap: usageError},
+		{name: "runOutcomeFailure", wrap: runOutcomeFailure},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
@@ -84,6 +88,8 @@ func TestExitErrorWrapper_NilReturnsNil(t *testing.T) {
 		{name: "parseError", wrap: parseError},
 		{name: "ioError", wrap: ioError},
 		{name: "validationError", wrap: validationError},
+		{name: "usageError", wrap: usageError},
+		{name: "runOutcomeFailure", wrap: runOutcomeFailure},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
@@ -268,6 +274,8 @@ func TestRunConfigCommand_PromptRequired_ExitClassIsValidation(t *testing.T) {
 //	malformed --config        -> 2
 //	missing --config          -> 3
 //	missing --prompt-file     -> 3 (the longest I/O propagation chain)
+//	run ends at max_turns     -> 5
+//	run fails to build        -> 1 (not 5: no run started)
 func TestCLIExitCodes_EndToEnd(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping binary build + exec in -short mode")
@@ -321,6 +329,22 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 		`"maxTurns":10,"timeout":600,`+
 		`"provider":{"type":"openai-compatible","apiKeyRef":"secret://OPENAI_KEY","baseURL":"http://127.0.0.1:1/v1"},`+
 		`"modelRouter":{"type":"static","provider":"openai-compatible","model":"x"}}`)
+
+	// A replay-backed run that reads a file on its only turn and so ends
+	// at max_turns: a run that completed with a non-success outcome.
+	replayWorkspace, replayFile := writeReplayWorkspace(t, replayReadMainTurn)
+	replayConfig := func(replayPath string) string {
+		path := filepath.Join(dir, filepath.Base(replayPath)+".config.json")
+		writeFile(t, path, `{"runId":"r","mode":"planning","prompt":"read main.go",`+
+			`"maxTurns":1,"timeout":60,`+
+			`"provider":{"type":"replay","replayFile":"`+replayPath+`"},`+
+			`"modelRouter":{"type":"static","provider":"replay","model":"replay"},`+
+			`"executor":{"type":"local","workspace":"`+replayWorkspace+`"},`+
+			`"tools":{"builtIn":["read_file"]}}`)
+		return path
+	}
+	maxTurnsConfig := replayConfig(replayFile)
+	missingReplayConfig := replayConfig(filepath.Join(dir, "absent.jsonl"))
 
 	for _, tc := range []struct {
 		name string
@@ -396,6 +420,16 @@ func TestCLIExitCodes_EndToEnd(t *testing.T) {
 			args: []string{"harness", "--config", validConfig, "--no-probe-provider"},
 			want: exitUsage,
 			env:  []string{"ANTHROPIC_API_KEY=sk-ant-test"},
+		},
+		{
+			name: "harness run ends at max_turns",
+			args: []string{"harness", "--config", maxTurnsConfig},
+			want: exitRunOutcome,
+		},
+		{
+			name: "harness build failure before any run",
+			args: []string{"harness", "--config", missingReplayConfig},
+			want: 1,
 		},
 		{
 			// The provider probe hits a refused port, so one step fails
