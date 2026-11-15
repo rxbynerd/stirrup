@@ -1,0 +1,29 @@
+# Admits only the job ServiceAccount's mesh identity to the RunTask port.
+# Mutual TLS alone proves a caller is in the mesh, not that it is a stirrup
+# job; this policy is what restricts the control plane to job Pods.
+#
+# An ALLOW policy denies everything it does not match on the selected
+# workload, so a control plane serving other ports (an API, metrics) needs a
+# rule for each of them here. A selector that matches no Pod leaves the
+# control plane with no policy at all, open to every meshed workload, so
+# keep it in step with the control-plane Pod labels. The trust domain is the Istio default,
+# cluster.local; change it if the mesh uses another.
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: stirrup-control-plane-runtask
+  namespace: stirrup-control
+spec:
+  selector:
+    matchLabels:
+      app: stirrup-control-plane
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - cluster.local/ns/stirrup-jobs/sa/stirrup-job
+      to:
+        - operation:
+            ports:
+              - "9090"

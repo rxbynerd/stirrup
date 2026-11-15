@@ -1,0 +1,18 @@
+# Job Pods always originate Istio mutual TLS to the control plane. Without
+# this rule a client sidecar picks mutual TLS automatically and sends
+# plaintext to a destination it believes has no sidecar; with it, a control
+# plane that lost its sidecar fails the connection instead.
+#
+# exportTo keeps the rule local to the job namespace.
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  name: stirrup-control-plane
+  namespace: stirrup-jobs
+spec:
+  host: stirrup-control-plane.stirrup-control.svc.cluster.local
+  exportTo:
+    - "."
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL

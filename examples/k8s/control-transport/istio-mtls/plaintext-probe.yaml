@@ -1,0 +1,59 @@
+# Verification Pods for the Istio strict mutual TLS recipe; not part of
+# kustomization.yaml. Each runs `stirrup job` against the control plane and
+# must fail to connect. Delete them after checking their logs.
+#
+# plaintext-probe has no sidecar, so it dials the control plane in
+# plaintext; PeerAuthentication STRICT refuses it.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: plaintext-probe
+  namespace: stirrup-jobs
+  labels:
+    sidecar.istio.io/inject: "false"
+spec:
+  restartPolicy: Never
+  serviceAccountName: stirrup-job
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: stirrup
+      image: ghcr.io/rxbynerd/stirrup:main
+      args: ["job"]
+      env:
+        - name: CONTROL_PLANE_ADDR
+          value: stirrup-control-plane.stirrup-control.svc.cluster.local:9090
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+---
+# wrong-identity-probe is meshed and speaks mutual TLS, but runs as the
+# namespace's default ServiceAccount; the AuthorizationPolicy refuses it.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: wrong-identity-probe
+  namespace: stirrup-jobs
+  annotations:
+    sidecar.istio.io/nativeSidecar: "true"
+spec:
+  restartPolicy: Never
+  serviceAccountName: default
+  securityContext:
+    runAsNonRoot: true
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: stirrup
+      image: ghcr.io/rxbynerd/stirrup:main
+      args: ["job"]
+      env:
+        - name: CONTROL_PLANE_ADDR
+          value: stirrup-control-plane.stirrup-control.svc.cluster.local:9090
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]

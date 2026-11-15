@@ -5,8 +5,8 @@
 // prompt after a run's done to start the next run, and exits with a status
 // that reflects the runs' outcomes.
 //
-// The transport is plaintext and unauthenticated; run it on loopback or a
-// private network only.
+// The transport is plaintext and unauthenticated unless the -tls-* flags
+// are set; without them, run it on loopback or a private network only.
 package main
 
 import (
@@ -20,8 +20,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-
-	harnessv1 "github.com/rxbynerd/stirrup/gen/harness/v1"
 )
 
 // Exit statuses: 0 when every run succeeded, 1 for a run that did not
@@ -44,6 +42,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	configPath := fs.String("config", "", "path to the RunConfig JSON file to assign (required)")
 	addrFile := fs.String("addr-file", "", "write the bound listen address to this file once listening")
 	permission := fs.String("permission", "deny", "how to answer permission requests: allow, deny or ask")
+	var tf tlsFiles
+	fs.StringVar(&tf.certFile, "tls-cert", "", "PEM server certificate; with -tls-key, serves TLS 1.3 instead of plaintext")
+	fs.StringVar(&tf.keyFile, "tls-key", "", "PEM private key for -tls-cert")
+	fs.StringVar(&tf.clientCAFile, "tls-client-ca", "", "PEM CA bundle; requires every client to present a certificate it issued (mutual TLS; needs -tls-cert)")
 	var followUps []string
 	fs.Func("followup", "prompt to send as a user_response after a run's done, starting a follow-up run; repeat for more runs (needs followUpGrace in the RunConfig)", func(v string) error {
 		if strings.TrimSpace(v) == "" {
@@ -55,11 +57,20 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
+	if err := rejectEmptyTLSFlags(fs); err != nil {
+		writef(stderr, "controlplane: %v\n", err)
+		return exitUsage
+	}
 	if *configPath == "" {
 		writef(stderr, "controlplane: -config is required\n")
 		return exitUsage
 	}
 	mode, err := parsePermissionMode(*permission)
+	if err != nil {
+		writef(stderr, "controlplane: %v\n", err)
+		return exitUsage
+	}
+	sec, err := tf.security()
 	if err != nil {
 		writef(stderr, "controlplane: %v\n", err)
 		return exitUsage
@@ -88,14 +99,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	srv := newServer(cfg, mode, stdin, stdout, stderr)
 	srv.followUps = followUps
-	return serve(lis, srv, stderr)
+	return serve(lis, srv, sec, stderr)
 }
 
 // serve runs the gRPC server on lis until the session's last run finishes and
 // returns the process exit status.
-func serve(lis net.Listener, srv *server, stderr io.Writer) int {
-	gs := grpc.NewServer()
-	harnessv1.RegisterHarnessServiceServer(gs, srv)
+func serve(lis net.Listener, srv *server, sec listenSecurity, stderr io.Writer) int {
+	gs := newGRPCServer(srv, sec)
 	go func() {
 		if err := gs.Serve(lis); err != nil {
 			writef(stderr, "controlplane: serve: %v\n", err)
@@ -103,7 +113,7 @@ func serve(lis net.Listener, srv *server, stderr io.Writer) int {
 	}()
 	defer stopGracefully(gs)
 
-	writef(stderr, "controlplane: waiting for a harness on %s (plaintext, unauthenticated)\n", lis.Addr())
+	writef(stderr, "controlplane: waiting for a harness on %s (%s)\n", lis.Addr(), sec.label)
 	out := <-srv.results
 	if out.err != nil {
 		writef(stderr, "controlplane: run failed: %v\n", out.err)

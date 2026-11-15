@@ -1,0 +1,53 @@
+# Per-run Job template for the Istio strict mutual TLS recipe. The control
+# plane creates one of these per run; it is not part of kustomization.yaml.
+#
+# The harness dials plaintext (no CONTROL_PLANE_TLS_* variables), and its
+# sidecar carries the connection to the control plane over Istio mutual TLS.
+# The startup line therefore reports mode=plaintext; the mesh, not the
+# harness, protects the stream.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stirrup-run-example
+  namespace: stirrup-jobs
+spec:
+  activeDeadlineSeconds: 7200
+  ttlSecondsAfterFinished: 3600
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: stirrup-job
+      annotations:
+        # Inject istio-proxy as a Kubernetes native sidecar: the harness
+        # starts only once the proxy is ready, and the Job completes when the
+        # harness exits instead of waiting on a proxy that never stops.
+        sidecar.istio.io/nativeSidecar: "true"
+    spec:
+      restartPolicy: Never
+      serviceAccountName: stirrup-job
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: stirrup
+          image: ghcr.io/rxbynerd/stirrup:main
+          args: ["job"]
+          env:
+            - name: CONTROL_PLANE_ADDR
+              value: stirrup-control-plane.stirrup-control.svc.cluster.local:9090
+            - name: CONTROL_PLANE_SESSION_ID
+              value: example-session
+            - name: STIRRUP_SESSION_DEADLINE
+              value: "7200"
+          livenessProbe:
+            exec:
+              command: ["/usr/local/bin/stirrup", "healthcheck", "--file=/tmp/healthy"]
+          readinessProbe:
+            exec:
+              command: ["/usr/local/bin/stirrup", "healthcheck", "--file=/tmp/ready"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
