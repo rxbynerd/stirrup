@@ -352,6 +352,13 @@ timeout (executor-dependent — `local` leaves it `0`, `container` and
 must gate on `TimedOut` rather than reading `ExitCode` as a real exit
 status in that case.
 
+An executor failure that is not a timeout (the sandbox container has
+gone, the exec stream cannot be opened, the shell cannot start) is a
+tool error. With command-output capture on, the text fallback ends
+with an `[executor error: <message>]` marker, the message scrubbed and
+cut to `tools.maxResultBytes`, and `ExitCode` is again not an exit
+status.
+
 The Engine API path was chosen deliberately: the official Docker Go
 SDK pulls in moby, containerd, and OCI specs, which conflicts with
 the minimal-dependency philosophy. The hand-rolled client is a few

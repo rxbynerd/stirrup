@@ -149,3 +149,43 @@ func TestPlanAndDispatch_StructuredResultAndRecordDoNotAlias(t *testing.T) {
 	results[0].Structured[0] = 'X'
 	must.JSONEq(`{"field":"value"}`, string(records[0].Structured))
 }
+
+// TestPlanAndDispatch_EmptyErrorResultGetsPlaceholderText pins that a failed
+// result never reaches history, trace or transport without text.
+func TestPlanAndDispatch_EmptyErrorResultGetsPlaceholderText(t *testing.T) {
+	must := require.New(t)
+	tr := newAsyncTestTransport()
+	silent := &tool.Tool{
+		Name:        "silent_failure",
+		Description: "fails without text",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+		StructuredHandler: func(context.Context, json.RawMessage) (tool.StructuredResult, error) {
+			return tool.StructuredResult{IsError: true}, nil
+		},
+	}
+	loop := buildAsyncTestLoop(t, tr, silent)
+
+	results, records, stall := loop.planAndDispatch(
+		context.Background(),
+		&types.RunConfig{Mode: "execution"},
+		[]types.ToolCall{{ID: "tc1", Name: "silent_failure", Input: json.RawMessage(`{}`)}},
+		&stallDetector{},
+		"anthropic",
+		"claude-sonnet-4-6",
+	)
+	must.Empty(stall, "unexpected stall outcome")
+	must.Len(results, 1)
+	must.Len(records, 1)
+	must.True(results[0].IsError)
+	must.Equal(emptyToolErrorText, results[0].Content)
+	must.Equal(emptyToolErrorText, records[0].Output)
+
+	var emitted []types.HarnessEvent
+	for _, ev := range tr.Events() {
+		if ev.Type == "tool_result" {
+			emitted = append(emitted, ev)
+		}
+	}
+	must.Len(emitted, 1)
+	must.Equal(emptyToolErrorText, emitted[0].Content)
+}

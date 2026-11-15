@@ -127,8 +127,17 @@ func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store,
 			captured, captureErr := capture.Complete(commandoutput.Completion{ExitCode: result.ExitCode, TimedOut: timedOut, Cancelled: cancelled})
 			isError := execErr != nil || captureErr != nil
 			text, spilled := formatCapturedCommand(captured, cfg, timeoutSeconds)
-			if execErr != nil && !timedOut && cause != nil && !cancelled {
-				text += "\n[capture/command error: " + security.Scrub(execErr.Error()) + "]"
+			if execErr != nil && !timedOut && !cancelled {
+				// A nil cause means the executor failed on its own, so the
+				// command may never have run and its exit code is unknown.
+				label := "executor error"
+				if cause != nil {
+					label = "capture/command error"
+				}
+				if text != "" {
+					text += "\n"
+				}
+				text += commandErrorMarker(label, execErr, maxResultBytes)
 			}
 			if err := store.RecordInitial(&captured.Record, text); err != nil {
 				return tool.StructuredResult{}, fmt.Errorf("record command model result: %w", err)
@@ -209,6 +218,13 @@ func boundCommandText(stdout, stderr string, exitCode int, suffix string, maxByt
 	stdoutShare := min(len(stdout), avail-stderrShare)
 	stderrShare = min(len(stderr), avail-stdoutShare)
 	return formatRunCommand(elideMiddle(stdout, stdoutShare, "stdout"), elideMiddle(stderr, stderrShare, "stderr"), exitCode) + suffix, true
+}
+
+// commandErrorMarker renders err as "[label: message]" within maxBytes. The
+// message is scrubbed before it is cut so a cut cannot split a secret.
+func commandErrorMarker(label string, err error, maxBytes int) string {
+	frame := "[" + label + ": ]"
+	return "[" + label + ": " + elideMiddle(security.Scrub(err.Error()), max(maxBytes-len(frame), 0), "error") + "]"
 }
 
 const elisionMarkerFmt = "\n[run_command %s truncated: %d of %d bytes omitted here]\n"

@@ -24,6 +24,12 @@ import (
 // tool_use block does not resolve to a registered tool.
 const unknownToolMetricName = "__unknown__"
 
+// emptyToolErrorText is the content of a failed tool result whose tool
+// returned no text. The Anthropic Messages API rejects an is_error
+// tool_result with empty content, and other providers would show the model
+// a bare error flag.
+const emptyToolErrorText = "Tool error: the tool failed without reporting an error message"
+
 // pendingCall is the per-tool-call work item carried through the dispatch
 // pipeline. Async calls are mutated by their goroutine and read back after
 // the WaitGroup join, which happens-before publishes those writes to the
@@ -253,6 +259,9 @@ func (l *AgenticLoop) planAndDispatch(
 	resultBudget := config.Tools.EffectiveMaxResultBytes()
 	for i := range plan {
 		p := &plan[i]
+		if !p.success && p.output == "" {
+			p.output = emptyToolErrorText
+		}
 		// Sync and async results converge here, so this is the single
 		// point that bounds what reaches history, trace and transport. A
 		// cut result drops its structured envelope, which would otherwise
