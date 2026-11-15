@@ -669,9 +669,9 @@ func TestK8sRuntimeClass_KataValidatedAsString(t *testing.T) {
 // exactly this Pod, carries the Egress policy type with no egress rules,
 // and is torn down on Close. The Pod is also labelled stirrup-sandbox=true.
 //
-// MANIFEST-SHAPE ONLY: kindnet accepts the NetworkPolicy but does NOT
-// enforce it. This test proves the object is created with the right shape,
-// not that egress is actually denied — see docs/executors/k8s.md.
+// MANIFEST-SHAPE ONLY: this test proves the object is created with the
+// right shape, not that egress is actually denied — see
+// docs/executors/k8s.md.
 func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
@@ -727,8 +727,8 @@ func TestK8sEgress_NoneInstallsDenyAllPolicy(t *testing.T) {
 // plus the egress-proxy peer, and injects HTTP_PROXY/HTTPS_PROXY/NO_PROXY
 // pointing at EgressProxyURL.
 //
-// MANIFEST-SHAPE ONLY: kindnet does not enforce NetworkPolicy, so this proves
-// the object/env shape, not that egress is actually confined to the proxy.
+// MANIFEST-SHAPE ONLY: this proves the object/env shape, not that egress is
+// actually confined to the proxy.
 func TestK8sEgress_AllowlistInstallsPolicyAndInjectsProxy(t *testing.T) {
 	must := require.New(t)
 	cfg := testK8sEnv(t)
@@ -801,8 +801,8 @@ func TestK8sEgress_AllowlistRequiresProxyURL(t *testing.T) {
 // manifest shape: on a NetworkPolicy-enforcing CNI (GKE Dataplane V2, Cilium,
 // Calico) a Mode=="none" sandbox cannot reach the internet. It is gated by
 // STIRRUP_TEST_ENFORCE_EGRESS (in addition to the kubeconfig gate) so it is
-// skipped on kindnet — there the deny-all policy is inert and the Pod WOULD
-// reach the internet, a false negative this test must never produce. The
+// skipped on kindnet, which fails open and is not a reliable enforcement
+// signal. The
 // companion shape test (TestK8sEgress_NoneInstallsDenyAllPolicy) always runs
 // and proves the policy object is correct; this proves the policy bites.
 //
