@@ -49,8 +49,9 @@ unreadable file fails the job before it dials:
 Exit status: 0 success; 5 the run completed with an outcome other than
 success (max_turns, verification_failed, cancelled, ...) and the harness
 itself did not malfunction; any other non-zero status is a failure to start
-or finish the run (validation, build, transport, a lost control stream). A Kubernetes Job whose pod exits 5 is reported
-Failed; the done event, not the exit status, carries the run's outcome.`,
+or finish the run (validation, build, transport, a lost control stream). A
+Kubernetes Job whose pod exits 5 is reported Failed; the done event, not the
+exit status, carries the run's outcome.`,
 	Args: cobra.NoArgs,
 	RunE: runJob,
 }
