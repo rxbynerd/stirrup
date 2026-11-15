@@ -9,7 +9,7 @@ when a cited function, message or test no longer exists, so a removed or
 reworded rule cannot go unnoticed. The test does not detect a rule whose
 status changed without being renamed or reworded.
 
-The tables describe the code as of commit 5fdf21c9. For flag-level
+The tables describe the code as of commit 0f0bc8e9. For flag-level
 detail see [`configuration.md`](configuration.md); the per-executor pages
 are [`executors/k8s.md`](executors/k8s.md) and
 [`executors/k8s-agent-sandbox.md`](executors/k8s-agent-sandbox.md).
@@ -58,8 +58,8 @@ executor's exec capability.
 
 | Combination | Status | What happens | Evidence |
 |---|---|---|---|
-| `deterministic` with `local` | Accepted | Git runs on the harness host through `sh -c` in the workspace. The harness host needs `git` on `PATH`. | `TestValidateRunConfig_DeterministicGitRequiresExecCapableExecutor` |
-| `deterministic` with `container`, `k8s` or `k8s-sandbox` | Accepted | Git runs inside the sandbox, so the image needs `git`. A missing binary ends the run before the first turn with outcome `error` and the text `git setup: ...`. `--dry-run` constructs the executor and probes `git --version` through it for `local`, `k8s` and `k8s-sandbox`. It skips the probe for `container` because no container starts in a dry-run, so a missing binary shows only at run start. | `TestValidateRunConfig_DeterministicGitRequiresExecCapableExecutor` |
+| `deterministic` with `local` | Accepted | Git runs on the harness host through `sh -c` in the workspace. The harness host needs `git` on `PATH`, and `--dry-run` probes `git --version` through the executor. | `TestValidateRunConfig_DeterministicGitRequiresExecCapableExecutor` |
+| `deterministic` with `container`, `k8s` or `k8s-sandbox` | Accepted | Git runs inside the sandbox, so the image needs `git`. A missing binary ends the run before the first turn with outcome `error` and the text `git setup: ...`. `--dry-run` skips the `git --version` probe for all three because no sandbox starts in a dry-run, so a missing binary shows only at run start. | `TestValidateRunConfig_DeterministicGitRequiresExecCapableExecutor` |
 | `deterministic` with `api` or `none` | Rejected at validation[^validateGitStrategyExecutorCompat] | Neither executor can run commands. | `TestValidateRunConfig_NoneExecutorRejectsDeterministicGit` |
 | `deterministic` in a read-only mode | Accepted | Branch creation and checkpoint commits are operator-declared exec outside the agent's tools, like hooks. See [`configuration.md`](configuration.md#lifecycle-hooks). | none |
 
@@ -79,9 +79,9 @@ not from a host path, so a sandboxed executor exports the sandbox's files.
 |---|---|---|---|
 | `gs://` destination with `local`, `container`, `k8s` or `k8s-sandbox` | Accepted | The executor streams a tar archive that is uploaded with `gcp-workload-identity` credentials. The export runs after the git final checkpoint and `postRun` hooks, even when the run failed. A failed export turns a successful run into `handoff_failed` unless `workspaceExportRequired` is `false`. `--dry-run` probes the bucket and credentials in its `workspace-export` step. | `TestExportWorkspace_ArchivesSandboxNotHarnessCwd` (`k8s` and `k8s-sandbox` with a stub archiver) |
 | A destination on a host without a GCP metadata server | Fails at run time[^newWorkspaceExporter] | The exporter has no credential override, so the upload fails and, by default, the run ends `handoff_failed`. | none |
-| A workspace holding a symlink with an absolute target or a target outside the workspace | Fails at run time[^MaxArchiveBytes] | The archive is refused as a whole. A Python virtual environment or `node_modules/.bin` is enough to trigger it. | none |
+| A workspace holding a symlink with an absolute, empty, dangling or looping target, or a target outside the workspace | Fails at run time[^MaxArchiveBytes] | The archive is refused as a whole. A Python virtual environment or `node_modules/.bin` is enough to trigger it. | none |
 | A workspace larger than 1 GiB | Fails at run time[^MaxArchiveBytes] | The export returns `ErrArchiveTooLarge`. | none |
-| `k8s` or `k8s-sandbox` with an image lacking `/bin/sh`, `tar`, `ls` or `readlink` | Fails at run time | The archive is produced by running `tar` in the Pod. See [`executors/k8s.md`](executors/k8s.md). | none |
+| `k8s` or `k8s-sandbox` with an image lacking `/bin/sh` or `tar` | Fails at run time | The archive is produced by running `tar` through `sh -c` in the Pod. The image needs `ls`, `mkdir` and `readlink` as well for file I/O. See [`executors/k8s.md`](executors/k8s.md). | none |
 | Any destination with `api` or `none` | Rejected at validation[^validateExecutorWorkspaceExportTo] | Neither executor can archive a workspace. | `TestValidateExecutorWorkspaceExportTo_ArchiverTable` |
 | Any destination with `executor.type` unset | Rejected at validation[^validateExecutorWorkspaceExportTo] | The message asks for an explicit type. | `TestValidateRunConfig_WorkspaceExportTo_RequiresExplicitExecutorType` |
 | A scheme other than `gs://`, or an empty bucket | Rejected at validation[^validateExecutorWorkspaceExportTo-scheme] | Only `gs://` is implemented. | `TestValidateRunConfig_WorkspaceExportTo_RejectsNonGSScheme` |
@@ -126,8 +126,11 @@ executor that does not implement the archive capability.[^exportWorkspace]
 | `k8s` or `k8s-sandbox` without `image`, `k8sNamespace` or `network` | Rejected at validation[^validateK8sExecutor] | All three are required. | `TestValidateRunConfig_K8sExecutorFields` |
 | `k8s` or `k8s-sandbox` with `executor.workspace` | Rejected at validation[^validateK8sExecutor] | The Pod workspace is fixed at `/workspace`. | `TestValidateRunConfig_K8sExecutorFields` |
 | `k8s` or `k8s-sandbox` in `allowlist` mode without `k8sEgressProxyUrl`, or the URL in any other mode | Rejected at validation[^validateK8sEgressProxy] | The NetworkPolicy confines the Pod to the proxy. | `TestValidateRunConfig_K8sExecutorFields` |
-| `k8s-sandbox` with a `runtime` other than `gvisor` | Rejected at validation[^validateExecutorRuntime] | Empty selects gVisor. | `TestValidateRunConfig_K8sSandboxExecutorFields` |
-| `runtime` with `local`, `api` or `none` | Rejected at validation[^validateExecutorRuntime] | Only `container`, `k8s` and `k8s-sandbox` take a runtime. | `TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce` |
+| `k8s-sandbox` with a `runtime` other than `gvisor` | Rejected at validation[^validateExecutorRuntime] | Empty selects gVisor. `nitro-isolated` is refused here too. | `TestValidateRunConfig_K8sSandboxExecutorFields`, `TestValidateRunConfig_RuntimeSetIsPerType` |
+| `k8s` with a `runtime` outside `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh` and `nitro-isolated` | Rejected at validation[^validateExecutorRuntime] | A RuntimeClass name such as `isolated-sandbox` or `confidential-sandbox` is refused with a hint, and a bare `runsc` or `kata` is refused. An empty runtime leaves the Pod's RuntimeClass unset and `--dry-run` records an `executor-runtime` warning. | `TestValidateRunConfig_K8sRuntimeRejectionHints`, `TestValidateRunConfig_RuntimeSetIsPerType` |
+| `container` with a `runtime` outside `runc`, `runsc`, `kata`, `kata-qemu`, `kata-fc` and `kata-clh` | Rejected at validation[^validateExecutorRuntime] | `gvisor` and `nitro-isolated` are refused. | `TestValidateRunConfig_RuntimeSetIsPerType` |
+| `k8s` with `runtime: "nitro-isolated"` and `network.mode: "allowlist"`, no positive `resources.cpus` or `resources.memoryMb`, or `sandboxIdentity` or `gitProxy` | Rejected at validation[^K8sRuntimeRequirementErrors] | The supported shape is an offline guest VM sized from the CPU and memory requests. See [`executors/k8s.md`](executors/k8s.md#eks-with-nitro-sandboxes). | `TestValidateRunConfig_NitroIsolatedRequirements` |
+| `runtime` with `local`, `api` or `none` | Rejected at validation[^validateExecutorRuntime] | Only `container`, `k8s` and `k8s-sandbox` take a runtime. | `TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce` (`none` only); `local` and `api` are not pinned |
 | `registryAllowlist` with an explicit executor type other than `container` | Rejected at validation[^validateExecutorRegistryAllowlist] | Only the container executor enforces it. An unset `executor.type` passes validation, builds the `local` executor and ignores the list. | `TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce` |
 | `container` without `image` | Fails at build[^buildExecutor] | Validation passes. `--dry-run` also passes when the engine is reachable or `--no-probe-executor` is set, because the container executor is not built in a dry-run and the engine probe skips the image check when the image is empty. The run fails with `build executor: container executor requires image`. | none |
 | `api` without `vcsBackend` | Fails at build[^buildExecutor-api] | Validation passes and `--dry-run` reports the failure. When the block is present, `vcsBackend.type` must be `github` or `gitlab`.[^validateVcsBackend] | `TestValidateRunConfig_VcsBackendTypeIsClosedSet` |
@@ -216,17 +219,26 @@ proxy. See [`configuration.md`](configuration.md#sandbox-identity-and-git-proxy-
 | With `container`, `k8s` or `k8s-sandbox` through `stirrup job` | Accepted | The token is delivered to the sandbox at creation and refreshed through a token file. | `TestContainerExecutor_SandboxIdentityToken_LiveEngine` (live) |
 | With `stirrup harness` (including `--transport grpc`) or an embedder passing no transport | Fails at build[^BuildLoopWithTransport-identity] | Validation passes, because it checks only that `transport.type` is `grpc`. The token exchange must finish before the executor is built, which needs a transport the caller already connected, so only `stirrup job` can serve it. The error is `executor.sandboxIdentity requires a pre-established transport`. `--dry-run` does not catch it. | none |
 | With `local`, `api` or `none` | Rejected at validation[^validateSandboxIdentity-executor] | Only executors that create a sandbox at run start can receive the token. | `TestValidateRunConfig_SandboxIdentityExecutorTypeGating` |
+| With `k8s` and `runtime: "nitro-isolated"` | Rejected at validation[^K8sRuntimeRequirementErrors] | The guest has no network, so there is nothing to present the token to. | `TestValidateRunConfig_NitroIsolatedIdentityReportedOnce` |
 | `gitProxy` without `sandboxIdentity`, or with a mismatched `tokenEnvVar` | Rejected at validation[^validateSandboxIdentity-proxy] | No other token source exists. | `TestValidateRunConfig_GitProxyRequiresSandboxIdentity` |
 | `gitProxy.url` missing from `network.allowlist` in `allowlist` mode | Accepted | A warning is logged and the sandbox has no route to the proxy.[^warnGitProxyAllowlistGap] | none |
 | `gitProxy` with `network.mode: "none"` | Accepted | No warning is logged, and the sandbox has no route to the proxy. | none |
 
 ## Result sink
 
+`stdout-json`, `gcs` and `gcp-pubsub` are the delivery types; the field
+rules are in [`configuration.md`](configuration.md#result-sinks).
+
 | Combination | Status | What happens | Evidence |
 |---|---|---|---|
-| `none` or `stdout-json` | Accepted | `stdout-json` writes one `STIRRUP_RESULT ` line, last on stdout. With `transport: "stdio"` the event stream shares stdout. The sink is independent of executor, provider and git strategy. `--output none` suppresses a `stdout-json` sink. | no test; `harness/internal/resultsink/resultsink.go` |
-| `gcp-pubsub` or `gcs` | Rejected at validation[^validateResultSinkConfig] | Reserved and not implemented. | `TestValidateRunConfig_ResultSink_GCPPubsubReserved` |
-| A sink failure | Accepted | Logged as a warning. The run's outcome and exit code are unaffected. | no test; `emitRunResult` in `harness/cmd/stirrup/cmd/root.go` |
+| `none` or `stdout-json` | Accepted | `stdout-json` writes one `STIRRUP_RESULT ` line, last on stdout. With `transport: "stdio"` the event stream shares stdout. The sink is independent of executor, provider and git strategy. `--output none` suppresses a `stdout-json` sink. | `TestValidateRunConfig_ResultSink_NoneAndStdoutJSON`; no test of the line; `harness/internal/resultsink/resultsink.go` |
+| `gcs` or `gcp-pubsub` | Accepted | `stirrup harness` and `stirrup job` deliver the `RunResult` JSON after the trace is finished and before `done`, for the primary run and every follow-up, with `gcp-workload-identity` credentials unless `credential` overrides them. The sink is independent of executor, provider and git strategy. | `TestValidateRunConfig_ResultSink_GCSAccepted`, `TestValidateRunConfig_ResultSink_GCPPubSubAccepted` |
+| `gcs` without `bucket`, `gcp-pubsub` without `topic`, or a malformed value for either | Rejected at validation[^validateResultSinkConfig-fields] | The shape of the bucket, object prefix, topic, attributes and ordering key is checked at boot. | `TestValidateRunConfig_ResultSink_GCSRejectsInvalidFields`, `TestValidateRunConfig_ResultSink_GCPPubSubRejectsInvalidFields` |
+| `bucket`, `objectPrefix`, `topic`, `attributes` or `orderingKey` on a type that does not use it | Rejected at validation[^validateResultSinkConfig] | Each field belongs to one sink type. `credential` is valid only for `gcs` and `gcp-pubsub`. | `TestValidateRunConfig_ResultSink_RemoteFieldsRejectedOnStdoutJSON` |
+| A `credential` other than `gcp-workload-identity` or `gcp-default` | Rejected at validation[^validateResultSinkConfig-credential] | The remote sinks authenticate to Google APIs only. | `TestValidateRunConfig_ResultSink_GCSRejectsInvalidFields` |
+| A `gcs` sink and a run ID that already has an object | Fails at run time[^gcsSinkEmit] | The object is created but never replaced, so the delivery fails and the run's outcome is unchanged. | `TestGCSSink_Emit_RejectsExistingObject` |
+| A remote sink whose delivery fails | Accepted[^deliverResult] | A `warning` event starting `result sink:` precedes `done`. The run's outcome and exit code are unaffected. `--dry-run` does not probe the bucket or topic. | `TestRun_ResultDeliveryFailureWarnsBeforeDoneWithoutChangingOutcome` |
+| A sink failure with `stdout-json` | Accepted | Logged as a warning. The run's outcome and exit code are unaffected. | no test; `emitRunResult` in `harness/cmd/stirrup/cmd/root.go` |
 | A sink when the loop is embedded through `harnessapi` | Ignored | See [Embedding](#embedding-through-harnessapi). | none |
 
 ## Embedding through `harnessapi`
@@ -270,7 +282,8 @@ names a container engine or a cluster, which no CI job sets.
 | `local` with Anthropic, OpenAI, Azure OpenAI, Bedrock or Vertex Gemini | The `smoke-*.yml` workflows (`workflow_dispatch`) run `stirrup harness` against each provider. The Azure OpenAI, Bedrock and Vertex Gemini workflows pass an `examples/runconfig/*-smoke.json` file; the Anthropic and OpenAI workflows pass flags. All use the `local` executor over `stdio`. See [`smoke-tests.md`](smoke-tests.md). |
 | `local` with Vertex Gemini, `stdout-json` sink and `gs://` workspace export | `smoke-cloud-run-job.yml` deploys [`cloud-run-vertex-gemini.json`](../examples/runconfig/cloud-run-vertex-gemini.json) as a Cloud Run job. See [`cloud-run-jobs.md`](cloud-run-jobs.md). |
 | `container` executor, no model | `container_integration_test.go` under `harness/internal/executor` and `harness/internal/workspaceexport` (skipped unless `STIRRUP_TEST_CONTAINER_SOCKET` is set) and under `harness/internal/git` and `harness/internal/prompt` (these also need the `integration_container` build tag and `STIRRUP_TEST_CONTAINER_IMAGE`, an image containing git). The tests cover exec, symlink containment, workspace archive, sandbox identity tokens, deterministic git and prompt reads. |
-| `k8s` and `k8s-sandbox` executors, no model | `harness/internal/executor/k8s_test.go` and `agentsandbox_integration_test.go` (build tag `integration_k8s`, `STIRRUP_TEST_KUBECONFIG`). See [`executors/k8s.md`](executors/k8s.md#testing-the-executor-against-a-real-cluster). |
+| `k8s` and `k8s-sandbox` executors, no model | `k8s_test.go`, `k8s_runtimeprofile_integration_test.go` and `agentsandbox_integration_test.go` under `harness/internal/executor` (build tag `integration_k8s`, `STIRRUP_TEST_KUBECONFIG`). See [`executors/k8s.md`](executors/k8s.md#testing-the-executor-against-a-real-cluster). |
+| `k8s` with `runtime: "nitro-isolated"` | `k8s_nitro_integration_test.go` (build tag `integration_k8s`, and `STIRRUP_TEST_NITRO_ISOLATED` for the Nitro group). The group and whole `stirrup harness` runs passed on EKS on 2026-11-13; the record is in [`executors/k8s.md`](executors/k8s.md#eks-with-nitro-sandboxes). |
 
 No repository-tracked workflow pairs a sandboxing executor with a live
 provider. Rows elsewhere on this page marked "Accepted" with Evidence
@@ -321,6 +334,7 @@ buildToolRegistry | harness/internal/core/factory.go | buildToolRegistry | |
 validateK8sExecutor | types/runconfig.go | validateK8sExecutor | executor.network is required for executor.type | TestValidateRunConfig_K8sExecutorFields
 validateK8sEgressProxy | types/runconfig.go | validateK8sEgressProxy | executor.k8sEgressProxyUrl is required when | TestValidateRunConfig_K8sExecutorFields
 validateExecutorRuntime | types/runconfig.go | validateExecutorRuntime | executor.runtime must be "gvisor" or empty | TestValidateRunConfig_K8sSandboxExecutorFields
+K8sRuntimeRequirementErrors | types/runconfig.go | K8sRuntimeRequirementErrors | executor.network.mode must be "none" for executor.runtime="nitro-isolated" | TestValidateRunConfig_NitroIsolatedRequirements
 validateExecutorRegistryAllowlist | types/runconfig.go | validateExecutorRegistryAllowlist | executor.registryAllowlist is only valid when executor.type is "container" | TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce
 buildExecutor | harness/internal/core/factory.go | buildExecutor | container executor requires image |
 buildExecutor-api | harness/internal/core/factory.go | buildExecutor | api executor requires vcsBackend configuration |
@@ -348,7 +362,11 @@ resolveTransportTLSFlags | harness/cmd/stirrup/cmd/transporttls.go | resolveTran
 prepareBranch | harness/internal/git/deterministic.go | DeterministicGitStrategy.prepareBranch | refusing to operate on an enclosing repository | TestSetup_RejectsEnclosingRepository
 validateLazyToolLoading | types/runconfig.go | validateLazyToolLoading | tools.lazyLoading.strategy | TestValidateLazyToolLoading_RejectsBadValues
 buildToolSearchSupport | harness/internal/core/factory.go | buildToolSearchSupport | |
-validateResultSinkConfig | types/runconfig.go | validateResultSinkConfig | is reserved but not yet implemented | TestValidateRunConfig_ResultSink_GCPPubsubReserved
+validateResultSinkConfig | types/runconfig.go | validateResultSinkConfig | is only valid when type is | TestValidateRunConfig_ResultSink_RemoteFieldsRejectedOnStdoutJSON
+validateResultSinkConfig-credential | types/runconfig.go | validateResultSinkConfig | is not supported by the %s result sink | TestValidateRunConfig_ResultSink_GCSRejectsInvalidFields
+validateResultSinkConfig-fields | types/runconfig.go | validateGCSResultSink | requires bucket | TestValidateRunConfig_ResultSink_GCSRejectsInvalidFields
+gcsSinkEmit | harness/internal/resultsink/gcs.go | GCSSink.Emit | | TestGCSSink_Emit_RejectsExistingObject
+deliverResult | harness/internal/core/handoff.go | AgenticLoop.deliverResult | result sink: | TestRun_ResultDeliveryFailureWarnsBeforeDoneWithoutChangingOutcome
 harnessapi | harness/harnessapi/harnessapi.go | BuildLoopWithTransport | |
 WebFetchTool | harness/internal/tool/builtins/webfetch.go | WebFetchTool | |
 parsePolicySetFile | harness/internal/permission/policyengine.go | parsePolicySetFile | |
@@ -388,7 +406,8 @@ resolveFile | harness/internal/security/secretstore.go | EnvSecretStore.resolveF
 [^buildToolRegistry]: `harness/internal/core/factory.go`, `buildToolRegistry`: each built-in is registered only when the executor's declared capability allows it, and the function emits no diagnostic for a tool it skips. The `git_*` tools register on `CanRead` and fail on use when the executor cannot exec.
 [^validateK8sExecutor]: `types/runconfig.go`, `validateK8sExecutor`: `executor.image`, `executor.k8sNamespace` and `executor.network` are required, and `executor.workspace` is refused, for `k8s` and `k8s-sandbox`.
 [^validateK8sEgressProxy]: `types/runconfig.go`, `validateK8sEgressProxy`: `executor.k8sEgressProxyUrl is required when executor.network.mode is "allowlist"`, and `... is only valid when executor.network.mode is "allowlist"`.
-[^validateExecutorRuntime]: `types/runconfig.go`, `validateExecutorRuntime`: a closed set per executor type, `gvisor` only for `k8s-sandbox`, and `executor.runtime is only valid when executor.type is "container", "k8s", or "k8s-sandbox"` otherwise.
+[^validateExecutorRuntime]: `types/runconfig.go`, `validateExecutorRuntime`: a closed set per executor type (`validContainerRuntimes`, `validK8sRuntimes`), `gvisor` only for `k8s-sandbox`, and `executor.runtime is only valid when executor.type is "container", "k8s", or "k8s-sandbox"` otherwise.
+[^K8sRuntimeRequirementErrors]: `types/runconfig.go`, `K8sRuntimeRequirementErrors`: the rules a `k8s` runtime imposes on the rest of the executor block. Only `nitro-isolated` has any: `executor.network.mode` must be `none`, `resources.cpus` and `resources.memoryMb` must be positive, and `sandboxIdentity` and `gitProxy` must be unset. The `k8s` executor constructor calls the same function, so a caller that bypasses validation meets the same rules.
 [^validateExecutorRegistryAllowlist]: `types/runconfig.go`, `validateExecutorRegistryAllowlist`: `executor.registryAllowlist is only valid when executor.type is "container"`.
 [^buildExecutor]: `harness/internal/core/factory.go`, `buildExecutor`: `container executor requires image`. The preflight skips constructing a container executor, and `probeContainerEngine` skips the image check for an empty image.
 [^buildExecutor-api]: `harness/internal/core/factory.go`, `buildExecutor`: `api executor requires vcsBackend configuration`. `validateVcsBackend` returns early for a nil block.
@@ -416,8 +435,12 @@ resolveFile | harness/internal/security/secretstore.go | EnvSecretStore.resolveF
 [^BuildLoopWithTransport]: `harness/internal/core/factory.go`, `BuildLoopWithTransport`: the batch client is selected by `config.Transport.Type`, with `batch is not supported for transport type` as the default case, and only the top-level provider is wrapped with the batch adapter.
 [^validateLazyToolLoading]: `types/runconfig.go`, `validateLazyToolLoading`: checks `strategy`, `maxResults` and the `eager` names. It reads no other part of the config.
 [^buildToolSearchSupport]: `harness/internal/core/factory.go`, `buildToolSearchSupport`: resolves native search support from the quirks registry; the preflight `lazy-tools` step reports its result.
-[^validateResultSinkConfig]: `types/runconfig.go`, `validateResultSinkConfig`: `resultSink type ... is reserved but not yet implemented in this release`. `resultSink.topic` and `resultSink.attributes` are rejected for every type but `gcp-pubsub`.
-[^harnessapi]: `harness/harnessapi/harnessapi.go`, `BuildLoopWithTransport`: returns a `Loop` that exposes `Run` and `Close`. The `Handoff` field that `workspaceHandoff` fills is on the unexported inner loop, and the result sink is emitted from `harness/cmd/stirrup/cmd/root.go`.
+[^validateResultSinkConfig]: `types/runconfig.go`, `validateResultSinkConfig`: `resultSink.<field> is only valid when type is "<type>"` for `topic`, `attributes` and `orderingKey` (`gcp-pubsub`), `bucket` and `objectPrefix` (`gcs`) and `credential` (`gcs` or `gcp-pubsub`).
+[^validateResultSinkConfig-credential]: `types/runconfig.go`, `validateResultSinkConfig`: `resultSink.credential.type ... is not supported by the ... result sink (supported: "gcp-workload-identity", "gcp-default")`.
+[^validateResultSinkConfig-fields]: `types/runconfig.go`, `validateGCSResultSink` and `validatePubSubResultSink`: `resultSink type "gcs" requires bucket`, `resultSink type "gcp-pubsub" requires topic`, and the shape checks on the bucket name, object prefix, full topic resource name, attributes and ordering key.
+[^gcsSinkEmit]: `harness/internal/resultsink/gcs.go`, `GCSSink.Emit`: uploads with `ifGenerationMatch=0`, so an existing object fails the delivery with `object already exists` and is not retried.
+[^deliverResult]: `harness/internal/core/handoff.go`, `AgenticLoop.deliverResult`: runs the injected `ResultDelivery` on a detached context before `done`, logs a failure and sends a `warning` event whose message starts `result sink:`. The outcome is not changed.
+[^harnessapi]: `harness/harnessapi/harnessapi.go`, `BuildLoopWithTransport`: returns a `Loop` that exposes `Run` and `Close`. The `Handoff` field that `workspaceHandoff` fills is on the unexported inner loop, and the result sink is attached by `harness/cmd/stirrup/cmd/root.go`, which injects `resultDelivery` for the remote sinks and calls `emitRunResult` for the local ones.
 [^WebFetchTool]: `harness/internal/tool/builtins/webfetch.go`, `WebFetchTool`: constructed with no executor argument.
 [^parsePolicySetFile]: `harness/internal/permission/policyengine.go`, `parsePolicySetFile`: reads the policy file with `os.ReadFile`.
 [^defaultSemgrepRun]: `harness/internal/security/codescanner/semgrep.go`, `defaultSemgrepRun`: starts the `semgrep` binary with `exec.CommandContext` in the harness process.
