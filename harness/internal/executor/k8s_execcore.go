@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -49,6 +50,8 @@ type podExecCore struct {
 	// sandbox identity token write and the runtime diagnostics read; zero
 	// means k8sFileIOTimeout.
 	fileIOTimeout time.Duration
+	// lost is set once, when an exec finds the Pod ended.
+	lost atomic.Pointer[SandboxLostError]
 }
 
 func (e *podExecCore) fileIOBound() time.Duration {
@@ -418,8 +421,25 @@ func (e *podExecCore) killGroup(g groupedCommand) {
 // streamExec runs a pods/exec request against the agent container,
 // wiring the supplied stdin/stdout/stderr streams. It is the single
 // SPDY/remotecommand chokepoint shared by Exec and the tar-based file
-// I/O methods. A nil stdin omits the stdin stream from the request.
+// I/O methods. A nil stdin omits the stdin stream from the request. A
+// failure that carries no exit status and did not come from ctx ending
+// is checked against the Pod's state (see sandboxLostAfter); once the
+// sandbox is lost, every call returns that error at once.
 func (e *podExecCore) streamExec(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if lost := e.lost.Load(); lost != nil {
+		return lost
+	}
+	err := e.execOnce(ctx, command, stdin, stdout, stderr)
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	if _, exited := extractExitCode(err); exited {
+		return err
+	}
+	return e.sandboxLostAfter(ctx, err)
+}
+
+func (e *podExecCore) execOnce(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if e.execFn != nil {
 		return e.execFn(ctx, command, stdin, stdout, stderr)
 	}
