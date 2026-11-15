@@ -221,7 +221,7 @@ func TestNewK8sExecutor_RuntimeWithoutDiagnosticsRunsNoDiagnosticsExec(t *testin
 	must := require.New(t)
 	cs := fake.NewClientset()
 	admitPods(cs, nil)
-	cfg := constructorCfg("gvisor")
+	cfg := constructorCfg("runc")
 	recorder := &recordingSecurityEmitter{}
 	cfg.Security = recorder
 	calls := 0
