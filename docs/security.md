@@ -775,6 +775,27 @@ mounts.
 Optional kernel-isolation runtime selection (`runc`, `runsc`, `kata*`)
 is documented in [`safety-rings.md`](safety-rings.md).
 
+### Runtime diagnostics on Kubernetes
+
+For a `k8s` runtime that can be checked from inside the guest, the
+executor reads guest files after the sandbox Pod is Ready and fails the
+run when they do not match the runtime. Only `nitro-isolated` has such
+checks. Their outcome is the `sandbox_runtime_diagnostic_passed`
+(info) or `sandbox_runtime_diagnostic_failed` (error) security event,
+documented with its keys under
+[Runtime diagnostics](executors/k8s.md#runtime-diagnostics); a
+failure of the [whole-Pod admission check](executors/k8s.md#whole-pod-admission-check)
+for that runtime emits the same failure event with check `admitted_pod`.
+The values the guest and the diagnostics `exec` supply have every Unicode
+control and format character dropped, are then scrubbed and are cut to
+256 characters before they enter
+the returned error, a log line or the event, and the event scrubs them
+again and cuts each to 256 bytes. The checks are configuration
+diagnostics rather than attestation: a hostile image can fabricate the
+output. Security events are JSON lines on the harness's stderr (plus an
+OTel counter tagged with the event name when metrics are exported); they
+are not sent on the `HarnessEvent` stream or in the `RunResult`.
+
 ### Egress proxy CONNECT/SNI protocol
 
 The in-process egress proxy (`harness/internal/executor/egressproxy`)

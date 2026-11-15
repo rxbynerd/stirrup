@@ -411,7 +411,7 @@ func preflightExecutorProbe(
 	case types.IsK8sFamily(executorType):
 		detail, err := executor.ProbeK8sAccess(ctx, k8sProbeConfig(config.Executor))
 		if err != nil {
-			fail("executor-probe", err, k8sProbeHint(executorType, err))
+			fail("executor-probe", err, k8sProbeHint(executorType, config.Executor.Runtime, err))
 			return
 		}
 		ok("executor-probe", detail)
@@ -465,7 +465,7 @@ func containerProbeConfig(cfg types.ExecutorConfig) executor.ContainerExecutorCo
 
 // k8sProbeHint maps the failure kinds of a k8s access probe to remediation
 // steps, one per kind, so a failure never carries advice that does not fit it.
-func k8sProbeHint(executorType string, err error) string {
+func k8sProbeHint(executorType, runtime string, err error) string {
 	var probeErr *executor.K8sProbeError
 	if !errors.As(err, &probeErr) {
 		return ""
@@ -473,6 +473,10 @@ func k8sProbeHint(executorType string, err error) string {
 	roleManifest := "examples/k8s/rbac.yaml"
 	if executorType == "k8s-sandbox" {
 		roleManifest = "examples/k8s/agent-sandbox/rbac-agent-sandbox.yaml"
+	}
+	runtimeClassHint := "run `kubectl get runtimeclass` and apply examples/k8s/runtimeclass.yaml, or correct executor.runtime"
+	if hint := executor.K8sRuntimeClassMissingHint(runtime); executorType == "k8s" && hint != "" {
+		runtimeClassHint = hint
 	}
 	hints := []struct {
 		kind executor.K8sProbeKind
@@ -482,7 +486,7 @@ func k8sProbeHint(executorType string, err error) string {
 		{executor.K8sProbeReviewFailed, "check the API server is reachable from this host, accepts the credentials, and lets them create selfsubjectaccessreviews (granted by default through system:basic-user); the sequential reviews share the --dry-run-timeout budget"},
 		{executor.K8sProbePermissionDenied, "bind a Role granting the denied verbs in executor.k8sNamespace (reference: " + roleManifest + ")"},
 		{executor.K8sProbeNamespaceMissing, "create the namespace or correct executor.k8sNamespace"},
-		{executor.K8sProbeRuntimeClassMissing, "run `kubectl get runtimeclass` and apply examples/k8s/runtimeclass.yaml, or correct executor.runtime"},
+		{executor.K8sProbeRuntimeClassMissing, runtimeClassHint},
 		{executor.K8sProbeSandboxAPIMissing, "install the Agent Sandbox controller (docs/executors/k8s-agent-sandbox.md)"},
 	}
 	var out []string
@@ -498,10 +502,10 @@ func k8sProbeHint(executorType string, err error) string {
 // ProbeK8sAccess needs.
 func k8sProbeConfig(cfg types.ExecutorConfig) executor.K8sProbeConfig {
 	return executor.K8sProbeConfig{
-		Type:             cfg.Type,
-		Namespace:        cfg.K8sNamespace,
-		Kubeconfig:       cfg.K8sKubeconfig,
-		RuntimeClassName: cfg.Runtime,
+		Type:       cfg.Type,
+		Namespace:  cfg.K8sNamespace,
+		Kubeconfig: cfg.K8sKubeconfig,
+		Runtime:    cfg.Runtime,
 	}
 }
 

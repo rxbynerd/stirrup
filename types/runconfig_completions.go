@@ -24,8 +24,13 @@ func ValidExecutorTypeValues() []string { return sortedKeys(validExecutorTypes) 
 
 // ValidExecutorRuntimeValues returns the OCI runtimes accepted on
 // RunConfig.Executor.Runtime for the container executor. The k8s
-// executor's RuntimeClass names are a separate set (validK8sRuntimes).
+// executor's runtime values are a separate set (ValidK8sExecutorRuntimeValues).
 func ValidExecutorRuntimeValues() []string { return sortedNonEmptyKeys(validContainerRuntimes) }
+
+// ValidK8sExecutorRuntimeValues returns the non-empty runtime values
+// accepted on RunConfig.Executor.Runtime for the k8s executor. The empty
+// value, which leaves the Pod's RuntimeClassName unset, is also accepted.
+func ValidK8sExecutorRuntimeValues() []string { return sortedNonEmptyKeys(validK8sRuntimes) }
 
 // ValidEditStrategyTypeValues returns the edit-strategy types accepted
 // on RunConfig.EditStrategy.Type.

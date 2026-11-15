@@ -17,12 +17,12 @@ import (
 const K8sDefaultRuntimeClassWarning = "k8s executor running with the cluster-default RuntimeClass; sandbox isolation is not guaranteed — set executor.runtime (e.g. gvisor) for a sandboxed RuntimeClass"
 
 // K8sProbeConfig selects what ProbeK8sAccess checks. Type is the executor
-// type, "k8s" or "k8s-sandbox".
+// type, "k8s" or "k8s-sandbox"; Runtime is executor.runtime.
 type K8sProbeConfig struct {
-	Type             string
-	Namespace        string
-	Kubeconfig       string
-	RuntimeClassName string
+	Type       string
+	Namespace  string
+	Kubeconfig string
+	Runtime    string
 }
 
 // K8sProbeKind classifies one reason ProbeK8sAccess failed.
@@ -161,6 +161,10 @@ func probeK8sAccess(ctx context.Context, kube kubernetes.Interface, cfg K8sProbe
 	if len(required) == 0 {
 		return "", errUnsupportedProbeType(cfg.Type)
 	}
+	runtimeClass, err := effectiveRuntimeClass(cfg)
+	if err != nil {
+		return "", err
+	}
 
 	var denied []string
 	for _, access := range required {
@@ -192,7 +196,7 @@ func probeK8sAccess(ctx context.Context, kube kubernetes.Interface, cfg K8sProbe
 	if cfg.Type == "k8s-sandbox" {
 		checks = append(checks, checkSandboxAPIServed(ctx, kube))
 	}
-	if runtimeClass := effectiveRuntimeClass(cfg); runtimeClass != "" {
+	if runtimeClass != "" {
 		checks = append(checks, checkRuntimeClassExists(ctx, kube, runtimeClass))
 	}
 	var notes []string
@@ -217,12 +221,17 @@ func probeK8sAccess(ctx context.Context, kube kubernetes.Interface, cfg K8sProbe
 }
 
 // effectiveRuntimeClass is the RuntimeClass the executor's Pods run under:
-// k8s-sandbox always uses the gVisor class, k8s uses executor.runtime.
-func effectiveRuntimeClass(cfg K8sProbeConfig) string {
+// k8s-sandbox always uses the gVisor class, k8s the class its runtime
+// profile maps executor.runtime to.
+func effectiveRuntimeClass(cfg K8sProbeConfig) (string, error) {
 	if cfg.Type == "k8s-sandbox" {
-		return gkeSandboxRuntimeValue
+		return gkeSandboxRuntimeValue, nil
 	}
-	return cfg.RuntimeClassName
+	profile, err := k8sRuntimeProfileFor(cfg.Runtime)
+	if err != nil {
+		return "", err
+	}
+	return profile.runtimeClassName, nil
 }
 
 // reviewAccess asks whether the current credentials may perform access in the

@@ -1514,6 +1514,30 @@ func TestExampleRunConfig_LoadsAndValidates_CloudRunVertexGemini(t *testing.T) {
 	check.NotEmpty(cfg.Executor.WorkspaceExportTo, "Executor.WorkspaceExportTo must be set in the Cloud Run fixture")
 }
 
+// TestExampleRunConfig_LoadsAndValidates_K8sEKSNitro pins the shipped Nitro
+// Sandboxes fixture: it must validate with the runtime's requirements, an
+// offline network and explicit CPU and memory, and keep its image pinned by
+// digest.
+func TestExampleRunConfig_LoadsAndValidates_K8sEKSNitro(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
+	cfg := loadExampleRunConfig(t, "k8s-eks-nitro.json")
+
+	check.Equal("k8s", cfg.Executor.Type)
+	check.Equal("nitro-isolated", cfg.Executor.Runtime)
+	must.NotNil(cfg.Executor.Network, "expected Executor.Network block")
+	check.Equal("none", cfg.Executor.Network.Mode)
+	must.NotNil(cfg.Executor.Resources, "expected Executor.Resources block")
+	check.InDelta(1.0, cfg.Executor.Resources.CPUs, 0)
+	check.Equal(1024, cfg.Executor.Resources.MemoryMB)
+	check.Zero(cfg.Executor.Resources.DiskMB, "the example declares no disk size")
+	check.Contains(cfg.Executor.Image, "@sha256:", "the image must be pinned by digest")
+	check.Equal(map[string]string{
+		"kubernetes.io/arch":               "amd64",
+		"node.kubernetes.io/instance-type": "m5d.xlarge",
+	}, cfg.Executor.K8sNodeSelector, "the selector pins the tested architecture and instance type")
+}
+
 // TestBuildHarnessRunConfig_SafetyRingFlags verifies that each safety-ring
 // flag propagates to its matching RunConfig field.
 func TestBuildHarnessRunConfig_SafetyRingFlags(t *testing.T) {

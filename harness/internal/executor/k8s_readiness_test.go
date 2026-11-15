@@ -22,7 +22,7 @@ import (
 // testAdmission returns the admission contract for a Pod created as
 // readyPod(uid).
 func testAdmission(uid k8stypes.UID) podAdmission {
-	return newPodAdmission(readyPod(uid), readyPod(uid))
+	return newPodAdmission(readyPod(uid), readyPod(uid), k8sRuntimeProfile{})
 }
 
 // slowReadyTiming has a ceiling long enough that a test returning quickly
@@ -370,7 +370,7 @@ func TestWaitForPodReady_RechecksAdmission(t *testing.T) {
 		cs := fake.NewClientset(observed)
 		logger, _ := testLogger()
 
-		_, err := waitForPodReady(context.Background(), cs, testK8sNamespace, testK8sPodName, newPodAdmission(admitted, admitted), slowReadyTiming, logger)
+		_, err := waitForPodReady(context.Background(), cs, testK8sNamespace, testK8sPodName, newPodAdmission(admitted, admitted, k8sRuntimeProfile{}), slowReadyTiming, logger)
 
 		must.ErrorIs(err, errPodNotReady)
 		must.ErrorContains(err, `spec.runtimeClassName: expected "gvisor", observed "runc"`)
