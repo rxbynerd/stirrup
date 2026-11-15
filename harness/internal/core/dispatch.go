@@ -259,8 +259,11 @@ func (l *AgenticLoop) planAndDispatch(
 	resultBudget := config.Tools.EffectiveMaxResultBytes()
 	for i := range plan {
 		p := &plan[i]
-		if !p.success && p.output == "" {
-			p.output = emptyToolErrorText
+		if !p.success {
+			if p.output == "" {
+				p.output = emptyToolErrorText
+			}
+			p.output = l.scrubToolError(p.output)
 		}
 		// Sync and async results converge here, so this is the single
 		// point that bounds what reaches history, trace and transport. A
@@ -364,6 +367,20 @@ func (l *AgenticLoop) planAndDispatch(
 	}
 
 	return toolResults, toolRecords, ""
+}
+
+// scrubToolError returns a failed call's result text with the log
+// scrubber applied. Error text can quote a credential from a config file,
+// an API response or the environment, and the provider adapters send a
+// tool result as they receive it.
+func (l *AgenticLoop) scrubToolError(text string) string {
+	scrubbed, stats := security.ScrubWithStats(text)
+	if l.Security != nil {
+		for _, p := range stats.Patterns {
+			l.Security.SecretRedactedInOutput(p, "core.tool_error")
+		}
+	}
+	return scrubbed
 }
 
 // duration is the call's own run time: dispatch to settlement, less the

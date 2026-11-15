@@ -140,6 +140,23 @@ inside one — along with the age-gated sweep that reclaims spool roots a
 crashed run leaves behind, is described in
 [`configuration.md#command-output-capture`](configuration.md#command-output-capture).
 
+### Tool error scrubbing
+
+The text of every failed tool call passes through the log scrubber
+before it enters the model's history, the trace and the `tool_result`
+event. This covers a handler's returned error, an error result a tool
+reports itself, permission-check and async-dispatch failures, and the
+harness's own rejection messages, for every tool. Error text can quote
+a credential from a config file, an API response or the environment,
+and the provider adapters send a tool result as they receive it. Each
+redaction raises the `secret_redacted_in_output` security event with
+the location `core.tool_error`. The scrub runs where sync and async
+results converge, before the result budget cut, so a cut cannot split
+a secret; `TestToolErrors_AreScrubbed` pins that every tool result is
+built after it. A successful result is not rewritten: it reaches the
+model as the tool returned it, or fenced as described
+[below](#scrubbed-content-is-fenced).
+
 ### Control-stream scrubbing
 
 The stdio and gRPC transports run `security.Scrub()` over the `text`,
