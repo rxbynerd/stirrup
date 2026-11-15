@@ -35,10 +35,18 @@ const (
 	procNetRouteDflt = "eth0\t00000000\t0100570A\t0003\t0\t0\t0\t00000000\t0\t0\t0                                                                               \n"
 )
 
-// guestDump frames file contents the way guestFileDumpScript prints them.
-// A nil content reports the file as missing.
+// guestDump frames the Nitro diagnostic files the way guestFileDumpScript
+// prints them. A nil content reports the file as missing.
 func guestDump(files ...*string) string {
-	paths := []string{nitroDMIProductNamePath, procNetDevPath, procNetRoutePath}
+	return frameGuestFiles([]string{nitroDMIProductNamePath, procNetDevPath, procNetRoutePath}, files...)
+}
+
+// gvisorDump frames /proc/version and /proc/sentry-meminfo like guestDump.
+func gvisorDump(version, sentryMeminfo *string) string {
+	return frameGuestFiles([]string{procVersionPath, gvisorSentryMeminfoPath}, version, sentryMeminfo)
+}
+
+func frameGuestFiles(paths []string, files ...*string) string {
 	var b strings.Builder
 	for i, content := range files {
 		if content == nil {
@@ -398,7 +406,7 @@ func TestRunK8sRuntimeDiagnostics_DMIProductNameIsOneLineEndingInEnclave(t *test
 func TestRunK8sRuntimeDiagnostics_ProfileWithoutDiagnosticsRunsNothing(t *testing.T) {
 	must := require.New(t)
 	core, security, calls := fakeDiagnosticsCore(t, "", nil)
-	must.NoError(runK8sRuntimeDiagnostics(context.Background(), "gvisor", k8sRuntimeProfiles["gvisor"], core))
+	must.NoError(runK8sRuntimeDiagnostics(context.Background(), "runc", k8sRuntimeProfiles["runc"], core))
 	must.Empty(*calls)
 	must.Empty(security.runtimeDiagnostics)
 }

@@ -54,10 +54,17 @@ const (
 	nitroDMIProductNamePath = "/sys/class/dmi/id/product_name"
 	procNetDevPath          = "/proc/net/dev"
 	procNetRoutePath        = "/proc/net/route"
+	procVersionPath         = "/proc/version"
+	gvisorSentryMeminfoPath = "/proc/sentry-meminfo"
 
 	// nitroGuestDMISuffix ends the DMI product name a Nitro Sandbox guest
 	// reports (for example "m5d.enclave").
 	nitroGuestDMISuffix = ".enclave"
+
+	// gvisorKernelBuildStamp ends /proc/version under gVisor. The release
+	// before it varies with the gVisor version and configuration; the
+	// build stamp is a constant of the sentry.
+	gvisorKernelBuildStamp = " #1 SMP Sun Jan 10 15:06:54 PST 2016"
 
 	diagnosticCheckAdmission  = "admitted_pod"
 	diagnosticCheckExec       = "diagnostic_exec"
@@ -65,6 +72,8 @@ const (
 	diagnosticCheckDMI        = "dmi_product_name"
 	diagnosticCheckInterfaces = "network_interfaces"
 	diagnosticCheckRoutes     = "route_table"
+	diagnosticCheckKernel     = "kernel_version"
+	diagnosticCheckSentry     = "sentry_meminfo"
 
 	// guestFileDumpOutputLimit bounds the diagnostic exec's stdout and
 	// stderr; the files read are a few hundred bytes on a sandbox guest.
@@ -288,6 +297,77 @@ func checkEmptyRouteTable(file guestFile, observed map[string]string) *k8sRuntim
 			reason: fmt.Sprintf("the guest has %d IPv4 route entries (first: %s)", len(routes), clusterText(routes[0])),
 		}
 	}
+	return nil
+}
+
+// diagnoseGVisorGuest checks, from inside the guest, that the Pod runs on
+// the gVisor sentry rather than the host kernel: /proc/version ends in
+// gVisor's build stamp, and /proc/sentry-meminfo, which no Linux kernel
+// provides, is present. The image supplies the shell, so this is a
+// configuration diagnostic, not attestation. Both checks are evaluated so
+// observed is complete; the first failure is returned.
+func diagnoseGVisorGuest(ctx context.Context, core *podExecCore) (map[string]string, error) {
+	files, err := readGuestFiles(ctx, core, procVersionPath, gvisorSentryMeminfoPath)
+	if err != nil {
+		return nil, err
+	}
+	observed := map[string]string{}
+	var failures []*k8sRuntimeDiagnosticError
+
+	if failure := checkGVisorKernelVersion(files[procVersionPath], observed); failure != nil {
+		failures = append(failures, failure)
+	}
+	if failure := checkGVisorSentryMeminfo(files[gvisorSentryMeminfoPath], observed); failure != nil {
+		failures = append(failures, failure)
+	}
+	if len(failures) > 0 {
+		return observed, failures[0]
+	}
+	return observed, nil
+}
+
+// checkGVisorKernelVersion requires /proc/version to be one line that starts
+// with "Linux version " and ends in gvisorKernelBuildStamp. A second
+// non-empty line fails as unexpected output.
+func checkGVisorKernelVersion(file guestFile, observed map[string]string) *k8sRuntimeDiagnosticError {
+	if !file.present {
+		return &k8sRuntimeDiagnosticError{check: diagnosticCheckKernel, reason: procVersionPath + " is absent, unreadable or not a regular file"}
+	}
+	nonEmpty := 0
+	for _, line := range file.lines {
+		if strings.TrimSpace(line) != "" {
+			nonEmpty++
+		}
+	}
+	if nonEmpty > 1 {
+		return &k8sRuntimeDiagnosticError{check: diagnosticCheckOutput, reason: fmt.Sprintf("%s has %d non-empty lines; the kernel prints one", procVersionPath, nonEmpty)}
+	}
+	version := ""
+	if len(file.lines) > 0 {
+		version = strings.TrimSpace(file.lines[0])
+	}
+	observed["kernelVersion"] = clusterText(version)
+	if !strings.HasPrefix(version, "Linux version ") || !strings.HasSuffix(version, gvisorKernelBuildStamp) {
+		return &k8sRuntimeDiagnosticError{
+			check: diagnosticCheckKernel,
+			reason: fmt.Sprintf("kernel version %q does not end in gVisor's build stamp %q, so the Pod is not running under gVisor",
+				clusterText(version), strings.TrimSpace(gvisorKernelBuildStamp)),
+		}
+	}
+	return nil
+}
+
+// checkGVisorSentryMeminfo requires /proc/sentry-meminfo to exist; its
+// content, the sentry's heap statistics, is not read.
+func checkGVisorSentryMeminfo(file guestFile, observed map[string]string) *k8sRuntimeDiagnosticError {
+	if !file.present {
+		observed["sentryMeminfo"] = "absent"
+		return &k8sRuntimeDiagnosticError{
+			check:  diagnosticCheckSentry,
+			reason: gvisorSentryMeminfoPath + " is absent, unreadable or not a regular file, so the Pod is not running under gVisor",
+		}
+	}
+	observed["sentryMeminfo"] = "present"
 	return nil
 }
 
