@@ -215,14 +215,18 @@ const (
 //	                token (e.g. "https://haybale.internal"). Informational —
 //	                the control plane may override it.
 //	  Sent after task_assignment and before the sandbox is created, when
-//	  the run wants a sandbox identity token, then again ahead of each
-//	  expires_at the control plane reports — at most eight per run.
+//	  the run wants a sandbox identity token; once more before the token
+//	  is first delivered if sandbox startup took it past its refresh
+//	  point; then again ahead of each expires_at the control plane
+//	  reports — at most eight per run in total.
 //	  Deliberately carries no harness-asserted identity field: the control
 //	  plane derives the run identity from the authenticated stream the task
 //	  was assigned on, never from the request body. The harness blocks on
 //	  the matching sandbox_token_response under a fail-closed 60s timeout;
 //	  on the first request a timeout aborts the run before any sandbox is
-//	  created, on a refresh it stops refreshing and emits a "warning".
+//	  created; on the pre-delivery request it aborts construction and tears
+//	  the sandbox down; on a refresh it stops refreshing and emits a
+//	  "warning".
 type HarnessEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The event type discriminator.
@@ -804,8 +808,10 @@ func (x *TraceReference) GetSampled() bool {
 //	                 reason carries a human-readable explanation. On the
 //	                 initial request the harness treats this the same as
 //	                 a timeout — the run aborts before the sandbox is
-//	                 created; on a refresh it stops refreshing, keeps the
-//	                 previous token, and emits a "warning".
+//	                 created; on the pre-delivery request construction
+//	                 aborts and the sandbox is torn down; on a refresh it
+//	                 stops refreshing, keeps the previous token, and emits
+//	                 a "warning".
 type ControlEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The event type discriminator.
@@ -5367,7 +5373,9 @@ func (x *ExecutorConfig) GetWorkspaceExportRequired() bool {
 // for up to 60 seconds on the matching sandbox_token_response, then
 // delivers the returned JWT into the sandbox as a file the composed git
 // credential helper reads (plus a copy in the env_var environment
-// variable as issued at creation). When the response carries expires_at,
+// variable as issued at creation). If sandbox startup takes the token past
+// its refresh point, one more request precedes first delivery and its
+// failure aborts construction. When the response carries expires_at,
 // further requests follow ahead of each expiry — at most eight per run —
 // and each new token replaces the file. The JWT is never written to
 // RunConfig, a trace, or a transcript. Wire contract:

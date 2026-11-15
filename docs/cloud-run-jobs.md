@@ -279,11 +279,12 @@ Salient points for stirrup:
   the run's own deadline/cancellation so an in-flight artifact upload
   can survive it; a second SIGTERM cancels that detached context
   (`AgenticLoop.Shutdown`) and cuts a `postRun` hook short rather than
-  letting it run for its full configured budget (up to 1830s). A background watchdog additionally
-  bounds executor teardown to 5 seconds after SIGTERM even if `Run()`
-  has not yet returned, so the container is stopped and removed well
-  inside the 10-second grace window regardless of what an in-flight
-  `postRun` hook is doing. Operators sizing a tighter task-level
+  letting it run for its full configured budget (up to 1830s). A
+  background watchdog additionally starts closing the loop, including
+  executor teardown, 5 seconds after SIGTERM even if `Run()` has not
+  yet returned, regardless of what an in-flight `postRun` hook is
+  doing. The watchdog starts teardown; it does not bound how long
+  teardown takes. Operators sizing a tighter task-level
   timeout around a run with long `postRun` hooks should still budget
   for the 10-second SIGTERM grace on top of the run's own `timeout`.
 - **Max task timeout** is 7 days (1 hour with GPU); see [Cloud Run

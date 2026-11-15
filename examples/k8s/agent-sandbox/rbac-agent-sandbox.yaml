@@ -20,18 +20,24 @@
 #
 # The verbs below are derived from the executor's calls in
 # harness/internal/executor/agentsandbox.go (Sandbox create/get/delete via the
-# dynamic client, NetworkPolicy create/delete via the clientset), k8s_execcore.go
-# (pods/exec for Exec + tar-based file I/O), and the readiness/resolution reads
-# of the backing Pod:
+# dynamic client), k8s_teardown.go (NetworkPolicy delete via the clientset,
+# shared with the k8s executor), k8s_netpol.go (NetworkPolicy create), k8s_execcore.go
+# (pods/exec for Exec + tar-based file I/O), and the teardown read of the
+# backing Pod in k8s_teardown.go:
 #
 #   sandboxes        create  — NewAgentSandboxExecutor creates the Sandbox CR
-#                    get     — readiness poll + pod-name resolution
+#                    get     — readiness poll + pod-name resolution; Close()
+#                              reads the Sandbox until it is gone, and
+#                              construction looks it up by name after a
+#                              failed create
 #                    list    — operator/teardown discovery by the
 #                              stirrup-sandbox=true label (also future warm-pool)
 #                    watch   — granted alongside list for controller-style reads
-#                    delete  — Close() / best-effort construction cleanup
-#   pods             get     — resolve and reference the controller-created Pod;
-#                              the orchestrator never creates or deletes it
+#                    delete  — the foreground teardown delete on Close(),
+#                              which construction failures also go through
+#   pods             get     — Close() reads the controller-created Pod until it
+#                              is gone before removing the egress policy; the
+#                              orchestrator never creates or deletes it
 #   pods/exec        create  — Exec + tar-based file I/O POST to the pods/exec
 #                              subresource (streamExec)
 #   networkpolicies  create  — the per-Pod egress policy is installed BEFORE the

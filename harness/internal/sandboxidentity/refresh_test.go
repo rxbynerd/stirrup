@@ -527,6 +527,32 @@ func TestRetryDelay_HalfOfRemainingLifetimeOrNone(t *testing.T) {
 	must.False(ok, "retryDelay on an expired token must report no lifetime left")
 }
 
+func TestDueForRefresh_AtRefreshFractionOrExpiry(t *testing.T) {
+	issued := time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)
+	expiresAt := issued.Add(10 * time.Minute).Unix()
+	expiredBeforeIssue := issued.Add(-time.Minute).Unix()
+	cases := []struct {
+		name      string
+		now       time.Time
+		expiresAt *int64
+		want      bool
+	}{
+		{"fresh token", issued.Add(time.Minute), &expiresAt, false},
+		{"just before the refresh point", issued.Add(7*time.Minute + 59*time.Second), &expiresAt, false},
+		{"at the refresh point", issued.Add(8 * time.Minute), &expiresAt, true},
+		{"expired", issued.Add(11 * time.Minute), &expiresAt, true},
+		{"no expiry", issued.Add(24 * time.Hour), nil, false},
+		{"expiry exactly now", issued.Add(10 * time.Minute), &expiresAt, true},
+		{"expiry before issue", issued, &expiredBeforeIssue, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, DueForRefresh(tc.now, issued, tc.expiresAt))
+		})
+	}
+}
+
 // TestRefresher_RetriesTransientFailure drives the slack the schedule
 // reserves: a refresh whose exchange times out is retried within the
 // token's remaining lifetime and succeeds without any warning.

@@ -7,11 +7,15 @@
 # (a CI runner, a controller, an operator's shell).
 #
 # The verbs below are derived from the executor's clientset calls in
-# harness/internal/executor/k8s.go and k8s_netpol.go:
+# harness/internal/executor/k8s.go, k8s_netpol.go, k8s_readiness.go and
+# k8s_teardown.go:
 #
 #   pods                  create  — NewK8sExecutor creates the sandbox Pod
-#                         get     — waitForPodReady polls Pod status
-#                         delete  — Close() / best-effort cleanup paths
+#                         get     — waitForPodReady polls Pod status; teardown
+#                                   reads the Pod until it is gone, and looks it
+#                                   up by name after a failed create
+#                         delete  — the graceful, UID-preconditioned teardown
+#                                   delete on Close() and on construction failure
 #   pods/exec             create  — Exec + tar-based file I/O POST to the
 #                                   pods/exec subresource (streamExec)
 #   pods/log              get     — NOT used by the executor today; granted so
@@ -19,7 +23,8 @@
 #                                   for debugging. Drop this verb to tighten the
 #                                   Role to exactly what the executor needs.
 #   networkpolicies       create  — the egress policy is installed BEFORE the
-#                         delete    Pod and removed on Close(); without these
+#                         delete    Pod and removed only once teardown has
+#                                   confirmed the Pod is gone; without these
 #                                   two verbs construction fails fail-closed,
 #                                   because a Pod whose egress cannot be
 #                                   confined must never be created.

@@ -68,7 +68,7 @@ func BuildLoop(ctx context.Context, config *types.RunConfig, opts ...LoopOption)
 // pre-built Transport; a non-nil tp is used directly, skipping
 // buildTransport, so a caller (e.g. the K8s job binary) can reuse an
 // already-connected transport.
-func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp transport.Transport, opts ...LoopOption) (*AgenticLoop, error) {
+func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp transport.Transport, opts ...LoopOption) (builtLoop *AgenticLoop, buildErr error) {
 	var loopOpts LoopOptions
 	for _, opt := range opts {
 		opt(&loopOpts)
@@ -81,14 +81,25 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// transport or write through a closed executor.
 	var sandboxRefresher *sandboxidentity.Refresher
 	emitReady := tp == nil
+	// cleanup closes what a failed build owns. Its errors (an executor that
+	// had to retain cluster objects, for example) are joined onto the
+	// returned build error rather than dropped.
+	var cleanupErr error
 	cleanup := func() {
+		var errs []error
 		if sandboxRefresher != nil {
-			_ = sandboxRefresher.Close()
+			errs = append(errs, sandboxRefresher.Close())
 		}
 		for i := len(ownedClosers) - 1; i >= 0; i-- {
-			_ = ownedClosers[i].Close()
+			errs = append(errs, ownedClosers[i].Close())
 		}
+		cleanupErr = errors.Join(errs...)
 	}
+	defer func() {
+		if buildErr != nil && cleanupErr != nil {
+			buildErr = fmt.Errorf("%w; cleanup: %w", buildErr, cleanupErr)
+		}
+	}()
 
 	// secLogger is constructed before ValidateRunConfig so a validation
 	// failure can still emit config_validation_failed.
@@ -129,11 +140,12 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// 2b. Sandbox identity token exchange and env composition, deliberately
 	// ahead of buildExecutor: the composed env carries the secret token into
 	// the executor's construction so no sandbox comes up without it, and a
-	// declined or timed-out exchange aborts before any sandbox exists.
+	// declined or timed-out first exchange aborts before any sandbox exists.
 	var (
 		sandboxExtraEnv  []executor.EnvPair
 		sandboxExchanger *sandboxidentity.Exchanger
 		sandboxToken     sandboxidentity.Result
+		sandboxIssuedAt  time.Time
 	)
 	if si := config.Executor.SandboxIdentity; si != nil {
 		// The exchange must complete before the executor is built, so it
@@ -151,6 +163,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 			return nil, fmt.Errorf("executor.sandboxIdentity: %w", exchErr)
 		}
 		sandboxToken = result
+		sandboxIssuedAt = time.Now()
 
 		composed, composeErr := sandboxidentity.ComposeEnv(si.EffectiveEnvVar(), result.Token, executor.SandboxIdentityTokenPath, config.Executor.GitProxy)
 		if composeErr != nil {
@@ -165,7 +178,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// 3. Executor (built early because context strategy may need it).
 	// secLogger is threaded into the container executor so its in-process
 	// egress proxy can emit egress_allowed/egress_blocked events.
-	exec, err := buildExecutor(ctx, config.Executor, secrets, secLogger, sandboxExtraEnv, sandboxLifecycle(config, loopOpts.sessionBudget))
+	exec, err := buildExecutorFn(ctx, config.Executor, secrets, secLogger, sandboxExtraEnv, sandboxLifecycle(config, loopOpts.sessionBudget))
 	if err != nil {
 		return nil, fmt.Errorf("build executor: %w", err)
 	}
@@ -173,16 +186,40 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		ownedClosers = append(ownedClosers, closer)
 	}
 
-	// 3b. Initial sandbox identity token delivery. The composed git
-	// credential helper reads the token file, not the env var, so the
-	// sandbox is unusable for git until this lands; a failure tears the
-	// sandbox down rather than leaving one that cannot authenticate.
+	// 3b. Initial sandbox identity token delivery, preceded by a
+	// re-exchange when sandbox startup took the token past its refresh
+	// point. The composed git credential helper reads the token file, not
+	// the env var, so the sandbox is unusable for git until this lands; a
+	// failure of either step tears the sandbox down rather than leaving one
+	// that cannot authenticate.
 	var sandboxTokenWriter executor.SandboxIdentityTokenWriter
 	if config.Executor.SandboxIdentity != nil {
 		writer, ok := exec.(executor.SandboxIdentityTokenWriter)
 		if !ok {
 			cleanup()
 			return nil, fmt.Errorf("executor.sandboxIdentity: executor type %q cannot deliver a sandbox identity token", config.Executor.Type)
+		}
+		// A slow sandbox start can use up a short-lived token's lifetime, so
+		// a token past its refresh point is replaced before first delivery.
+		if sandboxidentity.DueForRefresh(time.Now(), sandboxIssuedAt, sandboxToken.ExpiresAt) {
+			fresh, exchErr := sandboxExchanger.Exchange(ctx, config.Executor.SandboxIdentity.Audience, 0)
+			if exchErr != nil {
+				cleanup()
+				return nil, fmt.Errorf("executor.sandboxIdentity: token neared expiry during sandbox startup and could not be re-exchanged: %w", exchErr)
+			}
+			// The fresh token is checked against its own receipt time, so
+			// only one that is already expired is refused.
+			freshIssuedAt := time.Now()
+			if sandboxidentity.DueForRefresh(freshIssuedAt, freshIssuedAt, fresh.ExpiresAt) {
+				cleanup()
+				return nil, fmt.Errorf("executor.sandboxIdentity: the token re-exchanged during sandbox startup had already expired (expires_at %d)", *fresh.ExpiresAt)
+			}
+			attrs := []any{"startup", freshIssuedAt.Sub(sandboxIssuedAt).Round(time.Millisecond)}
+			if fresh.ExpiresAt != nil {
+				attrs = append(attrs, "tokenExpiresAtUnix", *fresh.ExpiresAt)
+			}
+			slog.Default().Info("sandbox identity token re-exchanged before first delivery; sandbox startup passed the first token's refresh point", attrs...)
+			sandboxToken = fresh
 		}
 		if err := writer.WriteSandboxIdentityToken(ctx, sandboxToken.Token); err != nil {
 			cleanup()
@@ -1310,6 +1347,10 @@ func sandboxLifecycle(config *types.RunConfig, sessionBudget time.Duration) exec
 // implies, is honoured only by the container and k8s cases;
 // ValidateRunConfig confines SandboxIdentity and GitProxy to those types,
 // so it is empty elsewhere by construction.
+// buildExecutorFn is buildExecutor; tests replace it to observe how a build
+// failure closes the executor.
+var buildExecutorFn = buildExecutor
+
 func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets security.SecretStore, secLogger *security.SecurityLogger, extraEnv []executor.EnvPair, life executor.Lifecycle) (executor.Executor, error) {
 	sandboxIdentityToken := cfg.SandboxIdentity != nil
 	switch cfg.Type {

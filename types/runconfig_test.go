@@ -2145,6 +2145,57 @@ func TestValidateRunConfig_K8sExecutorFields(t *testing.T) {
 	}
 }
 
+func TestValidateRunConfig_K8sNetworkMode(t *testing.T) {
+	for _, executorType := range []string{"k8s", "k8s-sandbox"} {
+		for _, tc := range []struct {
+			mode        string
+			proxyURL    string
+			wantErr     bool
+			errContains string
+		}{
+			{mode: "none"},
+			{mode: "allowlist", proxyURL: "http://proxy.ns.svc:8080"},
+			{mode: "host", wantErr: true},
+			{mode: "bridge", wantErr: true},
+			{mode: "", wantErr: true},
+			{mode: "host", proxyURL: "http://proxy.ns.svc:8080", wantErr: true},
+		} {
+			t.Run(executorType+"/mode="+tc.mode+"/proxy="+tc.proxyURL, func(t *testing.T) {
+				must := require.New(t)
+				check := assert.New(t)
+				c := validConfig()
+				c.Executor = ExecutorConfig{
+					Type:              executorType,
+					Image:             "img",
+					K8sNamespace:      "ns",
+					Network:           &NetworkConfig{Mode: tc.mode},
+					K8sEgressProxyURL: tc.proxyURL,
+				}
+
+				err := ValidateRunConfig(c)
+
+				if !tc.wantErr {
+					must.NoError(err)
+					return
+				}
+				must.Error(err)
+				check.Contains(err.Error(), "executor.network.mode must be \"none\" or \"allowlist\"")
+				check.Contains(err.Error(), "executor.type=\""+executorType+"\"")
+				check.NotContains(err.Error(), "k8sEgressProxyUrl", "an unsupported mode must not add a proxy URL error")
+			})
+		}
+	}
+}
+
+func TestIsK8sFamily(t *testing.T) {
+	check := assert.New(t)
+	check.True(IsK8sFamily("k8s"))
+	check.True(IsK8sFamily("k8s-sandbox"))
+	for _, other := range []string{"container", "local", "api", "none", ""} {
+		check.False(IsK8sFamily(other), other)
+	}
+}
+
 // TestValidateRunConfig_K8sSandboxExecutorFields exercises the type="k8s-sandbox"
 // arm, which reuses the K8s* cross-field requirements (Image, K8sNamespace,
 // Network, egress-proxy coupling) but narrows the runtime set to gVisor only.

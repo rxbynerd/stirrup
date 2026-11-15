@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -49,6 +50,9 @@ type fakeControlPlaneTransport struct {
 	// respondTTL, when positive, sets expires_at to now+respondTTL on every
 	// response; zero leaves expires_at unset.
 	respondTTL time.Duration
+	// respondTTLs, when set, overrides respondTTL per request ordinal (the
+	// last entry repeats); a negative entry yields an expires_at in the past.
+	respondTTLs []time.Duration
 
 	// respondIsError/respondReason, when respondIsError is true, deliver a
 	// control-plane decline instead of a success response.
@@ -59,6 +63,9 @@ type fakeControlPlaneTransport struct {
 	// unreachable control plane so the caller's ctx/timeout is what ends
 	// the wait.
 	noRespond bool
+	// declineFromRequest, when positive, declines that request ordinal and
+	// every later one.
+	declineFromRequest int
 }
 
 func (f *fakeControlPlaneTransport) Emit(event types.HarnessEvent) error {
@@ -82,11 +89,15 @@ func (f *fakeControlPlaneTransport) Emit(event types.HarnessEvent) error {
 			RequestID: event.RequestID,
 			Token:     f.tokenFor(ordinal),
 		}
-		if f.respondTTL > 0 {
-			exp := time.Now().Add(f.respondTTL).Unix()
+		ttl := f.respondTTL
+		if len(f.respondTTLs) > 0 {
+			ttl = f.respondTTLs[min(ordinal, len(f.respondTTLs))-1]
+		}
+		if ttl != 0 {
+			exp := time.Now().Add(ttl).Unix()
 			resp.ExpiresAt = &exp
 		}
-		if f.respondIsError {
+		if f.respondIsError || (f.declineFromRequest > 0 && ordinal >= f.declineFromRequest) {
 			resp.IsError = boolPtr(true)
 			resp.Reason = f.respondReason
 		}
@@ -181,6 +192,7 @@ func fakeDockerEngine(t *testing.T) (socketPath string, capture *engineCapture, 
 		switch {
 		case r.Method == http.MethodPost && apiPath == "/containers/create":
 			capture.recordCreateCall()
+			time.Sleep(capture.createDelay)
 			_ = json.NewDecoder(r.Body).Decode(capture)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"Id":"test-container-id"}`))
@@ -189,6 +201,7 @@ func fakeDockerEngine(t *testing.T) (socketPath string, capture *engineCapture, 
 		case r.Method == http.MethodPost && strings.HasPrefix(apiPath, "/containers/") && strings.HasSuffix(apiPath, "/stop"):
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodDelete && strings.HasPrefix(apiPath, "/containers/"):
+			capture.recordDeleteCall()
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodPost && strings.HasPrefix(apiPath, "/containers/") && strings.HasSuffix(apiPath, "/exec"):
 			var req struct {
@@ -243,8 +256,13 @@ type engineCapture struct {
 		Tmpfs map[string]string `json:"Tmpfs"`
 	} `json:"HostConfig"`
 
+	// createDelay stalls /containers/create, standing in for a slow sandbox
+	// start. Set before the engine receives traffic.
+	createDelay time.Duration
+
 	mu          sync.Mutex
 	createCalls int
+	deleteCalls int
 	execArgv    [][]string
 	stdin       []string
 }
@@ -270,6 +288,18 @@ func (c *engineCapture) createCallCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.createCalls
+}
+
+func (c *engineCapture) recordDeleteCall() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.deleteCalls++
+}
+
+func (c *engineCapture) deleteCallCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.deleteCalls
 }
 
 func (c *engineCapture) recordExecArgv(argv []string) {
@@ -469,6 +499,147 @@ func TestBuildLoopWithTransport_SandboxIdentity_RefreshesToken(t *testing.T) {
 			must.NotContains(string(raw), tok, "emitted event carries a sandbox identity token")
 		}
 	}
+}
+
+// TestBuildLoopWithTransport_SandboxIdentity_ReexchangesTokenExpiringDuringStartup
+// stalls sandbox creation past a short token's refresh point: the factory
+// exchanges a fresh token and delivers it, never the stale one, before the
+// loop is returned.
+func TestBuildLoopWithTransport_SandboxIdentity_ReexchangesTokenExpiringDuringStartup(t *testing.T) {
+	must := require.New(t)
+	sock, capture, cleanupEngine := fakeDockerEngine(t)
+	defer cleanupEngine()
+	capture.createDelay = 1200 * time.Millisecond
+	t.Setenv("DOCKER_HOST", "unix://"+sock)
+
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	tp := &fakeControlPlaneTransport{respondToken: "jwt", respondTokenPerRequest: true, respondTTL: time.Second}
+	config := sandboxIdentityContainerConfig(t, "sandboxidentity-startup-expiry-test", server.URL)
+	logs := captureDefaultLog(t)
+
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	must.NoError(err)
+	deliveries := capture.waitForStdin(t, 1, 5*time.Second)
+	must.NoError(loop.Close())
+
+	must.Equal("jwt-2", deliveries[0], "the token issued before the slow start was delivered")
+	must.NotContains(deliveries, "jwt-1")
+	must.Contains(logs.String(), "sandbox identity token re-exchanged before first delivery")
+	must.Contains(logs.String(), "tokenExpiresAtUnix=")
+	must.NotContains(logs.String(), "jwt-", "a token value reached the log")
+}
+
+// captureDefaultLog routes slog.Default to a buffer for the test.
+func captureDefaultLog(t *testing.T) *lockedBuffer {
+	t.Helper()
+	buf := &lockedBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return buf
+}
+
+// lockedBuffer is a goroutine-safe log sink.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestBuildLoopWithTransport_SandboxIdentity_RefresherStartsFromReexchangedExpiry
+// delivers a long-lived token after a startup re-exchange and checks the
+// refresher schedules from that token: no further request follows at once,
+// as one would if it started from the first token's expired lifetime.
+func TestBuildLoopWithTransport_SandboxIdentity_RefresherStartsFromReexchangedExpiry(t *testing.T) {
+	must := require.New(t)
+	sock, capture, cleanupEngine := fakeDockerEngine(t)
+	defer cleanupEngine()
+	capture.createDelay = 1200 * time.Millisecond
+	t.Setenv("DOCKER_HOST", "unix://"+sock)
+
+	server := newOpenAIServer(t, nil, nil, nil)
+	defer server.Close()
+
+	tp := &fakeControlPlaneTransport{respondToken: "jwt", respondTokenPerRequest: true, respondTTLs: []time.Duration{time.Second, time.Hour}}
+	config := sandboxIdentityContainerConfig(t, "sandboxidentity-refresher-expiry-test", server.URL)
+
+	loop, err := BuildLoopWithTransport(context.Background(), config, tp)
+	must.NoError(err)
+	defer func() { _ = loop.Close() }()
+	must.Equal([]string{"jwt-2"}, capture.waitForStdin(t, 1, 5*time.Second))
+
+	time.Sleep(time.Second)
+	must.Len(tp.emittedOfType("sandbox_token_request"), 2, "the refresher started from the first token's expiry")
+	must.Equal([]string{"jwt-2"}, capture.stdinSeen())
+}
+
+// TestBuildLoopWithTransport_SandboxIdentity_RejectsExpiredReexchangedToken
+// covers a control plane that answers the startup re-exchange with a token
+// that has already expired: construction fails, the sandbox is removed and
+// no token is delivered.
+func TestBuildLoopWithTransport_SandboxIdentity_RejectsExpiredReexchangedToken(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	sock, capture, cleanupEngine := fakeDockerEngine(t)
+	defer cleanupEngine()
+	capture.createDelay = 1200 * time.Millisecond
+	t.Setenv("DOCKER_HOST", "unix://"+sock)
+
+	tp := &fakeControlPlaneTransport{respondToken: "jwt", respondTTLs: []time.Duration{time.Second, -time.Hour}}
+	config := sandboxIdentityFailClosedConfig(t, "sandboxidentity-expired-reexchange-test")
+
+	_, err := BuildLoopWithTransport(context.Background(), config, tp)
+
+	must.Error(err)
+	must.ErrorContains(err, "re-exchanged during sandbox startup had already expired")
+	check.NotContains(err.Error(), "jwt", "a token value reached the error")
+	check.Positive(capture.deleteCallCount(), "the sandbox was not removed")
+	check.Empty(capture.stdinSeen(), "an expired token was delivered")
+}
+
+// TestBuildLoopWithTransport_SandboxIdentity_FailedReexchangeClosesSandbox
+// covers a control plane that declines the re-exchange of a token that
+// neared expiry during startup: construction fails, the sandbox is removed,
+// and no token is delivered.
+func TestBuildLoopWithTransport_SandboxIdentity_FailedReexchangeClosesSandbox(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	sock, capture, cleanupEngine := fakeDockerEngine(t)
+	defer cleanupEngine()
+	capture.createDelay = 1200 * time.Millisecond
+	t.Setenv("DOCKER_HOST", "unix://"+sock)
+
+	tp := &fakeControlPlaneTransport{
+		respondToken:       "jwt",
+		respondTTL:         time.Second,
+		declineFromRequest: 2,
+		respondReason:      "issuer unavailable",
+	}
+	config := sandboxIdentityFailClosedConfig(t, "sandboxidentity-startup-reexchange-fail-test")
+
+	_, err := BuildLoopWithTransport(context.Background(), config, tp)
+
+	must.Error(err)
+	must.ErrorContains(err, "could not be re-exchanged")
+	must.ErrorContains(err, "declined")
+	check.NotContains(err.Error(), "jwt", "a token value reached the error")
+	check.Equal(1, capture.createCallCount())
+	check.Positive(capture.deleteCallCount(), "the sandbox was not removed after the failed re-exchange")
+	check.Empty(capture.stdinSeen(), "a token was delivered despite the failed re-exchange")
+	check.Len(tp.emittedOfType("sandbox_token_request"), 2)
 }
 
 // TestBuildLoopWithTransport_SandboxIdentity_NilTransportFailsClosed pins

@@ -246,6 +246,22 @@ func refreshDelay(now time.Time, expiresAt int64) time.Duration {
 	return time.Duration(float64(remaining) * refreshFraction * jitter)
 }
 
+// DueForRefresh reports whether a token obtained at issuedAt and expiring at
+// expiresAt (Unix seconds) has reached the point at which a Refresher started
+// at issuedAt would have replaced it, or has expired. A token without an
+// expiry is never due.
+func DueForRefresh(now, issuedAt time.Time, expiresAt *int64) bool {
+	if expiresAt == nil {
+		return false
+	}
+	expiry := time.Unix(*expiresAt, 0)
+	if !now.Before(expiry) {
+		return true
+	}
+	lifetime := expiry.Sub(issuedAt)
+	return now.Sub(issuedAt) >= time.Duration(float64(lifetime)*refreshFraction)
+}
+
 // retryDelay is how long to wait before retrying a transient exchange
 // failure: half of the token's remaining lifetime, so retries converge on
 // the expiry rather than overshooting it. It reports false once no

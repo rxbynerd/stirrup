@@ -926,7 +926,10 @@ harness then injects the token, plus non-secret `GIT_CONFIG_*`
 environment variables that rewrite `git` remote URLs, into the
 sandbox environment at creation time, and delivers it again as a
 `0600` file on a private memory-backed mount outside the workspace
-that the composed credential helper reads. That file is what refresh
+that the composed credential helper reads. If sandbox startup took
+the token past its refresh point, the harness re-exchanges it before
+that first delivery, and a failure there fails construction and tears
+the sandbox down. That file is what refresh
 rewrites ahead of each `expires_at` the control plane reports, so a
 ≤15-minute token lifetime no longer has to stretch to the run's
 wall-clock budget; each delivery carries the token on exec stdin,

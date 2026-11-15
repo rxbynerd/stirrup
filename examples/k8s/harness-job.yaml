@@ -24,6 +24,9 @@ spec:
   template:
     spec:
       restartPolicy: Never
+      # Covers sandbox teardown after SIGTERM; add the RunConfig's post-run
+      # budget and 30 s per OTLP exporter (docs/executors/k8s.md).
+      terminationGracePeriodSeconds: 90
       serviceAccountName: stirrup-orchestrator
       # The ServiceAccount refuses a default token automount; the harness needs
       # one to reach the API server.

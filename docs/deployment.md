@@ -248,7 +248,7 @@ Five limits bound a `stirrup job` session; whichever fires first wins.
 | `RunConfig.timeout` | One run. The primary run's budget starts at task assignment and includes component construction; each follow-up run receives a fresh budget of the same length when its `user_response` is taken up. | The run ends with `done{stop_reason:"timeout"}`. The follow-up window still opens afterwards. |
 | `followUpGrace` / `STIRRUP_FOLLOWUP_GRACE` | Idle time between runs, restarted after every run is finalised. A run in progress never consumes it. | The stream closes and the process exits with the primary run's exit code. |
 | `cancel` ControlEvent | The session. | An active run ends with `done{stop_reason:"cancelled"}`; queued `user_response` input is discarded (each reported by a `warning`); no follow-up window opens. With no run active — between a run's `done` and the next run, or inside the grace window — the stream closes without another `done`. One `cancel` always stops the harness. |
-| SIGTERM / SIGINT | The process. | The active run or grace window is interrupted; result emission and export still run under their own bounded contexts, and the shutdown watchdog closes the loop within 5 s. |
+| SIGTERM / SIGINT | The process. | The active run or grace window is interrupted; result emission and export still run under their own bounded contexts, and the shutdown watchdog starts closing the loop, which includes executor teardown, 5 s after the signal. Teardown takes its own time on top; see [Shutdown timing and grace period](executors/k8s.md#shutdown-timing-and-grace-period) for the sizing. |
 | `Job.spec.activeDeadlineSeconds` | The Pod. | The only session-wide hard cap for `stirrup job`. No `RunConfig` field bounds the number or total duration of follow-ups, so size it for `timeout` × the expected number of runs plus the grace windows between them. (`stirrup harness`, which has no orchestrator behind it, bounds its own session at 10 × (`timeout` + `followUpGrace`) after the primary run.) |
 
 Exit status reports the assigned task: the process exits 0 when the
@@ -311,13 +311,15 @@ outbound git operations through a proxy such as
 [Haybale](https://github.com/rxbynerd/haybale). The harness never
 holds a signing key or a long-lived credential itself; it requests a
 token from the control plane over the same `RunTask` stream used for
-everything else — once before the sandbox is created, and again
-ahead of each expiry the control plane reports (see Token lifetime,
-below).
+everything else — once before the sandbox is created, once more before
+the token file is first written if sandbox startup took the token past
+its refresh point, and again ahead of each expiry the control plane
+reports (see Token lifetime, below).
 
 - **`sandbox_token_request`** (`HarnessEvent`) — sent after
-  `task_assignment` and before the sandbox is created, then again on
-  each refresh; at most eight per run. Carries `request_id`
+  `task_assignment` and before the sandbox is created, then before
+  first delivery when startup took the token past its refresh point,
+  then again on each refresh; at most eight per run. Carries `request_id`
   (correlation; `sbid-1`, `sbid-2`, … in issue order) and `audience`,
   the intended JWT `aud` claim (e.g. `https://haybale.internal`). The
   event deliberately carries no harness-asserted identity field: the
@@ -375,10 +377,14 @@ the `ask-upstream` permission-response timeout. For the initial
 exchange a response that arrives late, or not at all, aborts the run
 before the sandbox is created; the run ends with
 `done{stop_reason:"error"}` rather than leaving a
-partially-provisioned, tokenless sandbox behind. For a refresh the
-same outcomes — and an explicit `is_error` — stop refreshing and
-emit a `warning` event naming the expiry of the token still in the
-sandbox; the run itself continues.
+partially-provisioned, tokenless sandbox behind. When sandbox startup
+took the first token past its refresh point, one more request precedes
+the first delivery of the token file; a late or missing response, an
+explicit `is_error`, or a fresh token that has already expired aborts
+construction, the harness tears the sandbox down, and the run ends the
+same way. For a refresh after delivery the same outcomes — and an
+explicit `is_error` — stop refreshing and emit a `warning` event naming
+the expiry of the token still in the sandbox; the run itself continues.
 
 **Token lifetime.** Haybale recommends an `exp` of 15 minutes or
 less, and the harness decouples that lifetime from the run's
@@ -390,7 +396,11 @@ credential helper reads (see [`configuration.md`'s "Token file and
 refresh"](configuration.md#token-file-and-refresh)). A control plane
 must therefore be prepared to answer up to eight requests per stream,
 each minted for the same run identity; the initial token's
-environment-variable copy is never updated, only the file. Leaving
+environment-variable copy is never updated, only the file. A token
+that reaches its refresh point while the sandbox is still starting is
+replaced by a second request before the file is first written; the
+environment-variable copy keeps the first token, which may then already
+be past its refresh point. Leaving
 `expires_at` unset disables refresh, in which case `exp` must cover
 the run's configured wall-clock budget plus slack, since nothing
 inside the sandbox can recover from an expired token.

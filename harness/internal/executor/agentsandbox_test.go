@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/rxbynerd/stirrup/harness/internal/sandboxidentity"
 	"github.com/rxbynerd/stirrup/types"
@@ -276,5 +277,26 @@ func TestBuildSandboxObject_EmitsSandboxCR(t *testing.T) {
 		v0 := asObjectMap(t, "volumes[0]", volumes[0])
 		must.Equal(k8sWorkspaceVolume, v0["name"])
 		must.Contains(v0, "emptyDir")
+	})
+}
+
+func TestBuildSandboxPodSpec_SetsShortTerminationGracePeriod(t *testing.T) {
+	t.Run("k8s pod", func(t *testing.T) {
+		must := require.New(t)
+		pod := buildSandboxPod(baseSandboxCfg(), "stirrup-abc", nil)
+		must.NotNil(pod.Spec.TerminationGracePeriodSeconds)
+		must.Equal(k8sTerminationGracePeriod, *pod.Spec.TerminationGracePeriodSeconds)
+	})
+
+	t.Run("k8s-sandbox pod template", func(t *testing.T) {
+		must := require.New(t)
+		spec := buildSandboxPodSpec(baseSandboxCfg(), nil, nil)
+		applyAgentSandboxAdmissionDeltas(&spec)
+		obj, err := buildSandboxObject("default", "stirrup-abc", "", spec, time.Now().Add(agentSandboxMaxTTL))
+		must.NoError(err)
+		got, found, err := metav1unstructured.NestedInt64(obj.Object, "spec", "podTemplate", "spec", "terminationGracePeriodSeconds")
+		must.NoError(err)
+		must.True(found, "spec.podTemplate.spec.terminationGracePeriodSeconds is not set")
+		must.Equal(k8sTerminationGracePeriod, got)
 	})
 }

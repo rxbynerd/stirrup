@@ -565,64 +565,131 @@ func (r *recordingSecurityEmitter) OutputTruncated(command string, originalSize,
 
 var _ SecurityEventEmitter = (*recordingSecurityEmitter)(nil)
 
-// TestClassifyPodCreateError_RuntimeClassHint covers the RuntimeClass-aware error wrap. An
-// IsInvalid (built-in admission) or IsForbidden (webhook/OPA) error with a
-// non-empty RuntimeClass gets the friendly hint; an empty RuntimeClass or
-// an unrelated error falls through to the plain "create pod" wrap. The
-// original error must remain reachable via errors.Is/As in every case.
-func TestClassifyPodCreateError_RuntimeClassHint(t *testing.T) {
-	invalid := apierrors.NewInvalid(
-		schema.GroupKind{Group: "", Kind: "Pod"},
-		"stirrup-abc",
-		field.ErrorList{field.Invalid(
-			field.NewPath("spec", "runtimeClassName"), "gvisor", "not found",
-		)},
-	)
-	forbidden := apierrors.NewForbidden(
-		schema.GroupResource{Group: "", Resource: "pods"},
-		"stirrup-abc",
-		errors.New("RuntimeClass \"gvisor\" is not allowed by policy"),
-	)
-	transport := errors.New("connection refused")
+func TestClassifyPodCreateError_AttributesOnlyNamedRuntimeClass(t *testing.T) {
+	pods := schema.GroupResource{Resource: "pods"}
+	podKind := schema.GroupKind{Kind: "Pod"}
+	cases := []struct {
+		name     string
+		err      error
+		wantHint bool
+	}{
+		{
+			name: "invalid runtimeClassName field",
+			err: apierrors.NewInvalid(podKind, "stirrup-x", field.ErrorList{
+				field.Invalid(field.NewPath("spec", "runtimeClassName"), "Bad_Name", "a lowercase RFC 1123 subdomain must consist of"),
+			}),
+			wantHint: true,
+		},
+		{
+			name:     "runtime class admission not found",
+			err:      apierrors.NewForbidden(pods, "stirrup-x", errors.New(`pod rejected: RuntimeClass "gvisor" not found`)),
+			wantHint: true,
+		},
+		{
+			name: "invalid resources field",
+			err: apierrors.NewInvalid(podKind, "stirrup-x", field.ErrorList{
+				field.Invalid(field.NewPath("spec", "containers").Index(0).Child("resources", "requests"), "4", "must be less than or equal to cpu limit"),
+			}),
+		},
+		{
+			name: "limit range maximum",
+			err:  apierrors.NewForbidden(pods, "stirrup-x", errors.New("maximum cpu usage per Container is 2, but limit is 4")),
+		},
+		{
+			name: "resource quota",
+			err:  apierrors.NewForbidden(pods, "stirrup-x", errors.New("exceeded quota: compute, requested: pods=1, used: pods=10, limited: pods=10")),
+		},
+		{
+			name: "pod security",
+			err:  apierrors.NewForbidden(pods, "stirrup-x", errors.New(`violates PodSecurity "restricted:v1.31": seccompProfile`)),
+		},
+		{
+			name: "runtime class scheduling conflict",
+			err:  apierrors.NewForbidden(pods, "stirrup-x", errors.New("conflict: runtimeClass.scheduling.nodeSelector[pool] = sandbox; pod.spec.nodeSelector[pool] = general")),
+		},
+		{
+			name: "a different runtime class not found",
+			err:  apierrors.NewForbidden(pods, "stirrup-x", errors.New(`pod rejected: RuntimeClass "kata-qemu" not found`)),
+		},
+		{
+			name: "transport error",
+			err:  errors.New("connection refused"),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			err := classifyPodCreateError("gvisor", tc.err)
+			must.ErrorIs(err, tc.err, "the original error must stay reachable")
+			check.Equal(tc.wantHint, containsHint(err), "RuntimeClass hint on %v", err)
+			check.False(containsHint(classifyPodCreateError("", tc.err)), "hint without a requested RuntimeClass")
+		})
+	}
+}
 
-	t.Run("invalid with runtime class gets hint", func(t *testing.T) {
+func TestClassifyPodCreateError_BoundsWebhookMessage(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	webhook := apierrors.NewForbidden(schema.GroupResource{Resource: "pods"}, "stirrup-x",
+		errors.New("admission webhook \"policy.example.com\" denied the request:\n"+strings.Repeat("y", 10*k8sClusterTextMax)))
+
+	err := classifyPodCreateError("gvisor", webhook)
+
+	must.ErrorIs(err, webhook)
+	must.True(apierrors.IsForbidden(err))
+	check.NotContains(err.Error(), "\n")
+	check.Less(len(err.Error()), k8sClusterTextMax+100)
+	check.Contains(err.Error(), "denied the request")
+}
+
+func TestClusterText_ScrubsBeforeTruncating(t *testing.T) {
+	must := require.New(t)
+	// Assembled at run time so no token-shaped literal sits in the source.
+	segment := strings.Repeat("A", 40)
+	token := "ey" + "J" + segment + "." + segment + "." + segment
+	prefix := strings.Repeat("p", k8sClusterTextMax-len("ey")-50)
+	got := clusterText(prefix + token)
+
+	must.NotContains(got, "eyJ"+segment[:10], "a token cut at the length cap kept a recognisable prefix")
+	must.Contains(got, "[REDACTED]")
+}
+
+func TestClusterText_StripsControlCharactersBeforeScrubbing(t *testing.T) {
+	must := require.New(t)
+	// Assembled at run time so no token-shaped literal sits in the source.
+	segment := strings.Repeat("B", 40)
+	split := "ey" + "J" + segment[:20] + "\r" + segment[20:] + "." + segment + "." + segment
+	got := clusterText("token " + split)
+
+	must.NotContains(got, segment[:20]+segment[20:], "a control character inside a token hid it from the scrubber")
+	must.Contains(got, "[REDACTED]")
+}
+
+func containsHint(err error) bool {
+	return strings.Contains(err.Error(), "was rejected by the cluster —")
+}
+
+func TestClassifyPodCreateError_GivesAdvicePerRejection(t *testing.T) {
+	pods := schema.GroupResource{Resource: "pods"}
+	t.Run("not found", func(t *testing.T) {
 		must := require.New(t)
-		err := classifyPodCreateError("gvisor", invalid)
-		must.ErrorContains(err, `RuntimeClass "gvisor"`)
-		must.ErrorContains(err, "kubectl get runtimeclass")
-		must.True(apierrors.IsInvalid(err), "wrapped error must remain IsInvalid via errors.As")
+		err := classifyPodCreateError("gvisor", apierrors.NewForbidden(pods, "stirrup-x", errors.New(`pod rejected: RuntimeClass "gvisor" not found`)))
+		must.ErrorContains(err, `create pod: RuntimeClass "gvisor" was rejected by the cluster — no RuntimeClass with that name is registered (kubectl get runtimeclass)`)
+		must.NotContains(err.Error(), "permitted")
 	})
 
-	t.Run("forbidden with runtime class gets hint", func(t *testing.T) {
+	t.Run("invalid name keeps the field cause", func(t *testing.T) {
 		must := require.New(t)
-		err := classifyPodCreateError("gvisor", forbidden)
-		must.ErrorContains(err, `RuntimeClass "gvisor"`)
-		must.ErrorContains(err, "kubectl get runtimeclass")
-		must.True(apierrors.IsForbidden(err), "wrapped error must remain IsForbidden via errors.As")
-	})
-
-	t.Run("forbidden without runtime class is plain", func(t *testing.T) {
-		must := require.New(t)
-		err := classifyPodCreateError("", forbidden)
-		// The synthetic forbidden error carries "RuntimeClass" in its own
-		// text, so assert on the hint phrase the wrapper adds rather than
-		// the bare word.
+		cause := "a lowercase RFC 1123 subdomain must consist of lower case alphanumeric characters"
+		padding := strings.Repeat("z", 2*k8sClusterTextMax)
+		err := classifyPodCreateError("Bad_Name", apierrors.NewInvalid(schema.GroupKind{Kind: "Pod"}, "stirrup-x", field.ErrorList{
+			field.Invalid(field.NewPath("metadata", "annotations"), padding, "too long"),
+			field.Invalid(field.NewPath("spec", "runtimeClassName"), "Bad_Name", cause),
+		}))
+		must.ErrorContains(err, `create pod: RuntimeClass "Bad_Name" was rejected by the cluster — the name is not valid for spec.runtimeClassName (`)
+		must.ErrorContains(err, cause, "truncating the API message hid the field cause")
 		must.NotContains(err.Error(), "kubectl get runtimeclass")
-		must.True(apierrors.IsForbidden(err), "wrapped error must remain IsForbidden")
-	})
-
-	t.Run("invalid without runtime class is plain", func(t *testing.T) {
-		must := require.New(t)
-		err := classifyPodCreateError("", invalid)
-		must.NotContains(err.Error(), "RuntimeClass")
-		must.True(strings.HasPrefix(err.Error(), "create pod:"), "expected plain create-pod wrap")
-	})
-
-	t.Run("non-invalid error with runtime class is plain", func(t *testing.T) {
-		must := require.New(t)
-		err := classifyPodCreateError("gvisor", transport)
-		must.NotContains(err.Error(), "RuntimeClass")
-		must.ErrorIs(err, transport)
 	})
 }
 
