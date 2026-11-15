@@ -116,7 +116,7 @@ flowchart LR
   end
   SA -->|pods: create/get/delete| Pod
   SA -->|pods/exec: create| Pod
-  SA -->|networkpolicies: create/delete| NP
+  SA -->|networkpolicies: create/delete/patch| NP
   NP -.->|binds| Pod
   Pod -->|HTTP_PROXY allowlist mode| Proxy
   Proxy -->|FQDN allowlist| Net([Internet])
@@ -132,7 +132,7 @@ The pieces and their lifecycle:
   when running in-cluster), then the in-cluster ServiceAccount, then
   `$KUBECONFIG`. It holds the RBAC the executor's lifecycle needs:
   `pods` (create/get/delete), `pods/exec` (create), and
-  `networkpolicies` (create/delete). The reference Role
+  `networkpolicies` (create/delete/patch). The reference Role
   ([`examples/k8s/rbac.yaml`](../../examples/k8s/rbac.yaml)) also grants
   `pods/log` (get); the executor does not use it, so it is granted only
   for operator `kubectl logs` debugging and may be dropped to tighten
@@ -654,10 +654,13 @@ What the read in step 2 cannot establish:
 
 On a cluster that enforces NetworkPolicy a retained policy keeps
 confining a Pod that is still running and is inert once the Pod is gone.
-The policy carries no owner reference to the Pod, because garbage
-collection would remove it as soon as the Pod object disappears,
+A policy is never owned by the sandbox Pod alone, because garbage
+collection would then remove it as soon as the Pod object disappears,
 including after a force delete that does not wait for the workload to
-stop.
+stop. When the harness runs in a Pod, the policy is owned by both the
+harness Pod and the sandbox Pod (see
+[When the harness dies](#when-the-harness-dies)), so it is collected
+only after both are gone.
 
 Every Pod create error, whatever its status, is followed by a lookup of
 the Pod under its preselected name, because a client may retry a
@@ -692,10 +695,50 @@ in a Pod in the sandbox namespace with the `STIRRUP_POD_NAME`,
 set, the sandbox Pod is also owned by the harness Pod and is
 garbage-collected with it.
 
-A harness killed by `SIGKILL` (for example at the end of its own
-termination grace period) can leave objects behind: a running Pod and
-its policy if the kill came before the Pod delete, or a terminating Pod
-and its policy if it came during the wait.
+### When the harness dies
+
+A harness that is killed, evicted, or loses its node before `Close`
+leaves a running or terminating sandbox Pod and its egress policy. What
+the cluster removes on its own depends on whether the harness runs in a
+Pod in the sandbox namespace with the `STIRRUP_POD_NAME`,
+`STIRRUP_POD_UID` and `STIRRUP_POD_NAMESPACE` downward-API variables
+set:
+
+| Object | Harness in a Pod, variables set | Otherwise |
+|---|---|---|
+| Sandbox Pod | Owned by the harness Pod; garbage-collected, and stopped within its 1-second grace period. | Left running until `activeDeadlineSeconds` marks it `Failed`; the object stays. |
+| Egress policy | Owned by the harness Pod and the sandbox Pod; garbage-collected once both are gone, so never while the sandbox Pod still exists. | Left in place. |
+
+The policy takes the owner references after the sandbox Pod is created,
+because the Pod's UID does not exist earlier and the policy must be
+installed first. A harness that dies in the one API round trip between
+the Pod create and that patch leaves the policy without owners. When
+the patch fails, for instance because the credentials lack `patch` on
+`networkpolicies`, the executor logs `could not attach owner references
+to the egress NetworkPolicy; it is not garbage-collected if the harness
+dies` and the run continues with an unowned policy.
+
+Two owners are needed because the collector deletes the dependents of a
+deleted object concurrently. A policy owned by the harness Pod alone is
+removed at the moment the harness Pod is deleted, while the sandbox Pod
+runs on until its grace period ends.
+
+The ordering holds for the default background propagation. A foreground delete of the
+harness Pod (`kubectl delete pod --cascade=foreground`) makes the
+collector remove the policy at once, while the sandbox Pod is still
+terminating. A foreground delete of the sandbox Pod alone leaves the
+policy in place, because the harness Pod still owns it.
+
+The collector also removes the policy when the sandbox Pod disappears
+without the kubelet confirming it (a force delete, or the Pod garbage
+collector after the Node was removed) and the harness Pod is gone too.
+The workload can then outlive the policy, as described in
+[Teardown edge cases](#teardown-edge-cases).
+
+The `k8s-sandbox` executor sets no owner reference on its policy or its
+Sandbox. After a harness death the controller's TTL deletes the Sandbox
+and its Pod, but the policy stays until an operator removes it with
+[the procedure below](#cleaning-up-retained-objects).
 
 ### Cleaning up retained objects
 
@@ -2177,7 +2220,7 @@ executors:
 
 | Executor | Permissions checked |
 |---|---|
-| `k8s` | `pods`: `create`, `get`, `delete`; `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
+| `k8s` | `pods`: `create`, `get`, `delete`; `pods/exec`: `create`; `networkpolicies`: `create`, `delete`, `patch` |
 | `k8s-sandbox` | `sandboxes.agents.x-k8s.io`: `create`, `get`, `delete`; `pods`: `get` (teardown reads the controller-created Pod until it is gone); `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
 
 Every denied permission is listed in one failure, with the API server's
