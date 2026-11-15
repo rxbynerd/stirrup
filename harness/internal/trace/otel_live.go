@@ -223,10 +223,10 @@ func (h *otelChatSpan) End(end ChatSpanEnd) {
 		systemInstructions := ""
 		if content != nil {
 			e.retainRunContentLocked(h.runID, content)
-			// A sub-agent's system prompt differs from the run's and is
-			// not recorded, so only top-level requests carry one.
 			if h.runID == "" {
 				systemInstructions = e.systemInstructionsJSON
+			} else {
+				systemInstructions = e.subRunSystemInstructions[h.runID]
 			}
 		}
 		e.mu.Unlock()
@@ -391,6 +391,7 @@ func (h *otelAgentSpan) End(end AgentSpanEnd) {
 		delete(e.open, liveHandle(h))
 		content := e.runContent[h.runID]
 		delete(e.runContent, h.runID)
+		delete(e.subRunSystemInstructions, h.runID)
 		e.mu.Unlock()
 
 		attrs := []attribute.KeyValue{
