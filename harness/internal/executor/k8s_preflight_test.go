@@ -131,7 +131,7 @@ func TestProbeK8sAccess_ReviewsEveryRequiredVerbInTheNamespace(t *testing.T) {
 	}{
 		{"k8s", []string{
 			"create pods", "get pods", "delete pods", "create pods/exec",
-			"create networkpolicies.networking.k8s.io", "delete networkpolicies.networking.k8s.io",
+			"create networkpolicies.networking.k8s.io", "delete networkpolicies.networking.k8s.io", "patch networkpolicies.networking.k8s.io",
 		}},
 		{"k8s-sandbox", []string{
 			"create sandboxes.agents.x-k8s.io", "get sandboxes.agents.x-k8s.io", "delete sandboxes.agents.x-k8s.io",

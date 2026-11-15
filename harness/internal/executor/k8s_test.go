@@ -1123,6 +1123,68 @@ func TestK8sExecutor_SandboxGarbageCollectedWithHarnessPod(t *testing.T) {
 	}
 }
 
+// TestK8sExecutor_EgressPolicyGarbageCollectedAfterSandboxWithHarnessPod
+// deletes the Pod named as the harness without a teardown, and verifies the
+// cluster garbage-collects the egress policy, and never while the sandbox Pod
+// still exists. A bare Pod stands in for the harness pod.
+func TestK8sExecutor_EgressPolicyGarbageCollectedAfterSandboxWithHarnessPod(t *testing.T) {
+	for _, mode := range []string{"none", "allowlist"} {
+		t.Run(mode, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			cfg := testK8sEnv(t)
+			clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
+			must.NoError(err, "build verification clientset")
+
+			ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout+2*time.Minute)
+			defer cancel()
+
+			owner := createStandInOwnerPod(t, ctx, clientset, cfg.namespace, cfg.image)
+			sandbox, err := NewK8sExecutor(ctx, K8sExecutorConfig{
+				Image:          cfg.image,
+				Namespace:      cfg.namespace,
+				Kubeconfig:     cfg.kubeconfig,
+				Runtime:        cfg.runtimeClass,
+				Network:        &types.NetworkConfig{Mode: mode},
+				EgressProxyURL: cfg.proxyURL,
+				Lifecycle:      Lifecycle{RunID: "policy-gc-" + mode},
+				HarnessPod:     &HarnessPod{Namespace: cfg.namespace, Name: owner.Name, UID: string(owner.UID)},
+			})
+			must.NoError(err, "NewK8sExecutor")
+			t.Cleanup(func() { _ = sandbox.Close() })
+
+			pods := clientset.CoreV1().Pods(cfg.namespace)
+			policies := clientset.NetworkingV1().NetworkPolicies(cfg.namespace)
+			policy, err := policies.Get(ctx, sandbox.networkPolicyName, metav1.GetOptions{})
+			must.NoError(err, "read the egress policy")
+			must.Len(policy.OwnerReferences, 2, "owner references on the installed policy")
+			check.Equal(owner.UID, policy.OwnerReferences[0].UID)
+			check.Equal(sandbox.podUID, policy.OwnerReferences[1].UID)
+
+			must.NoError(pods.Delete(ctx, owner.Name, metav1.DeleteOptions{GracePeriodSeconds: ptr.To(int64(0))}), "delete stand-in harness pod")
+
+			var violations []string
+			deadline := time.Now().Add(90 * time.Second)
+			for {
+				_, policyErr := policies.Get(ctx, sandbox.networkPolicyName, metav1.GetOptions{})
+				pod, podErr := pods.Get(ctx, sandbox.podName, metav1.GetOptions{})
+				podPresent := podErr == nil && pod.UID == sandbox.podUID
+				if apierrors.IsNotFound(policyErr) && podPresent {
+					violations = append(violations, fmt.Sprintf("policy absent while pod present (deletionTimestamp=%v)", pod.DeletionTimestamp))
+				}
+				if apierrors.IsNotFound(policyErr) && !podPresent {
+					break
+				}
+				if time.Now().After(deadline) {
+					must.FailNowf("egress policy outlived its owners", "policy %s still present 90s after the harness pod was deleted (policy err: %v, pod err: %v)", sandbox.networkPolicyName, policyErr, podErr)
+				}
+				time.Sleep(50 * time.Millisecond)
+			}
+			check.Empty(violations, "egress policy was garbage-collected while the sandbox pod still existed")
+		})
+	}
+}
+
 // standInOwnerNodeSelector matches no node, so the stand-in owner Pod stays
 // Pending and never makes an autoscaler provision a node.
 var standInOwnerNodeSelector = map[string]string{"stirrup.dev/stand-in-owner": "never-scheduled"}

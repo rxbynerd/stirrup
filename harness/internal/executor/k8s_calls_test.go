@@ -86,7 +86,9 @@ func TestK8sAccessProbe_CoversEveryCallTheK8sExecutorMakes(t *testing.T) {
 		admitPods(cs, nil)
 		lingerOnDelete(t, cs, 3)
 
-		exec, err := newFakeK8sExecutor(context.Background(), cs, constructorCfg("gvisor"))
+		cfg := constructorCfg("gvisor")
+		cfg.HarnessPod = testHarnessPod
+		exec, err := newFakeK8sExecutor(context.Background(), cs, cfg)
 		must.NoError(err)
 		must.NoError(exec.Close())
 		recorded = append(recorded, cs.Actions())

@@ -247,6 +247,7 @@ func TestPreflight_K8sExecutors_ReadOnly(t *testing.T) {
 			k8sTestNamespace + " delete networkpolicies.networking.k8s.io",
 			k8sTestNamespace + " delete pods",
 			k8sTestNamespace + " get pods",
+			k8sTestNamespace + " patch networkpolicies.networking.k8s.io",
 		}},
 		{"k8s-sandbox", []string{
 			k8sTestNamespace + " create networkpolicies.networking.k8s.io",

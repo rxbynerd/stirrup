@@ -258,6 +258,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 		return nil, withTeardownErr(classifyPodCreateError(profile, err), teardown.reconcileFailedCreate(pod.Labels, err))
 	}
 	teardown.podUID = created.UID
+	ownEgressPolicy(ctx, clientset, egressPolicyOwners(cfg.HarnessPod, cfg.Namespace, podName, created.UID), cfg.Namespace, podName, policy.Name, cfg.Lifecycle.RunID, logger)
 
 	admission := newPodAdmission(pod, created, profile)
 	if err := admission.checkCreate(); err != nil {
