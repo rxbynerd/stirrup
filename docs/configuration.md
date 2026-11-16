@@ -2261,8 +2261,8 @@ be unbounded:
 | `hooks[].command` | 16 KB |
 | `hooks[].timeoutSeconds` | 1800 s (30 min) per hook |
 | sum of `hooks.postRun[].timeoutSeconds` | 1800 s (30 min) |
-| `executor.resources.*` | not negative; `cpus` finite |
-| `executor.resources.scratchMb` | unset means 1024 MiB; when set, at most `memoryMb` on `container` and at most `diskMb` on `k8s` and `k8s-sandbox` (each only when that limit is set). See [Sandbox identity and scratch](security.md#sandbox-identity-and-scratch) for which limit enforces it on each executor |
+| `executor.resources.*` | not negative; `cpus` finite; `memoryMb`, `diskMb` and `scratchMb` at most 1048576 (1 TiB) |
+| `executor.resources.scratchMb` | counted against `memoryMb` on `container` and against `diskMb` on `k8s` and `k8s-sandbox`. When set, it must not exceed that limit; unset, it is 1024 MiB or that limit, whichever is smaller (an unset limit imposes nothing either way). See [Sandbox identity and scratch](security.md#sandbox-identity-and-scratch) for which limit enforces it on each executor |
 
 Read-only modes additionally require the tool list to be set.
 

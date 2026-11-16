@@ -883,7 +883,7 @@ only, so the `k8s` values are valid but not offered by completion.
 | `memoryMb` | `requests.memory` **and** `limits.memory` (Mi). |
 | `diskMb` | `requests.ephemeral-storage` **and** `limits.ephemeral-storage` (Mi). The API server defaults an absent request to the limit ([Kubernetes: requests and limits](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#requests-and-limits); *measured* on the 2026-11-13 EKS run, a Pod submitted with only the limit read back with an equal request), so the admitted Pod carries the request either way, and the scheduler counts it against a node's allocatable ephemeral storage. |
 | `pids` | **Logged and ignored.** Per-Pod PID limits are a kubelet setting (`--pod-max-pids`), not a container resource field. |
-| `scratchMb` | `sizeLimit` (Mi) of the `/scratch` `emptyDir`; unset means 1024. Not a container resource field: the kubelet enforces it by evicting the Pod, and the usage also counts against `diskMb`, which it must not exceed (see [Sandbox identity and scratch](../security.md#sandbox-identity-and-scratch)). |
+| `scratchMb` | `sizeLimit` (Mi) of the `/scratch` `emptyDir`; unset means 1024, or `diskMb` when that is set and smaller. Not a container resource field: the kubelet enforces it by evicting the Pod, and the usage also counts against `diskMb`, which it must not exceed (see [Sandbox identity and scratch](../security.md#sandbox-identity-and-scratch)). |
 
 A nil or all-zero `resources` block leaves the Pod's requirements empty
 so it inherits namespace defaults. `nitro-isolated` is the exception:
