@@ -143,7 +143,7 @@ func ProbeK8sAccess(ctx context.Context, cfg K8sProbeConfig) (string, error) {
 	if err != nil {
 		return "", &K8sProbeError{Kinds: []K8sProbeKind{K8sProbeClientBuild}, msg: fmt.Sprintf("build kube clientset: %v", err), err: err}
 	}
-	if err := awaitCredentialPlugin(ctx, restCfg, kube); err != nil {
+	if err := awaitCredentialPlugin(ctx, restCfg); err != nil {
 		return "", &K8sProbeError{Kinds: []K8sProbeKind{K8sProbeCredentialPlugin}, msg: err.Error(), err: err}
 	}
 	return probeK8sAccess(ctx, kube, cfg)
