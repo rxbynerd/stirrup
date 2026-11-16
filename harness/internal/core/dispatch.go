@@ -218,12 +218,9 @@ func (l *AgenticLoop) planAndDispatch(
 				defer func() {
 					if r := recover(); r != nil {
 						// Convert panic into a structured tool failure so
-						// other in-flight goroutines are unaffected. The
-						// recovered value is scrubbed before it reaches the
-						// tool result (model context + transport emit) so a
-						// panic capturing secret-shaped fragments can't leak.
+						// other in-flight goroutines are unaffected.
 						msg := fmt.Sprintf("async tool %s panic: %v", plan[idx].call.Name,
-							security.Scrub(fmt.Sprintf("%v", r)))
+							l.scrubToolError(fmt.Sprintf("%v", r)))
 						plan[idx].output = msg
 						plan[idx].success = false
 						plan[idx].failureCategory = observability.ToolFailureAsyncPanic
@@ -264,6 +261,9 @@ func (l *AgenticLoop) planAndDispatch(
 				p.output = emptyToolErrorText
 			}
 			p.output = l.scrubToolError(p.output)
+			if payload := string(p.structured.payload); payload != "" && l.scrubToolError(payload) != payload {
+				p.structured = structuredOutput{}
+			}
 		}
 		// Sync and async results converge here, so this is the single
 		// point that bounds what reaches history, trace and transport. A
@@ -370,7 +370,9 @@ func (l *AgenticLoop) planAndDispatch(
 }
 
 // scrubToolError returns a failed call's result text with the log
-// scrubber applied. Error text can quote a credential from a config file,
+// scrubber applied, raising a security event per pattern it matched. A
+// failed result whose structured payload holds a match loses the payload
+// rather than carrying a rewritten one. Error text can quote a credential from a config file,
 // an API response or the environment, and the provider adapters send a
 // tool result as they receive it.
 func (l *AgenticLoop) scrubToolError(text string) string {

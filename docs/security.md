@@ -148,14 +148,21 @@ event. This covers a handler's returned error, an error result a tool
 reports itself, permission-check and async-dispatch failures, and the
 harness's own rejection messages, for every tool. Error text can quote
 a credential from a config file, an API response or the environment,
-and the provider adapters send a tool result as they receive it. Each
-redaction raises the `secret_redacted_in_output` security event with
-the location `core.tool_error`. The scrub runs where sync and async
-results converge, before the result budget cut, so a cut cannot split
-a secret; `TestToolErrors_AreScrubbed` pins that every tool result is
-built after it. A successful result is not rewritten: it reaches the
-model as the tool returned it, or fenced as described
-[below](#scrubbed-content-is-fenced).
+and the provider adapters send a tool result as they receive it. A
+failed result whose structured payload holds a match has the payload
+dropped, so the model reads the scrubbed text alone. Each redaction
+raises the `secret_redacted_in_output` security event with the
+location `core.tool_error`. The scrub runs where sync and async results
+converge, before the result budget cut, so a cut cannot split a secret;
+`TestToolErrors_AreScrubbed` pins that every tool result is built after
+it. For the tools that bound their own output (`run_command`,
+`read_command_output`, `tool_search`) no cut follows, and a match
+shorter than `[REDACTED]` can lengthen the text by a few bytes. A
+successful result is not rewritten: it reaches the model as the tool
+returned it, or fenced as described
+[below](#scrubbed-content-is-fenced). Because the Rule-of-Two
+classifier reads what the model reads, a credential quoted only in a
+failed result does not trip its sensitive-data leg.
 
 ### Control-stream scrubbing
 

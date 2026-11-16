@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -121,4 +122,98 @@ func TestPlanAndDispatch_LeavesSuccessfulToolTextUnscrubbed(t *testing.T) {
 
 	must.False(result.IsError, "the call must succeed")
 	must.Equal(text, result.Content, "a successful result reaches the model as the tool returned it")
+}
+
+func TestPlanAndDispatch_DropsFailedStructuredPayloadHoldingASecret(t *testing.T) {
+	must := require.New(t)
+	payload, err := json.Marshal(map[string]string{"detail": "token " + toolErrorSecret})
+	must.NoError(err)
+	tr := newAsyncTestTransport()
+	loop := buildAsyncTestLoop(t, tr, secretErrorTool(func(t *tool.Tool) {
+		t.StructuredHandler = func(context.Context, json.RawMessage) (tool.StructuredResult, error) {
+			return tool.StructuredResult{Text: "lookup failed", Structured: payload, Kind: "command_result", IsError: true}, nil
+		}
+	}))
+	var secBuf bytes.Buffer
+	loop.Security = security.NewSecurityLogger(&secBuf, "run-1")
+
+	result, record := dispatchOne(t, loop, &types.RunConfig{Mode: "execution"}, "leaky")
+
+	must.True(result.IsError, "the call must fail")
+	must.Equal("lookup failed", result.Content, "text without a match must pass unchanged")
+	must.Nil(result.Structured, "a payload holding a match must not reach the model")
+	must.Empty(result.Kind, "a dropped payload must take its kind with it")
+	must.Nil(record.Structured, "the turn record must drop the payload too")
+	must.Contains(secBuf.String(), `"location":"core.tool_error"`, "the redaction must raise a security event")
+}
+
+func TestPlanAndDispatch_KeepsFailedStructuredPayloadWithoutASecret(t *testing.T) {
+	must := require.New(t)
+	payload := json.RawMessage(`{"exit_code":null,"detail":"lookup failed"}`)
+	tr := newAsyncTestTransport()
+	loop := buildAsyncTestLoop(t, tr, secretErrorTool(func(t *tool.Tool) {
+		t.StructuredHandler = func(context.Context, json.RawMessage) (tool.StructuredResult, error) {
+			return tool.StructuredResult{Text: "failed", Structured: payload, Kind: "command_result", IsError: true}, nil
+		}
+	}))
+
+	result, _ := dispatchOne(t, loop, &types.RunConfig{Mode: "execution"}, "leaky")
+
+	must.True(result.IsError, "the call must fail")
+	must.JSONEq(string(payload), string(result.Structured), "a clean payload must reach the model")
+	must.Equal("command_result", result.Kind)
+}
+
+func TestPlanAndDispatch_AsyncFailuresRaiseRedactionEvents(t *testing.T) {
+	t.Run("upstream error", func(t *testing.T) {
+		must := require.New(t)
+		tr := newAsyncTestTransport()
+		loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
+		var secBuf bytes.Buffer
+		loop.Security = security.NewSecurityLogger(&secBuf, "run-1")
+		go func() {
+			deadline := time.Now().Add(2 * time.Second)
+			for time.Now().Before(deadline) {
+				if id := tr.lastRequestID("tool_result_request"); id != "" {
+					yes := true
+					tr.FireControl(types.ControlEvent{
+						Type:      "tool_result_response",
+						RequestID: id,
+						Content:   "auth failed for " + toolErrorSecret,
+						IsError:   &yes,
+					})
+					return
+				}
+				time.Sleep(time.Millisecond)
+			}
+		}()
+
+		result, _ := dispatchOne(t, loop, &types.RunConfig{Mode: "execution"}, "async_echo")
+
+		must.True(result.IsError, "the call must fail")
+		must.NotContains(result.Content, toolErrorSecret, "the model must not see the credential")
+		must.Contains(secBuf.String(), `"location":"core.tool_error"`, "the redaction must raise a security event")
+	})
+
+	t.Run("panic", func(t *testing.T) {
+		must := require.New(t)
+		tr := newAsyncTestTransport()
+		loop := buildAsyncTestLoop(t, tr, &tool.Tool{
+			Name:        "async_panic",
+			Description: "test async tool that panics",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+			AsyncHandler: func(context.Context, json.RawMessage) (tool.AsyncDispatch, error) {
+				panic("lost " + toolErrorSecret)
+			},
+		})
+		var secBuf bytes.Buffer
+		loop.Security = security.NewSecurityLogger(&secBuf, "run-1")
+
+		result, _ := dispatchOne(t, loop, &types.RunConfig{Mode: "execution"}, "async_panic")
+
+		must.True(result.IsError, "the call must fail")
+		must.Contains(result.Content, "panic", "the result must say the tool panicked")
+		must.NotContains(result.Content, toolErrorSecret, "the model must not see the credential")
+		must.Contains(secBuf.String(), `"location":"core.tool_error"`, "the redaction must raise a security event")
+	})
 }
