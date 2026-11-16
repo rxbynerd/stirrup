@@ -22,19 +22,22 @@ var ErrNotOnWire = errors.New("field has no RunConfig wire field")
 
 // ToProto translates rc into the RunConfig message a control plane sends
 // in a task_assignment. It does not validate rc; call
-// types.ValidateRunConfig first. It returns an error naming every field
-// it cannot carry: an integer outside the wire field's range, a schema
-// that is not a JSON object, or a field with no wire counterpart
-// (ErrNotOnWire). Transport is accepted only as the zero value or
-// {type: "grpc"}, the transport FromProto reports.
+// types.ValidateRunConfig first. Transport must be exactly
+// {type: "grpc"}, the transport the harness validates a task_assignment
+// with, so a config validated on the control plane is the config the
+// harness validates. It returns an error, one line per field, for every
+// field it cannot carry: an unset or other transport, a field with no
+// wire counterpart (wrapping ErrNotOnWire), an integer outside the wire
+// field's range, or a schema that is not a JSON object. A nil rc is an
+// error.
 func ToProto(rc *types.RunConfig) (*pb.RunConfig, error) {
 	if rc == nil {
 		return nil, errors.New("runconfig: nil RunConfig")
 	}
 	e := &encoder{}
 	pc := e.runConfig(rc)
-	if err := errors.Join(e.errs...); err != nil {
-		return nil, fmt.Errorf("runconfig: %w", err)
+	if len(e.errs) > 0 {
+		return nil, errors.Join(e.errs...)
 	}
 	return pc, nil
 }
@@ -46,11 +49,24 @@ type encoder struct {
 }
 
 func (e *encoder) fail(path, format string, args ...any) {
-	e.errs = append(e.errs, fmt.Errorf("%s: "+format, append([]any{path}, args...)...))
+	e.errs = append(e.errs, fmt.Errorf("runconfig: %s: "+format, append([]any{path}, args...)...))
 }
 
 func (e *encoder) notOnWire(path string) {
-	e.errs = append(e.errs, fmt.Errorf("%s: %w", path, ErrNotOnWire))
+	e.fail(path, "%w", ErrNotOnWire)
+}
+
+func (e *encoder) transport(t types.TransportConfig) {
+	switch t.Type {
+	case "grpc":
+	case "":
+		e.fail("transport.type", "unset; set it to %q, the transport the harness validates a task_assignment with", "grpc")
+	default:
+		e.fail("transport.type", "%q: %w; a task_assignment always runs over %q", t.Type, ErrNotOnWire, "grpc")
+	}
+	if t.Address != "" {
+		e.notOnWire("transport.address")
+	}
 }
 
 func (e *encoder) int32(path string, v int) int32 {
@@ -96,9 +112,7 @@ func clonePtr[T any](v *T) *T {
 }
 
 func (e *encoder) runConfig(rc *types.RunConfig) *pb.RunConfig {
-	if rc.Transport.Address != "" || (rc.Transport.Type != "" && rc.Transport.Type != "grpc") {
-		e.notOnWire("transport")
-	}
+	e.transport(rc.Transport)
 	pc := &pb.RunConfig{
 		RunId:                rc.RunID,
 		Mode:                 rc.Mode,

@@ -10,7 +10,7 @@ stirrup/
   buf.yaml                   # Buf v2 config for proto linting/breaking
   buf.gen.yaml               # Buf code generation config (protobuf + gRPC)
   proto/harness/v1/          # Protobuf definitions for gRPC transport
-  gen/                       # Generated Go code from proto (separate module)
+  gen/                       # Go module: generated proto code (gen/harness/v1) and the RunConfig translator (gen/runconfig)
   types/                     # Shared type definitions
   harness/                   # The harness binary and components
     cmd/stirrup/             # Unified CLI entrypoint (cobra: harness + job subcommands)

@@ -28,26 +28,27 @@ func TestFromProto_NilMessageIsNil(t *testing.T) {
 func TestToProto_RejectsFieldsWithNoWireField(t *testing.T) {
 	cases := []struct {
 		name string
+		root string
 		path string
 		set  func(*types.RunConfig)
 	}{
-		{"stdio transport", "transport", func(rc *types.RunConfig) { rc.Transport.Type = "stdio" }},
-		{"transport address", "transport", func(rc *types.RunConfig) {
-			rc.Transport = types.TransportConfig{Type: "grpc", Address: "cp.example.com:443"}
+		{"stdio transport", "transport", "transport.type", func(rc *types.RunConfig) { rc.Transport.Type = "stdio" }},
+		{"transport address", "transport", "transport.address", func(rc *types.RunConfig) {
+			rc.Transport.Address = "cp.example.com:443"
 		}},
-		{"trace emitter credential", "traceEmitter.credential", func(rc *types.RunConfig) {
+		{"trace emitter credential", "traceEmitter.credential", "traceEmitter.credential", func(rc *types.RunConfig) {
 			rc.TraceEmitter.Credential = &types.CredentialConfig{Type: "gcp-workload-identity"}
 		}},
-		{"trace archive credential", "traceEmitter.archive.credential", func(rc *types.RunConfig) {
+		{"trace archive credential", "traceEmitter.archive.credential", "traceEmitter.archive.credential", func(rc *types.RunConfig) {
 			rc.TraceEmitter.Archive = &types.TraceArchiveConfig{Type: "gcs", Credential: &types.CredentialConfig{Type: "gcp-workload-identity"}}
 		}},
 	}
 	covered := map[string]bool{}
 	for _, tc := range cases {
-		covered[tc.path] = true
+		covered[tc.root] = true
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			rc := &types.RunConfig{RunID: "r"}
+			rc := grpcRunConfig()
 			tc.set(rc)
 			pc, err := ToProto(rc)
 			must.ErrorIs(err, ErrNotOnWire)
@@ -60,25 +61,33 @@ func TestToProto_RejectsFieldsWithNoWireField(t *testing.T) {
 	}
 }
 
-func TestToProto_AcceptsTheTransportFromProtoReports(t *testing.T) {
-	cases := []types.TransportConfig{{}, {Type: "grpc"}}
-	for _, transport := range cases {
-		t.Run("type="+transport.Type, func(t *testing.T) {
-			must := require.New(t)
-			_, err := ToProto(&types.RunConfig{RunID: "r", Transport: transport})
-			must.NoError(err)
-		})
-	}
+// grpcRunConfig returns an otherwise empty RunConfig with the transport
+// ToProto requires.
+func grpcRunConfig() *types.RunConfig {
+	return &types.RunConfig{Transport: types.TransportConfig{Type: "grpc"}}
+}
+
+func TestToProto_RequiresTheGRPCTransport(t *testing.T) {
+	t.Run("grpc is accepted", func(t *testing.T) {
+		must := require.New(t)
+		_, err := ToProto(grpcRunConfig())
+		must.NoError(err)
+	})
+	t.Run("unset is rejected with the value to set", func(t *testing.T) {
+		must := require.New(t)
+		_, err := ToProto(&types.RunConfig{})
+		must.ErrorContains(err, `transport.type: unset; set it to "grpc"`)
+		must.NotErrorIs(err, ErrNotOnWire)
+	})
 }
 
 func TestToProto_RejectsIntegersOutsideTheWireRange(t *testing.T) {
 	must := require.New(t)
 	tooBig := math.MaxInt32 + 1
-	rc := &types.RunConfig{
-		MaxTurns:       tooBig,
-		MaxTokenBudget: &tooBig,
-		Executor:       types.ExecutorConfig{Resources: &types.ResourceLimits{MemoryMB: math.MinInt32 - 1}},
-	}
+	rc := grpcRunConfig()
+	rc.MaxTurns = tooBig
+	rc.MaxTokenBudget = &tooBig
+	rc.Executor.Resources = &types.ResourceLimits{MemoryMB: math.MinInt32 - 1}
 	_, err := ToProto(rc)
 	must.Error(err)
 	for _, path := range []string{"maxTurns:", "maxTokenBudget:", "executor.resources.memoryMb:"} {
@@ -101,7 +110,7 @@ func TestToProto_RejectsSchemasThatAreNotJSONObjects(t *testing.T) {
 		for _, raw := range []string{`null`, `[]`, `"schema"`, `{`} {
 			t.Run(tc.name+" "+raw, func(t *testing.T) {
 				must := require.New(t)
-				rc := &types.RunConfig{}
+				rc := grpcRunConfig()
 				tc.set(rc, json.RawMessage(raw))
 				_, err := ToProto(rc)
 				must.ErrorContains(err, tc.path)
@@ -118,8 +127,8 @@ func TestToProto_ReportsEveryErrorAtOnce(t *testing.T) {
 		OutputSchema: json.RawMessage(`[]`),
 	}
 	_, err := ToProto(rc)
-	for _, path := range []string{"transport:", "maxTurns:", "outputSchema:"} {
-		must.ErrorContains(err, path)
+	for _, line := range []string{"runconfig: transport.type:", "runconfig: maxTurns:", "runconfig: outputSchema:"} {
+		must.ErrorContains(err, line)
 	}
 }
 
@@ -129,13 +138,14 @@ func TestToProto_ReportsEveryErrorAtOnce(t *testing.T) {
 func TestToProto_PreservesBlockPresence(t *testing.T) {
 	t.Run("nil blocks are absent", func(t *testing.T) {
 		must := require.New(t)
-		pc, err := ToProto(&types.RunConfig{})
+		pc, err := ToProto(grpcRunConfig())
 		must.NoError(err)
 		must.True(proto.Equal(&pb.RunConfig{}, pc), "an empty RunConfig translates to an empty message, got %v", pc)
 	})
 	t.Run("explicit empty blocks are present", func(t *testing.T) {
 		must := require.New(t)
 		rc := &types.RunConfig{
+			Transport:            types.TransportConfig{Type: "grpc"},
 			RuleOfTwo:            &types.RuleOfTwoConfig{},
 			Hooks:                &types.HooksConfig{},
 			ToolDispatch:         &types.ToolDispatchConfig{},

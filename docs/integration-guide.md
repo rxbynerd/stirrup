@@ -394,9 +394,11 @@ Azure/Anthropic/OpenAI WIF) are configured via
 
 ### Sending a RunConfig from Go
 
-`github.com/rxbynerd/stirrup/gen/runconfig` is the translator the
-harness itself uses, so a Go control plane does not maintain its own
-field-by-field mapping:
+`github.com/rxbynerd/stirrup/gen/runconfig` translates between
+`types.RunConfig` and the wire message, so a Go control plane does not
+maintain its own field-by-field mapping. The harness decodes every
+`task_assignment` with its `FromProto`, and tests pin `ToProto` as the
+exact inverse:
 
 - `runconfig.ToProto(*types.RunConfig) (*harnessv1.RunConfig, error)`
   builds the `task_assignment` message. It returns an error, rather
@@ -404,7 +406,8 @@ field-by-field mapping:
   in [Features not on the wire](#features-not-on-the-wire) (the error
   wraps `runconfig.ErrNotOnWire`), an integer outside its `int32` wire
   field, or an output or tool input schema that is not a JSON object.
-  `transport` is accepted when unset or `{"type": "grpc"}`.
+  `transport` must be exactly `{"type": "grpc"}`; an unset transport
+  is an error.
 - `runconfig.FromProto(*harnessv1.RunConfig) *types.RunConfig` is the
   harness's own decoding of a `task_assignment`. It always sets
   `transport.type` to `grpc`.
@@ -412,10 +415,14 @@ field-by-field mapping:
   the fields a message sets, for the check in
   [Negotiating RunConfig fields](#negotiating-runconfig-fields).
 
-To validate as the harness will, set `transport.type` to `grpc` (the
-value the harness assigns, which `executor.sandboxIdentity` and
-`ruleOfTwo.runtime.onDetect: "ask-upstream"` require), call
-`types.ValidateRunConfig`, then `runconfig.ToProto`:
+To validate as the harness will, set `transport.type` to `grpc`, call
+`types.ValidateRunConfig`, then `runconfig.ToProto`. The harness
+validates a `task_assignment` with the `grpc` transport, and several
+rules depend on it: `executor.sandboxIdentity` and
+`ruleOfTwo.runtime.onDetect: "ask-upstream"` require it, and
+`provider.batch.harnessSidePolling` is rejected under it. `ToProto`
+refuses an unset transport so that the config validated on the control
+plane is the config the harness validates:
 
 ```go
 rc.Transport = types.TransportConfig{Type: "grpc"}
