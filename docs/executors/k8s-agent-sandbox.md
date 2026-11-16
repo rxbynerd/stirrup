@@ -92,31 +92,20 @@ The provisioning sequence
    install the policy is fatal.
 3. **Create the Sandbox CR and wait for readiness.** The Sandbox carries
    the hardened Pod spec inside `spec.podTemplate.spec`. The executor
-   polls the Sandbox's status until a `Ready` condition reports `True`
-   (the controller sets it only once the backing Pod is Ready). The
-   wait shares the `k8s` executor's 5-minute ceiling (see
-   [Readiness](k8s.md#readiness)), still capped by the caller's context.
-   It spans the controller's watch and materialise, so transient get
-   errors during the reconcile flurry are retried; only an RBAC denial
-   fails fast. Those two are all it shares with the `k8s` executor's
-   wait: it reads only the Sandbox, so it has none of the Pod fail-fast
-   states, no progress lines, no detailed timeout error and no
-   [admission check](k8s.md#admission-check). A permanently broken
-   image (`InvalidImageName`, an image without `/bin/sh`) leaves the
-   Sandbox not Ready, and the run fails only at the 5-minute ceiling
-   with `sandbox <ns>/<name> not ready: <wait error>`. The backing Pod's
-   labels and RuntimeClass are not compared with what was submitted;
-   they rest on the controller and the GKE admission policy.
-4. **Resolve the backing Pod and bind.** The Pod name is read from the
-   Sandbox status; on the cold-create path it equals the Sandbox name.
-   Command execution and file I/O then ride the shared `pods/exec` core,
-   including its check for a Pod that ends mid-run (see
+   polls the Sandbox and its backing Pod until the Sandbox's `Ready`
+   condition reports `True` and the Pod is `Running` with the `agent`
+   container Ready, applying the `k8s` executor's fail-fast states,
+   progress lines and [admission check](k8s.md#admission-check) to the
+   Pod; see [Readiness and the backing Pod](#readiness-and-the-backing-pod).
+4. **Bind to the backing Pod.** On the cold-create path the backing Pod's
+   name equals the Sandbox name. Command execution and file I/O ride the
+   shared `pods/exec` core, including its check for a Pod that ends
+   mid-run (see
    [Sandbox loss during a run](k8s.md#sandbox-loss-during-a-run)). The
    check reads the backing Pod by name and compares its UID with the one
-   read when the Sandbox became Ready, so a Pod the controller recreates
-   under the same name is reported as lost, because its workspace
-   starts empty. When that read fails, the executor logs a warning and
-   detects a lost Pod by name alone: a replacement is then not reported.
+   the readiness wait observed, so a Pod the controller recreates under
+   the same name is reported as lost, because its workspace starts
+   empty.
 5. **Wait for `exec` and prepare scratch.** The executor runs the `k8s`
    executor's one-minute wait for `exec` to reach the Pod (see
    [Readiness](k8s.md#readiness)), then creates `HOME` and `TMPDIR`
@@ -147,6 +136,57 @@ retained policy, and its 12-hour `shutdownTime` bounds it (see
 [the TTL GC backstop](#the-controller-owned-ttl-gc-backstop)). A later
 failure, such as the readiness wait or a backing Pod whose name differs
 from the Sandbox's, also tears down through `Close`.
+
+### Readiness and the backing Pod
+
+The wait shares the `k8s` executor's [Readiness](k8s.md#readiness)
+rules: the 5-minute ceiling within the caller's context, the one-second
+poll, the start line and the 30-second progress line, and the Pod states
+that fail at once (phase `Failed` or `Succeeded`, a terminated or
+restarted `agent` container, `InvalidImageName`, `ErrImageNeverPull`, a
+Pod being deleted). Each poll reads the Sandbox and then the backing Pod
+by name. These rules differ from the `k8s` executor's:
+
+- A backing Pod that does not exist yet is waited out, because the
+  controller creates it after the Sandbox. One that disappears after
+  being observed fails the wait at once, as does a Sandbox deleted after
+  being observed. Until the Sandbox is first read, a `NotFound` answer
+  for it is retried like any other transient error.
+- A Sandbox whose `agents.x-k8s.io/pod-name` annotation names another
+  Pod fails the wait at once (see [Cold-create only](#cold-create-only)).
+- `Forbidden` or `Unauthorized` on either read fails the wait at once.
+- The progress line and the timeout error lead with the Sandbox's
+  `Ready` condition (status, reason and message, cleaned like other
+  cluster text), then the backing Pod's phase, `PodScheduled` condition
+  and last waiting reason. The log lines carry `namespace` and `sandbox`.
+
+For example (one line in the log, wrapped here; the condition's reason
+and message are the controller's):
+
+```
+sandbox stirrup-sandbox/stirrup-0123456789ab not ready within 5m0s: sandbox Ready
+False (<reason>: <message>); backing pod: phase Pending; PodScheduled True; last
+waiting reason ImagePullBackOff (Back-off pulling image "registry.invalid/sandbox:1"):
+context deadline exceeded
+```
+
+A Sandbox with no `Ready` condition yet reads `sandbox has no Ready
+condition`, and a Pod not yet created reads `backing pod: the pod was
+never observed`.
+
+The [admission check](k8s.md#admission-check) needs a submitted Pod and
+an admitted one. The harness does not submit the backing Pod, so the
+submitted side is the Pod template in the Sandbox's `spec.podTemplate`:
+its name (the Sandbox name), its labels and its spec. The first backing
+Pod observed takes the place of the `Create` response. It must carry a
+UID, the `gvisor` RuntimeClass, and the template's `stirrup.dev/pod` and
+`stirrup-sandbox` labels, and every later observation must keep that UID
+and those values. Labels and annotations the controller adds, such as
+`agents.x-k8s.io/sandbox-name-hash`, are not mismatches. A mismatch
+fails the wait and tears the Sandbox down. The other limits of the
+`k8s` executor's check apply: nothing else in the Pod is compared, the
+check stops once the Pod is Ready, and it runs after the controller has
+created the Pod.
 
 ### Cold-create only
 
@@ -184,11 +224,15 @@ GKE cluster, as admission would reject the unknown shape.
 The shared hardened Pod spec (`buildSandboxPodSpec`) already satisfies
 most of GKE's `secure-sandbox-policy` ValidatingAdmissionPolicy: drop-ALL
 capabilities, `runAsNonRoot`, `automountServiceAccountToken: false`, and
-the no-hostPath/hostNetwork/privileged requirements. Unlike the `k8s`
-executor's Pod, the Sandbox's Pod template does not set
+the no-hostPath/hostNetwork/privileged requirements. Like the `k8s`
+executor's Pod, the Sandbox's Pod template sets
 `enableServiceLinks: false`, so the namespace's Service variables
-(`<SERVICE>_SERVICE_HOST` and `<SERVICE>_SERVICE_PORT`) are present in
-the sandbox environment. On top of that,
+(`<SERVICE>_SERVICE_HOST` and `<SERVICE>_SERVICE_PORT`) are absent from
+the sandbox environment. Whether GKE's Agent Sandbox admission policy
+accepts that field on the template has not been verified live; a
+rejection would show up as described for the grace period in
+[the controller-owned TTL GC backstop](#the-controller-owned-ttl-gc-backstop).
+On top of that,
 [`applyAgentSandboxAdmissionDeltas`](../../harness/internal/executor/agentsandbox.go)
 injects four gVisor-specific fields the policy additionally mandates,
 *before* the spec is embedded in the Sandbox CR:
@@ -272,13 +316,16 @@ Whether GKE's Agent Sandbox admission policy accepts that field has not
 been verified live. If the policy checks the Sandbox itself, a rejection
 fails the Sandbox create at once with the admission message. If it
 checks only the Pod the controller creates, the Sandbox is created but
-never becomes Ready, and every `k8s-sandbox` run fails at the 5-minute
-readiness ceiling with a generic not-ready error. A policy that rewrote
-the field instead would go unnoticed, because this executor has no
-admission check. Nor does it run the
+its Pod never is, and every `k8s-sandbox` run fails at the 5-minute
+readiness ceiling with `backing pod: the pod was never observed` after
+the Sandbox's `Ready` condition, which carries whatever reason the
+controller reports. A policy that rewrote the field instead would go
+unnoticed, because the
+[admission check](#readiness-and-the-backing-pod) does not compare it.
+This executor does not run the
 [gVisor runtime diagnostics](k8s.md#gvisor-runtime-diagnostics) of the
-`k8s` executor, so a Sandbox whose `gvisor` RuntimeClass does not run
-gVisor also goes unnoticed.
+`k8s` executor either, so a Sandbox whose `gvisor` RuntimeClass does not
+run gVisor goes unnoticed.
 
 When the Sandbox delete fails, the Sandbox or its backing Pod is not
 confirmed gone within the bound, or the policy delete fails, `Close`
@@ -323,12 +370,13 @@ grants the `sandboxes` verbs and reduces `pods` to `get`:
 | `networking.k8s.io/networkpolicies` | `create, delete, patch` | `create, delete` |
 | `networking.k8s.io/networkpolicies` named `stirrup-sandbox-default-deny-egress` | `get` | `get` |
 
-On the `k8s-sandbox` path `pods` `get` is used only by teardown, to
-confirm the backing Pod is gone before the policy is removed;
-`sandboxes` `get` serves the readiness poll, the teardown wait and the
-lookup after a failed create. A Role missing either `get` makes
-teardown retain the policy, including after a create the API server
-rejected outright.
+On the `k8s-sandbox` path `pods` `get` serves the readiness wait, which
+reads the backing Pod on every poll, and teardown, which confirms the
+backing Pod is gone before the policy is removed; `sandboxes` `get`
+serves the readiness poll, the teardown wait and the lookup after a
+failed create. A Role missing either `get` fails construction at the
+readiness wait, and makes teardown retain the policy, including after a
+create the API server rejected outright.
 
 The reference Role, ServiceAccount, and RoleBinding are in
 [`examples/k8s/agent-sandbox/rbac-agent-sandbox.yaml`](../../examples/k8s/agent-sandbox/rbac-agent-sandbox.yaml).

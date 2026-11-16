@@ -149,10 +149,10 @@ The pieces and their lifecycle:
   the `container` executor also uses), and `seccompProfile.type:
   RuntimeDefault`. `automountServiceAccountToken` is **always** `false`,
   so the sandbox itself has no Kubernetes API access regardless of the
-  ServiceAccount named. For the `k8s` executor, `enableServiceLinks` is
-  `false`, so the namespace's Services are not listed in the sandbox
-  environment as `<SERVICE>_SERVICE_HOST` and `_PORT` variables; the
-  [`k8s-sandbox`](k8s-agent-sandbox.md) Pod does not set it. `restartPolicy` is
+  ServiceAccount named. `enableServiceLinks` is `false`, so the
+  namespace's Services are not listed in the sandbox environment as
+  `<SERVICE>_SERVICE_HOST` and `_PORT` variables; the
+  [`k8s-sandbox`](k8s-agent-sandbox.md) Pod template sets it too. `restartPolicy` is
   `Never` (one-shot), the container is named `agent`, and the
   entrypoint is `/bin/sh -c "sleep
   infinity"` — all real work runs through subsequent `exec` calls, not
@@ -238,6 +238,9 @@ reaches one of these states:
 - phase `Failed` (for example `DeadlineExceeded` or `Evicted`);
 - phase `Succeeded` before the Pod became Ready;
 - the `agent` container terminated;
+- the `agent` container restarted (a non-zero restart count, for example
+  in `CrashLoopBackOff`); with `restartPolicy: Never` this happens only
+  when something other than the executor changed the policy;
 - the `agent` container waiting with reason `InvalidImageName` (the
   image reference cannot be parsed) or `ErrImageNeverPull`
   (`imagePullPolicy: Never` and the image is absent from the node the Pod
@@ -316,12 +319,12 @@ After the wait, and after the diagnostics where a runtime has them, the executor
 creates `HOME` and `TMPDIR` under `/scratch`; a failure there fails construction with
 `pod <ns>/<pod>: prepare sandbox scratch: ...` and tears the Pod down.
 
-The [`k8s-sandbox`](k8s-agent-sandbox.md) executor's readiness wait
-shares only the 5-minute ceiling and the immediate failure on
-`Forbidden` or `Unauthorized`. It waits on the Sandbox's `Ready`
-condition and has none of the Pod states above, no progress lines and
-no admission check, so a permanently broken image there waits the full
-five minutes. It then runs the same `exec` wait (its errors begin
+The [`k8s-sandbox`](k8s-agent-sandbox.md) executor runs the same wait
+on the controller-created Pod, with the same states, progress lines and
+admission check, and additionally requires the Sandbox's `Ready`
+condition; its
+[readiness differences](k8s-agent-sandbox.md#readiness-and-the-backing-pod)
+are described there. It then runs the same `exec` wait (its errors begin
 `sandbox <ns>/<name>` rather than `pod <ns>/<pod>`, and its log lines
 are the ones quoted above) and the same scratch setup.
 
@@ -2424,7 +2427,7 @@ executors:
 | Executor | Permissions checked |
 |---|---|
 | `k8s` | `pods`: `create`, `get`, `delete`; `pods/exec`: `create`; `networkpolicies`: `create`, `delete`, `patch` |
-| `k8s-sandbox` | `sandboxes.agents.x-k8s.io`: `create`, `get`, `delete`; `pods`: `get` (teardown reads the controller-created Pod until it is gone); `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
+| `k8s-sandbox` | `sandboxes.agents.x-k8s.io`: `create`, `get`, `delete`; `pods`: `get` (the readiness wait reads the controller-created Pod, and teardown reads it until it is gone); `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
 
 Every denied permission is listed in one failure, with the API server's
 reason in parentheses when it gives one. Holding Pod-create permission does
