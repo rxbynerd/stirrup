@@ -428,66 +428,120 @@ tag scheme:
 
 | Tag | Published by | Moves? |
 |---|---|---|
-| `vX.Y.Z` (and pre-releases such as `v0.1.0-rc.1`) | `release.yml` | Never. A version tag is pushed once and never rebuilt. |
+| `vX.Y.Z` (and pre-releases such as `v0.1.0-rc.1`) | `release.yml` | Never. A version tag is applied once, to the signed digest, and never rebuilt. |
 | `sha-<7 hex>` | `ci.yml`, first build of a `main` commit | Never. Later builds of the same commit leave it alone. |
-| `vX.Y` | `release.yml`, non-pre-release tags | Yes, to the newest patch release. |
-| `main`, `latest` | `ci.yml` on every merge to `main` and the weekly rebuild; `release.yml` also sets `latest` | Yes. |
+| `vX.Y` | `release.yml`, non-pre-release tags | Yes, to the highest `vX.Y.*` release. Releasing an older patch does not move it back. |
+| `main`, `latest` | `ci.yml` on every merge to `main` and the weekly rebuild; `release.yml` also sets `latest` when the release is the highest version | Yes. |
 
 Deployments pin by digest (`ghcr.io/rxbynerd/stirrup@sha256:…`), taking
 the digest from the release's `IMAGE_DIGESTS` asset or from a verified
 attestation (see [Verify what you run](#verify-what-you-run)). The
 scheduled `image-pins.yml` workflow fails when the digest behind any
-version tag or `sha-` tag changes. Release images are also mirrored to
-Google Artifact Registry under the same digest; see
-[`container-publishing.md`](container-publishing.md).
+version tag or `sha-` tag on GHCR changes. Release images are also
+mirrored to Google Artifact Registry under the same digest; see
+[`container-publishing.md`](container-publishing.md). The release run
+checks that the two registries agree when it applies a version tag, but
+the scheduled check reads GHCR only.
 
 ## Release process
 
 Releases are tag-driven via `.github/workflows/release.yml`. A release
 tag is `v` followed by a Semantic Versioning 2.0.0 version without
 build metadata and without leading zeros (`v0.1.0`, `v0.1.0-rc.1`);
-the workflow rejects anything else. To cut one:
+the workflow rejects anything else.
+
+Before tagging, any requirement one released module has on the other
+must name the version being released. When `gen/go.mod` requires
+`github.com/rxbynerd/stirrup/types`, commit the bump on `main` first:
+
+```sh
+(cd gen && go mod edit -require=github.com/rxbynerd/stirrup/types@v1.2.3)
+```
+
+The `replace` directive in `gen/go.mod` keeps workspace and module
+builds on `../types`, so the bump builds before `types/v1.2.3` exists.
+Go ignores that `replace` when `gen` is used from another module, which
+is why the requirement itself has to name the release. The workflow's
+first job fails with the exact command when the requirement does not
+match.
+
+Then tag the commit:
 
 ```sh
 git tag -a v1.2.3 -m "Release notes"
 git push origin v1.2.3
 ```
 
-To retry a run that failed part-way, re-run its failed jobs from the run
-page. A dispatch on the tag's own ref also works:
+Once a run has published the module tags, the GitHub Release or the
+image tags for a version, that version is spent: a problem found later
+needs a new version. Cutting a pre-release such as
+`v0.1.0-rc.1` first exercises the whole workflow, including signing,
+the module tags and the image tags, without spending the real version.
+Doing so is especially worthwhile for the first release and after any
+change to `release.yml` or `_sign-release.yml`.
+
+**Recovering a failed run.** Use **Re-run failed jobs** on the run page.
+That recovers from a transient failure in any job:
+
+- The publish jobs push each image by digest only, with no tag, so a
+  failure after the push leaves an untagged manifest behind and the
+  re-run builds and pushes a new one.
+- Signing, the GitHub Release and the module tags can each be re-run;
+  the module tags and the release upload are idempotent.
+- The image version tags are applied last, by the `Tag release images`
+  job, and only to the digest that `_sign-release.yml` signed and
+  attested. Re-running that job adds whichever tags are missing.
+
+A re-run can only be started within GitHub's re-run window for the
+original run. After that, or when the original run cannot be re-run, a
+dispatch on the tag's own ref starts a new run:
 
 ```sh
 gh workflow run release.yml --ref v1.2.3 -f tag=v1.2.3
 ```
 
 A dispatch from any other ref is rejected, so every signature and
-attestation for a release comes from the tagged workflow files. A re-run
-never rebuilds an image whose version tag already exists. It reuses the
-published digest only when GHCR and Artifact Registry both serve it and
-it already carries this release's provenance attestation; otherwise the
-job fails, and the fix is to re-run only the failed jobs of the
-original run or to cut a new version. A release whose `SHA256SUMS` is
-already published is never overwritten with different bytes.
+attestation for a release comes from the tagged workflow files. A
+dispatch rebuilds everything except images whose version tags already
+exist: it reuses those only when GHCR and Artifact Registry both serve
+the same digest and that digest carries this release's provenance
+attestation. If only one registry has the tag, the original run's
+`Tag release images` job stopped part-way; re-run it instead. The
+rebuilt archives are byte-identical, but the SBOMs are not (they carry a
+timestamp and a random document ID). So when the release already
+publishes a `SHA256SUMS`, a dispatch keeps the published assets if they
+differ only in their SBOM lines, then finishes the module tags and
+image tags. It fails if an archive or `IMAGE_DIGESTS` line differs, or
+if the published release is missing an asset. Published assets are
+never replaced with different bytes. A failed lookup of the published
+release also fails the job rather than being read as "no release yet".
 
 The workflow:
 
-1. Re-runs the verify job (build + test).
-2. Cross-compiles `stirrup` and `stirrup-eval` for
+1. Checks the tag, and that the Go module requirements name it.
+2. Re-runs the verify job (build + test).
+3. Cross-compiles `stirrup` and `stirrup-eval` for
    `linux/{amd64,arm64}` and `darwin/{amd64,arm64}` in parallel, and
    checks that the linux/amd64 binary reports the release version.
-3. Generates SPDX and CycloneDX SBOMs.
-4. Publishes both images and checks that the harness image reports the
-   release version.
-5. In the reusable `_sign-release.yml` workflow, writes
+4. Generates SPDX and CycloneDX SBOMs and the changelog.
+5. Builds both images and pushes them by digest, untagged, to GHCR and
+   Artifact Registry, checks that the harness image reports the release
+   version, and loads the image SBOMs into Artifact Analysis.
+6. In the reusable `_sign-release.yml` workflow, writes
    `IMAGE_DIGESTS` (one `<image>:<tag>@<digest>` line per image) and a
    `SHA256SUMS` manifest over every asset, signs `SHA256SUMS` with
    keyless cosign (`SHA256SUMS.sigstore.json`), and attests the build
    provenance of every asset it lists and of both images.
-6. Tags the `types` and `gen` Go modules (`types/vX.Y.Z`,
-   `gen/vX.Y.Z`) at the release commit and checks that both resolve
-   through `proxy.golang.org`.
-7. Publishes a GitHub Release. Tags containing `-`
-   (e.g. `v1.2.3-rc.1`) are marked as prereleases automatically.
+7. Tags the `types` and `gen` Go modules (`types/vX.Y.Z`,
+   `gen/vX.Y.Z`) at the release commit, publishes a GitHub Release, and
+   checks that both modules resolve through `proxy.golang.org`. Tags
+   containing `-` (e.g. `v1.2.3-rc.1`) are marked as prereleases
+   automatically.
+8. Points `vX.Y.Z` at each signed digest in both registries, after
+   checking the digest's attestation, then moves `vX.Y` and `latest`
+   when the release is the highest of its line and overall. Until this
+   step finishes, the release's images can be pulled by the digests in
+   `IMAGE_DIGESTS` but not by tag.
 
 `types` and `gen` always release together, at the same commit and
 version as the binaries and images, so a control plane can require

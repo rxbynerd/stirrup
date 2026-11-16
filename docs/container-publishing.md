@@ -350,11 +350,13 @@ gcloud artifacts docker images list \
   --project=rubynerd-net
 ```
 
-After a tagged release, expect entries for `:vX.Y.Z`, and (on
-non-prerelease tags) `:vX.Y` and `:latest`, each with a populated
-`DIGEST` column. Multi-arch builds show one entry per manifest
-list, not per platform. The pre-2026-05 `:main` / `:sha-<7>` dev
-tags are no longer pushed to GAR — those live on GHCR
+After a tagged release, expect entries for `:vX.Y.Z`, and (on the
+highest non-prerelease of a line, and overall) `:vX.Y` and `:latest`,
+each with a populated `DIGEST` column. Multi-arch builds show one
+entry per manifest list, not per platform. A publish job that failed
+and was re-run leaves an untagged manifest behind, because release
+images are pushed by digest and tagged only after signing. The
+pre-2026-05 `:main` / `:sha-<7>` dev tags are no longer pushed to GAR — those live on GHCR
 (`ghcr.io/rxbynerd/stirrup`) only.
 
 ### 2. Confirm both registries serve the same digest
@@ -434,13 +436,15 @@ necessary; neither is a substitute for the other.
 The Phase 2 steps in `release.yml::publish-container` (in order):
 
 1. **`docker/build-push-action`** keeps `sbom: true` and exposes
-   `id: docker-push`; it is skipped when the version tag already
-   exists, and the `id: image` step resolves the pushed or reused
-   digest that every later step uses. The OCI in-toto SBOM
-   attestation written by buildx is for cosign/syft consumers walking
-   the SLSA chain off the registry directly; it does *not* substitute
-   for `sbom load`, and it is not the GitHub build-provenance
-   attestation that `_sign-release.yml` stores for
+   `id: docker-push`; it pushes the image by digest, with no tag, and
+   is skipped when the version tag already exists. The `id: image`
+   step resolves the pushed or reused digest that every later step
+   uses, and the `tag-images` job applies the tags once that digest is
+   signed. The OCI in-toto SBOM attestation written by buildx is for
+   cosign/syft consumers walking the SLSA chain off the registry
+   directly; it does *not* substitute for `sbom load`, and it is not
+   the GitHub build-provenance attestation that `_sign-release.yml`
+   stores for
    `gh attestation verify` (see
    [`deployment.md`](deployment.md#verify-what-you-run)).
 2. **`google-github-actions/setup-gcloud`** installs the `gcloud`
