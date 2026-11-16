@@ -36,9 +36,10 @@ const (
 )
 
 // fakeKubeAPI is an HTTP stand-in for a Kubernetes API server that records
-// every request. It answers access reviews, namespace and RuntimeClass reads
-// and the Agent Sandbox discovery document; any other request is answered
-// with an error and reported by unexpected.
+// every request. It answers access reviews, namespace and RuntimeClass reads,
+// the namespace's NetworkPolicy list and the Agent Sandbox discovery
+// document; any other request is answered with an error and reported by
+// unexpected.
 type fakeKubeAPI struct {
 	srv     *httptest.Server
 	release chan struct{}
@@ -53,13 +54,16 @@ type fakeKubeAPI struct {
 	sandboxAPI   bool
 	namespace    readMode
 	runtimeClass readMode
+	// policies is the NetworkPolicy list; readFound serves the standing
+	// default-deny egress policy and readMissing an empty list.
+	policies readMode
 	// hangReviews blocks access reviews until the client gives up.
 	hangReviews bool
 }
 
 func newFakeKubeAPI(t *testing.T) *fakeKubeAPI {
 	t.Helper()
-	api := &fakeKubeAPI{denied: map[string]bool{}, namespace: readFound, release: make(chan struct{})}
+	api := &fakeKubeAPI{denied: map[string]bool{}, namespace: readFound, policies: readFound, release: make(chan struct{})}
 	api.srv = httptest.NewServer(http.HandlerFunc(api.serve))
 	t.Cleanup(api.srv.Close)
 	t.Cleanup(func() { close(api.release) })
@@ -105,7 +109,7 @@ func writeRead(w http.ResponseWriter, mode readMode, found string) {
 func (a *fakeKubeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
 	a.requests = append(a.requests, r.Method+" "+r.URL.Path)
-	namespace, runtimeClass, sandboxAPI, hang := a.namespace, a.runtimeClass, a.sandboxAPI, a.hangReviews
+	namespace, runtimeClass, policies, sandboxAPI, hang := a.namespace, a.runtimeClass, a.policies, a.sandboxAPI, a.hangReviews
 	a.mu.Unlock()
 
 	switch {
@@ -157,6 +161,13 @@ func (a *fakeKubeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		writeRead(w, namespace, `{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"`+k8sTestNamespace+`"}}`)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/apis/node.k8s.io/v1/runtimeclasses/"):
 		writeRead(w, runtimeClass, `{"apiVersion":"node.k8s.io/v1","kind":"RuntimeClass","metadata":{"name":"x"},"handler":"runsc"}`)
+	case r.Method == http.MethodGet && r.URL.Path == k8sPoliciesPath:
+		if policies == readMissing {
+			writeRead(w, readFound, `{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicyList","items":[]}`)
+			return
+		}
+		writeRead(w, policies, `{"apiVersion":"networking.k8s.io/v1","kind":"NetworkPolicyList","items":[`+
+			`{"metadata":{"name":"stirrup-sandbox-default-deny-egress"},"spec":{"podSelector":{"matchLabels":{"stirrup-sandbox":"true"}},"policyTypes":["Egress"]}}]}`)
 	default:
 		writeStatus(w, http.StatusInternalServerError, "InternalError")
 	}
@@ -172,6 +183,7 @@ func (a *fakeKubeAPI) unexpected() []string {
 		case req == "POST /apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
 			req == "GET /apis/agents.x-k8s.io/v1alpha1",
 			req == "GET /api/v1/namespaces/"+k8sTestNamespace,
+			req == "GET "+k8sPoliciesPath,
 			strings.HasPrefix(req, "GET /apis/node.k8s.io/v1/runtimeclasses/"):
 		default:
 			out = append(out, req)
@@ -179,6 +191,8 @@ func (a *fakeKubeAPI) unexpected() []string {
 	}
 	return out
 }
+
+const k8sPoliciesPath = "/apis/networking.k8s.io/v1/namespaces/" + k8sTestNamespace + "/networkpolicies"
 
 func writeKubeconfig(t *testing.T, serverURL string) string {
 	t.Helper()
@@ -452,6 +466,30 @@ func TestPreflight_K8sExecutor_MissingNamespaceFailsStepWithNamespaceHint(t *tes
 	check.NotContains(hint, "kubectl get runtimeclass")
 }
 
+func TestPreflight_K8sExecutors_MissingStandingEgressPolicyFailsStepWithManifestHint(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	for _, executorType := range []string{"k8s", "k8s-sandbox"} {
+		t.Run(executorType, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			api := newFakeKubeAPI(t)
+			api.sandboxAPI = true
+			api.runtimeClass = readFound
+			api.policies = readMissing
+			cfg := k8sPreflightConfig(t, executorType, api)
+
+			report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+			must.NoError(err)
+
+			status, _ := stepStatus(report, "executor-probe")
+			check.Equal(PreflightFail, status)
+			detail, _ := stepDetail(report, "executor-probe")
+			check.Contains(detail, `no standing NetworkPolicy in namespace "stirrup-sandbox" isolates every stirrup-sandbox=true Pod for egress`)
+			check.Equal("apply examples/k8s/sandbox-egress-default-deny.yaml with its namespace set to executor.k8sNamespace (docs/executors/k8s.md#standing-default-deny-egress)", stepHint(report, "executor-probe"))
+		})
+	}
+}
+
 func TestPreflight_K8sExecutor_RefusedOptionalReadsAreNotCheckedAndStayOK(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
@@ -459,6 +497,7 @@ func TestPreflight_K8sExecutor_RefusedOptionalReadsAreNotCheckedAndStayOK(t *tes
 	api := newFakeKubeAPI(t)
 	api.namespace = readForbidden
 	api.runtimeClass = readForbidden
+	api.policies = readForbidden
 	cfg := k8sPreflightConfig(t, "k8s", api)
 
 	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
@@ -469,6 +508,7 @@ func TestPreflight_K8sExecutor_RefusedOptionalReadsAreNotCheckedAndStayOK(t *tes
 	detail, _ := stepDetail(report, "executor-probe")
 	check.Contains(detail, `RuntimeClass "gvisor" not checked`)
 	check.Contains(detail, `namespace "stirrup-sandbox" not checked`)
+	check.Contains(detail, "standing egress policy not checked")
 	check.True(report.OK)
 }
 

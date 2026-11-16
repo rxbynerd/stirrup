@@ -2246,7 +2246,7 @@ from 1.35). The check is conservative: a Role granting only `get` on
 `pods/exec` may work at run time on versions before 1.35, but fails the dry
 run.
 
-Three reads are attempted in addition. The credentials need not be able to
+Four reads are attempted in addition. The credentials need not be able to
 perform them: a read that is refused or fails is reported as `not checked`
 in the step detail, and a definitive negative fails the step.
 
@@ -2263,14 +2263,23 @@ in the step detail, and a definitive negative fails the step.
 - For `k8s-sandbox`, API discovery confirms the `agents.x-k8s.io/v1alpha1`
   group serves `sandboxes`. A group or resource that is not served fails the
   step; a discovery request that cannot be made is `not checked`.
+- The namespace's NetworkPolicies are listed, looking for the
+  [standing default-deny egress policy](#standing-default-deny-egress): an
+  `Egress` policy whose Pod selector matches every sandbox Pod. Any such
+  policy passes and is named in the detail; when there is none the step
+  fails. The reference Roles grant no `list`, so `not checked` is the
+  normal outcome with them; run the dry run with operator credentials to
+  make the check. The list is skipped when the namespace is known not to
+  exist.
 
 A `not checked` outcome does not change the step status, which stays `ok`:
-the reference Roles cannot read RuntimeClasses or namespaces, so a warning
+the reference Roles cannot read RuntimeClasses, namespaces or the
+NetworkPolicy list, so a warning
 would appear on every dry run of the recommended setup. The step detail
 must be read to see what was and was not checked:
 
 ```text
-[OK  ] executor-probe: 6 required permissions granted in namespace "stirrup-sandbox"; namespace "stirrup-sandbox" not checked (the credentials may not read namespaces); RuntimeClass "gvisor" not checked (the credentials may not read runtimeclasses)
+[OK  ] executor-probe: 7 required permissions granted in namespace "stirrup-sandbox"; namespace "stirrup-sandbox" not checked (the credentials may not read namespaces); standing egress policy not checked (the credentials may not list networkpolicies); RuntimeClass "gvisor" not checked (the credentials may not read runtimeclasses)
 [FAIL] executor-probe: credentials lack permission in namespace "stirrup-sandbox": "delete networkpolicies.networking.k8s.io"
        hint: bind a Role granting the denied verbs in executor.k8sNamespace (reference: examples/k8s/rbac.yaml)
 ```

@@ -3,11 +3,14 @@ package executor
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -43,6 +46,9 @@ const (
 	// K8sProbeSandboxAPIMissing means the cluster does not serve the Agent
 	// Sandbox sandboxes resource.
 	K8sProbeSandboxAPIMissing K8sProbeKind = "sandbox-api-missing"
+	// K8sProbeEgressBaselineMissing means no standing NetworkPolicy in the
+	// namespace isolates every sandbox Pod for egress.
+	K8sProbeEgressBaselineMissing K8sProbeKind = "egress-baseline-missing"
 )
 
 // K8sProbeError is the error ProbeK8sAccess returns. Kinds lists every
@@ -193,7 +199,11 @@ func probeK8sAccess(ctx context.Context, kube kubernetes.Interface, cfg K8sProbe
 		kinds = append(kinds, K8sProbePermissionDenied)
 	}
 
-	checks := []optionalCheck{checkNamespaceExists(ctx, kube, cfg.Namespace)}
+	namespaceCheck := checkNamespaceExists(ctx, kube, cfg.Namespace)
+	checks := []optionalCheck{namespaceCheck}
+	if namespaceCheck.kind != K8sProbeNamespaceMissing {
+		checks = append(checks, checkStandingEgressPolicy(ctx, kube, cfg.Namespace))
+	}
 	if cfg.Type == "k8s-sandbox" {
 		checks = append(checks, checkSandboxAPIServed(ctx, kube))
 	}
@@ -274,6 +284,57 @@ func checkNamespaceExists(ctx context.Context, kube kubernetes.Interface, name s
 	default:
 		return optionalCheck{note: fmt.Sprintf("namespace %q not checked (%v)", name, err)}
 	}
+}
+
+// checkStandingEgressPolicy looks for a NetworkPolicy that isolates every
+// sandbox Pod for egress independently of the per-run policy, so that removing
+// a per-run policy while its Pod still runs can only narrow egress. A refused
+// or failed list is reported as not checked rather than as a failure.
+func checkStandingEgressPolicy(ctx context.Context, kube kubernetes.Interface, namespace string) optionalCheck {
+	list, err := kube.NetworkingV1().NetworkPolicies(namespace).List(ctx, metav1.ListOptions{})
+	switch {
+	case apierrors.IsForbidden(err):
+		return optionalCheck{note: "standing egress policy not checked (the credentials may not list networkpolicies)"}
+	case err != nil:
+		return optionalCheck{note: fmt.Sprintf("standing egress policy not checked (%v)", err)}
+	}
+	var names []string
+	for i := range list.Items {
+		if isolatesEverySandboxPod(&list.Items[i]) {
+			names = append(names, fmt.Sprintf("%q", list.Items[i].Name))
+		}
+	}
+	if len(names) == 0 {
+		return optionalCheck{
+			kind:    K8sProbeEgressBaselineMissing,
+			problem: fmt.Sprintf("no standing NetworkPolicy in namespace %q isolates every %s=true Pod for egress", namespace, k8sSandboxLabel),
+		}
+	}
+	return optionalCheck{note: "standing egress policy " + strings.Join(names, ", ") + " selects every sandbox Pod"}
+}
+
+// isolatesEverySandboxPod reports whether policy is an Egress policy whose Pod
+// selector matches any sandbox Pod, whatever its per-Pod and run labels.
+// Policies the executor installs select one Pod by name and never match.
+func isolatesEverySandboxPod(policy *networkingv1.NetworkPolicy) bool {
+	if !hasEgressPolicyType(policy) {
+		return false
+	}
+	selector, err := metav1.LabelSelectorAsSelector(&policy.Spec.PodSelector)
+	if err != nil {
+		return false
+	}
+	return selector.Matches(labels.Set(sandboxLabels(""))) &&
+		selector.Matches(labels.Set(podLabels("stirrup-probe", "probe")))
+}
+
+// hasEgressPolicyType applies the API server's defaulting: a policy with no
+// policyTypes is an Egress policy exactly when it has egress rules.
+func hasEgressPolicyType(policy *networkingv1.NetworkPolicy) bool {
+	if len(policy.Spec.PolicyTypes) == 0 {
+		return len(policy.Spec.Egress) > 0
+	}
+	return slices.Contains(policy.Spec.PolicyTypes, networkingv1.PolicyTypeEgress)
 }
 
 // checkSandboxAPIServed confirms the Agent Sandbox API group and the sandboxes
