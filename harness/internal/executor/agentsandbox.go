@@ -223,7 +223,9 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 	if err := checkAgentSandboxRuntime(cfg.Runtime); err != nil {
 		return nil, err
 	}
-	if errs := types.ScratchLimitErrors("k8s-sandbox", cfg.Resources); len(errs) > 0 {
+	errs := types.ResourceLimitErrors(cfg.Resources)
+	errs = append(errs, types.ScratchLimitErrors("k8s-sandbox", cfg.Resources)...)
+	if len(errs) > 0 {
 		return nil, fmt.Errorf("agent sandbox executor: %s", strings.Join(errs, "; "))
 	}
 

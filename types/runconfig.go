@@ -6639,9 +6639,9 @@ func sizeLimitErrors(field string, mb int) []string {
 // ScratchLimitErrors returns a message when an explicit scratchMb exceeds
 // the limit its executor charges scratch against: memoryMb on "container",
 // whose scratch is a tmpfs, and diskMb on "k8s" and "k8s-sandbox", whose
-// scratch emptyDir counts against the Pod's ephemeral storage. Such a cap
-// can never be reached. An unset scratchMb, an unset limit and every other
-// executor type yield none.
+// scratch emptyDir counts against the Pod's ephemeral storage. The run hits
+// that limit first, so a larger cap would only mislead. An unset scratchMb,
+// an unset limit and every other executor type yield none.
 func ScratchLimitErrors(executorType string, r *ResourceLimits) []string {
 	if r == nil || r.ScratchMB <= 0 {
 		return nil

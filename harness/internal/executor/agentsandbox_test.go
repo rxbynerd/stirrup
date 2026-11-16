@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -88,7 +89,7 @@ func TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive(t *testing.T) {
 		must.Equal(want.Name, gotEnv[i].Name, "Env[%d] name", i)
 		must.Equal(want.Value, gotEnv[i].Value, "Env[%d] value", i)
 	}
-	for i, want := range append(extraEnv, scratch...) {
+	for i, want := range slices.Concat(extraEnv, scratch) {
 		idx := len(proxyEnv) + i
 		must.Equal(want.Name, gotEnv[idx].Name, "Env[%d] name", idx)
 		must.Equal(want.Value, gotEnv[idx].Value, "Env[%d] value", idx)

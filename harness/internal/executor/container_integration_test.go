@@ -133,9 +133,11 @@ func TestContainerExecutor_Scratch_LiveEngine(t *testing.T) {
 	res, err := exec.Exec(ctx, `grep -E ' /(scratch|tmp) ' /proc/mounts`, 30*time.Second)
 	must.NoError(err)
 	must.Equal(0, res.ExitCode, "stderr %q", res.Stderr)
+	var seen []string
 	for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
 		fields := strings.Fields(line)
 		must.GreaterOrEqual(len(fields), 4, "mount line %q", line)
+		seen = append(seen, fields[1])
 		opts := strings.Split(fields[3], ",")
 		check.Equal("tmpfs", fields[2], "filesystem of %s", fields[1])
 		check.Contains(opts, "nosuid", "options of %s", fields[1])
@@ -148,6 +150,7 @@ func TestContainerExecutor_Scratch_LiveEngine(t *testing.T) {
 			check.Contains(opts, "noexec", "/tmp stays noexec")
 		}
 	}
+	must.ElementsMatch([]string{sandboxScratchDir, "/tmp"}, seen, "mount points listed")
 
 	res, err = exec.Exec(ctx, `printf '#!/bin/sh\necho ran\n' > /tmp/probe.sh && chmod +x /tmp/probe.sh && /tmp/probe.sh`, 30*time.Second)
 	must.NoError(err)

@@ -89,6 +89,8 @@ func TestAgentSandbox_Lifecycle(t *testing.T) {
 	must.NotEmpty(podName, "executor did not record pod name")
 	must.Equal(sandboxName, podName, "cold-create path: pod name should equal sandbox name")
 
+	assertSandboxScratchUsable(t, ctx, exec)
+
 	// (a) gVisor is in force: the controller honoured runtimeClassName=gvisor on
 	// the podTemplate. uname -r reports a synthetic kernel ("4.4.0" on the
 	// observed runsc release) distinct from the host's. This is the same signal

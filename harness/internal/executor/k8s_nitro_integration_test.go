@@ -105,6 +105,7 @@ func TestK8sNitroIsolated_EndToEnd(t *testing.T) {
 	t.Run("output cap", func(t *testing.T) { assertExecOutputCap(t, ctx, exec) })
 	t.Run("file round trip", func(t *testing.T) { assertFileIORoundTrip(t, ctx, exec) })
 	t.Run("workspace writable as the sandbox uid", func(t *testing.T) { assertWorkspaceWritableAsSandboxUID(t, ctx, exec) })
+	t.Run("scratch usable", func(t *testing.T) { assertSandboxScratchUsable(t, ctx, exec) })
 
 	t.Run("no guest network", func(t *testing.T) {
 		must := require.New(t)
@@ -197,6 +198,7 @@ func nitroSubtestBudget(t *testing.T) time.Duration {
 		(2*time.Second + 8*time.Second + 3*30*time.Second) +
 		outputCapTimeout(t) +
 		8*k8sFileIOTimeout +
+		30*time.Second +
 		30*time.Second +
 		2*nitroProbeTimeout +
 		k8sCloseTimeout
