@@ -102,7 +102,7 @@ ANTHROPIC_API_KEY=... stirrup harness \
 Through `stirrup job`, the same file is assigned as the `RunConfig` of a
 task. [`examples/controlplane/`](../examples/controlplane/README.md) is a
 runnable minimal control plane that assigns a `RunConfig` file to a
-connected `stirrup job`, which demonstrates the preset against that
+connected `stirrup job`, and so demonstrates the preset against that
 contract. The prerequisites below apply to the job unchanged.
 
 ```sh
@@ -141,6 +141,10 @@ go run ./examples/controlplane -config examples/runconfig/autonomous-preset.json
   startup check to satisfy.
 - Run-end budget warnings. The preset leaves `windDown` off; see
   [Wind-down warning](configuration.md#wind-down-warning).
+- Protected write targets. The preset leaves `tools.protectedWriteTargets`
+  empty, so the protected-write rule guards no path unless the operator
+  lists one; see
+  [Protected write targets](configuration.md#protected-write-targets).
 
 ## Variant: `k8s-sandbox`
 

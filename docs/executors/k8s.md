@@ -181,8 +181,8 @@ The pieces and their lifecycle:
   its git status, both read through the executor and never from the
   harness host. The listing and the status are each capped at 200
   entries and 8 KiB and end in a truncation marker when cut. The
-  listing leaves out names containing control characters and is omitted
-  when listing fails. The status appears only when `/workspace` is the
+  listing leaves out names containing control characters, and the whole
+  listing is omitted when listing fails. The status appears only when `/workspace` is the
   top level of a repository.
 
 - **Egress** is enforced by a per-Pod `NetworkPolicy` the executor
@@ -894,17 +894,19 @@ The image named by `executor.image` must provide:
 
 | Requirement | Used for |
 |---|---|
-| POSIX `sh` at `/bin/sh`, with `kill` | `Exec` runs commands through `/bin/sh -c`, and a timed-out command is signalled with `kill`. A shell builtin suffices. |
+| POSIX `sh` at `/bin/sh`, with `kill` and `command -v` | `Exec` runs commands through `/bin/sh -c`, and a timed-out command is signalled with `kill`. Shell builtins suffice. |
 | `tar`, `readlink`, `mkdir` | File reads and writes stream `tar` over `pods/exec`; a read resolves its path with `readlink -f` first. |
+| `rm`, and a `sleep` that accepts fractional seconds | The command wrapper and the kill script remove the pid file, and the kill script polls for the process group to exit in tenths of a second. |
 | `ls` accepting `-A`, `-1` and `-p` | `list_directory` and the system prompt's workspace listing, which marks directories with a trailing slash. Busybox and coreutils both accept these. |
 | Writable `/tmp` | Each `Exec` records the command's process group leader in a per-call pid file under `/tmp`. |
 | `git` | Only when `gitStrategy` is `deterministic`, which runs git inside the Pod, and for the git status section of the system prompt. |
 | `setsid` *(optional)* | Runs each command in its own session so a timeout reaches the whole process group. |
+| Readable `/proc` | Only without `setsid`: the kill script finds the recorded shell's descendants there. |
 
 When a command times out, the executor sends SIGTERM to the recorded
-process group, waits about one second, then sends SIGKILL. Without
-`setsid`, only the recorded shell and the descendants discoverable
-through `/proc` are signalled. [`Dockerfile.sandbox`](../../Dockerfile.sandbox)
+process group, waits up to one second, then sends SIGKILL to anything
+still running. Without `setsid`, only the recorded shell and the
+descendants discoverable through `/proc` are signalled. [`Dockerfile.sandbox`](../../Dockerfile.sandbox)
 builds an image that meets every requirement. The same minimums apply to
 the `container` executor, which mounts a tmpfs at `/tmp` instead of
 relying on the image; see
