@@ -115,6 +115,19 @@ jobs:
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # types/ and gen/ are tagged together at this commit, so a
+      # requirement of one on the other must already name this version.
+      - name: Check the Go module requirements name the release
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: scripts/release/check-module-requirements.sh "$TAG" types gen
+
   verify:
     name: Verify
     needs: validate-tag
