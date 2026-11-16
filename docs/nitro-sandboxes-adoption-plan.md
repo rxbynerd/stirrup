@@ -305,6 +305,125 @@ NetworkPolicy.
 | Trivial task on the built-in pool (`c8a.large`, warm) | success, 13 s |
 | Unmodified example RunConfig, built-in pool only, cold | success, 46 s |
 
+#### Second run (2026-11-13, #904)
+
+A third temporary cluster ran later the same day to cover what the first run
+left: the final tip of the branch, a dead sandbox with the `run_command` fix,
+a long-lived sandbox, the harness inside the cluster, Pod Identity and IRSA,
+and `/dev/nsm`. The cluster was us-east-1 on Kubernetes 1.36
+(`v1.36.5-eks-91f89a9`, platform `eks.17`) with the node software of cluster
+1, and lived for about 1 h 40 min. The build was `4211ddf0` (the tip of
+#894) with `TestK8sNitroIsolated_Soak` added and the two commits of #901
+applied on top.
+
+**Suites on the final tip.** Run from a Pod inside the cluster:
+
+| Test | Result |
+|---|---|
+| `TestK8sNitroIsolated_EndToEnd` (twice) | pass, every subtest; exec 0.12 to 0.14 s, process-tree kill 12.9 s, output cap 3.8 s, `Close` to "Pod gone" 3.1 and 4.1 s |
+| `TestK8sNitroIsolated_DiskMbBoundsTheGuestDisk` | pass |
+| General suite (`TestK8s`, ordinary Pods) | 41 passed, 3 skipped, 1 failed: `TestK8sRequiredAccess_MatchesReferenceRoles` reads `examples/k8s/rbac.yaml` by relative path, which the Pod did not have |
+
+Run from the operator's laptop, the same build passed the disk test warm and
+cold (workspace 930,796 KiB for `diskMb: 1024`, as before) and every
+end-to-end subtest except `exec timeout`, three times out of three; in the
+general suite `TestK8sExec_Timeout` and `TestK8sExec_Cancelled` failed the
+same way (43 passed, 2 failed, 3 skipped). Each asserts that a command's
+first output line arrives within 1 s (0.5 s for the cancel case). The
+laptop's connection to us-east-1 took 0.4 to 0.5 s per round trip during the
+run, and a plain exec took 0.93 s against 0.13 to 0.52 s in the first run,
+so the output could not arrive in time. These three assertions depend on the
+latency between the test process and the API server; they are not a change
+in the executor.
+
+Four cold starts (three `m5d.xlarge`, one `m5.xlarge`) logged `k8s executor
+waiting for exec to reach the sandbox pod` and then `k8s executor exec
+reached the sandbox pod` after 3.7 to 6.8 s and 2 to 7 attempts.
+
+**A dead sandbox with #901.** A `stirrup harness` run (`claude-sonnet-5-5`)
+whose first command exhausts a 1 GiB guest and whose second runs `echo`:
+three of three ended with outcome `success` in 31 to 32 s, with no provider
+error. The first command returned `[exit code: 137]`; the second returned
+`[executor error: exec: unable to upgrade connection: container not found
+("agent")]`, and the model reported both. Without #901 the same run ended
+with a provider 400 three times out of three. The error result's metadata
+still reports `exit_code: 0` for a command that never ran (#903), and
+nothing tells the model or the control plane that the sandbox is gone
+(#902).
+
+**A sandbox held for 75 minutes.** `TestK8sNitroIsolated_Soak` held one
+executor open on an `m5.xlarge` in a NodePool with `expireAfter: 6h`:
+
+| Activity | Result |
+|---|---|
+| A command every 30 s | 150 of 150 succeeded; slowest 1.76 s (from the laptop) |
+| A file round trip every 3 min | 25 of 25 byte-exact |
+| One command streaming a line a second for 22 min | exit 0, all 1,320 lines |
+| The Pod at the end | same UID, same node, `Running`, no restarts |
+| `Close` | Pod gone in 4.7 s, policy removed after it |
+
+The kubeconfig authenticated through `aws eks get-token`, whose tokens last
+15 minutes, so the run spanned at least four token lifetimes; no request
+failed. The node kept its one
+kubelet serving certificate; with `consolidationPolicy: WhenEmpty` the node
+was not disrupted while the sandbox ran. Node expiry under a running sandbox
+was not exercised.
+
+**The harness inside the cluster.** `stirrup harness` ran as a Job in the
+sandbox's namespace with the reference `stirrup-orchestrator` service
+account, in-cluster credentials and the replay provider (so no model key
+entered the cluster).
+
+- `examples/k8s/harness-job.yaml` as written created no Pod: the reference
+  namespace enforces the restricted Pod Security Standard and the Job
+  declared no `securityContext` (`violates PodSecurity "restricted:v1.30"`).
+  Fixed on branch `fix/k8s-harness-job-restricted-pss`.
+- With a restricted `securityContext` the run succeeded. The sandbox Pod
+  carried one owner reference, to the harness Pod, and ran as the
+  namespace's `default` service account on another node.
+- Deleting the harness Pod during a long command:
+
+| How the harness Pod was removed | Sandbox Pod gone after | Sandbox NetworkPolicy |
+|---|---|---|
+| `kubectl delete pod` (SIGTERM, harness tears down) | 5.7 s | removed |
+| `kubectl delete pod --grace-period=0 --force` | 5.8 s | retained |
+| `kubectl delete pod` after removing the harness's RoleBinding, so only garbage collection could act | 5.7 s | retained |
+
+The retained policy has no owner reference, as designed (see the `k8s`
+executor guide's teardown section); it selects a Pod that no longer exists.
+
+**Pod Identity and IRSA on the sandbox service account.** Both fail the run
+at the admission check with exit 1 before any command, and leave no Pod or
+NetworkPolicy:
+
+- Pod Identity association: `admitted pod <ns>/<pod> does not match the
+  submitted pod: spec.volumes: expected
+  [{"name":"workspace","emptyDir":{}}], observed
+  [{"name":"eks-pod-identity-token","projected":{"sources":[{"serviceAccountToken":{"audience":"pods.eks.amazonaws.com","expirationSeconds":83384,"path":"eks-pod-identity-token"}}],"defaultMode":420}},{"name":"workspace","emptyDir":{}}]`
+- IRSA annotation (`eks.amazonaws.com/role-arn`): the same, with volume
+  `aws-iam-token` and audience `sts.amazonaws.com`.
+
+`--dry-run` passes in both cases; it creates no Pod, so it cannot see the
+injection. A hand-made sandbox Pod with either service account started and
+was Ready in 8.9 s with the token volume mounted and the `AWS_*` variables
+set, so the platform does not refuse the combination; the admission check is
+what stops it.
+
+**`/dev/nsm`.**
+
+| Pod | amd64 (`m5d.xlarge`) | arm64 (`m7g.xlarge`) |
+|---|---|---|
+| Nitro Sandbox guest | present (`crw-rw-rw-`, 10:257) | present (10:258) |
+| Ordinary Pod on the node hosting that guest | absent | absent |
+| Ordinary Pod, no sandbox-node selector | absent | absent |
+
+`/dev/nsm` therefore separates a guest from an ordinary Pod on both
+architectures, which is the signal #900 needs. An ordinary Pod reports the
+host's DMI product name on both (`m5d.xlarge`, `m7g.xlarge`). An ordinary
+Pod can be scheduled onto a node labelled
+`eks.amazonaws.com/nitro-sandbox: "true"`, beside a guest; the first run
+showed only the reverse restriction.
+
 ### Where the implementation departs from this plan
 
 Each of these was decided during implementation without the owner present and
@@ -364,24 +483,29 @@ is called out in the pull request that contains it.
 
 ### Live items still open
 
-Closing any of these needs a paid EKS run with its own authorization. #895
-tracks them.
+Closing any of these needs a paid EKS run with its own authorization.
 
 1. Networked Nitro sandboxes (`allowlist`), which the runtime rejects; PR 5
    needs its own design (#896).
 2. NetworkPolicy enforcement with this runtime (`DefaultDeny`, the network
    policy controller). Both 2026-11-13 clusters used `DefaultAllow`.
-3. Pod Identity or IRSA on the sandbox service account. That its webhook
-   injects a token volume, which the whole-Pod admission check would reject,
-   rests on AWS documentation.
-4. IPv6 clusters, standard node groups and FIPS AMIs.
-5. arm64. The guest has no `/sys/class/dmi`, so the DMI diagnostic fails by
-   design; support needs another diagnostic.
-6. Long runs: no sandbox lived longer than about 20 minutes.
+3. IPv6 clusters, standard node groups and FIPS AMIs.
+4. arm64. The guest has no `/sys/class/dmi`, so the DMI diagnostic fails by
+   design; support needs another diagnostic. `/dev/nsm` is measured as a
+   usable one (#900).
+5. Runs longer than 75 minutes, and a node that expires or is disrupted
+   under a running sandbox.
+6. `stirrup job` against a control plane from inside the cluster; only
+   `stirrup harness` ran there.
 7. Whether a Nitro Sandbox honours an image patch or an ephemeral container
    added after readiness.
 8. The delay before Auto Mode removes an idle sandbox node.
 9. The `k8s-sandbox` executor, which stays gVisor-only, was not run.
+
+The [second run](#second-run-2026-11-13-904) closed two items that were on
+this list: Pod Identity and IRSA on the sandbox service account (both fail
+the run at the admission check, as documented), and a sandbox older than 20
+minutes (75 minutes passed).
 
 The nine items open before 2026-11-13 are closed; each result is in
 [Results against the open items](#results-against-the-open-items):
