@@ -32,7 +32,7 @@ The repository is a Go workspace (`go.work`) composed of five modules:
   package. Zero external dependencies.
 - `gen/` — generated code from `proto/harness/v1/`. Edit the `.proto`,
   not the generated Go.
-- `harness/` — the harness binary and its 12 components.
+- `harness/` — the harness binary and its 13 components.
 - `eval/` — the eval CLI, judges, runner, and lakehouse adapters.
 - `examples/controlplane/` — a minimal control plane that drives
   `stirrup job` over gRPC, used by the control-plane smoke tests. It
@@ -75,7 +75,9 @@ build-modules` for the build alone) instead.
 
 On every push, CI runs the equivalent of `just test`, a race-detector
 pass, `just fuzz-scrub` and a full build through the reusable
-`_verify.yml` workflow. It then fails if the build or tests changed
+`_verify.yml` workflow. The CI race pass omits
+`harness/internal/sandboxidentity`, which `just test-race` includes. The
+workflow then fails if the build or tests changed
 `go.work.sum` or any committed `go.sum`, so checksum changes are
 committed with the change that caused them. Dependabot updates each
 module's `go.sum` but not `go.work.sum`, so the
