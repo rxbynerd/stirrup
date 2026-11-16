@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"context"
-	"fmt"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -96,19 +94,4 @@ func TestRunJob_UnknownAssignedFieldsRejectedBeforeBuild(t *testing.T) {
 	check.Equal(int32(0), builds.Load(), "no executor or provider is constructed")
 	check.Equal(int32(0), requests.Load(), "no provider request is made")
 	check.Empty(sink.calls, "no result is recorded when no run started")
-}
-
-func TestUnknownTaskFieldsError_BoundsTheListedFields(t *testing.T) {
-	check := assert.New(t)
-	fields := make([]string, maxListedUnknownFields+3)
-	for i := range fields {
-		fields[i] = fmt.Sprintf("field %d at the top level", 9000+i)
-	}
-
-	msg := unknownTaskFieldsError(fields).Error()
-
-	check.Contains(msg, fields[maxListedUnknownFields-1])
-	check.NotContains(msg, fields[maxListedUnknownFields])
-	check.Contains(msg, ", and 3 more)")
-	check.True(strings.HasPrefix(msg, "task_assignment rejected: "))
 }

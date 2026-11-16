@@ -1631,8 +1631,12 @@ path of the message that carries it, in the path form of
 task_assignment rejected: the RunConfig sets fields this harness does not know (field 9001 at the top level, field 98 under executor); send only the fields listed in ready.config_fields
 ```
 
-The message names at most 16 fields and counts the rest. A field
-retired from the schema is unknown too: the removed
+The message names at most 16 fields and ends with `and further
+unknown fields` when there are more. A path longer than 256 bytes,
+as inside a deeply nested `outputSchema`, is cut and ends in `...`.
+A known field number sent with a different wire type is reported as
+`field N with an unexpected wire type` and rejected the same way. A
+field retired from the schema is unknown too: the removed
 `max_cost_budget` (field 18) is rejected like any other.
 
 There is no lenient mode. For a rolling upgrade, the control plane

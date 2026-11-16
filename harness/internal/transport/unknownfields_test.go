@@ -1,6 +1,8 @@
 package transport
 
 import (
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -147,6 +149,58 @@ func TestUnknownRunConfigFields_UnparseableUnknownDataIsReported(t *testing.T) {
 
 	check.Equal([]string{"unparseable field data under executor"}, unknownRunConfigFields(rc))
 	check.Nil(unknownRunConfigFields(nil))
+}
+
+func TestUnknownRunConfigFields_BoundsTheEntries(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	var extra []byte
+	for n := range maxUnknownFieldEntries + 4 {
+		extra = appendUnknownVarint(extra, protowire.Number(9100+n), 1)
+	}
+	rc := &pb.RunConfig{}
+	rc.ProtoReflect().SetUnknown(extra)
+
+	got := unknownRunConfigFields(rc)
+
+	must.Len(got, maxUnknownFieldEntries+1)
+	check.Equal("field 9100 at the top level", got[0])
+	check.Equal(moreUnknownFields, got[maxUnknownFieldEntries])
+}
+
+func TestUnknownRunConfigFields_KnownNumberWithWrongWireTypeIsReported(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	rcDesc := (&pb.RunConfig{}).ProtoReflect().Descriptor()
+	var rc pb.RunConfig
+	must.NoError(proto.Unmarshal(appendUnknownVarint(nil, fieldNumber(t, rcDesc, "run_id"), 7), &rc))
+
+	check.Equal([]string{"field 1 with an unexpected wire type at the top level"}, unknownRunConfigFields(&rc))
+}
+
+func TestUnknownRunConfigFields_DeepNestingCostsLinearMemory(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	const depth = 4900
+	innermost := structpb.NewNullValue()
+	innermost.ProtoReflect().SetUnknown(appendUnknownVarint(nil, 9006, 1))
+	v := innermost
+	for range depth {
+		v = structpb.NewStructValue(&structpb.Struct{Fields: map[string]*structpb.Value{"a": v}})
+	}
+	rc := &pb.RunConfig{OutputSchema: v.GetStructValue()}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	got := unknownRunConfigFields(rc)
+	runtime.ReadMemStats(&after)
+
+	must.Len(got, 1)
+	check.True(strings.HasPrefix(got[0], "field 9006 under outputSchema.fields.*.structValue.fields.*."), got[0])
+	check.True(strings.HasSuffix(got[0], "..."), "a long path is cut")
+	check.LessOrEqual(len(got[0]), maxUnknownFieldPathBytes+64)
+	check.Less(after.TotalAlloc-before.TotalAlloc, uint64(16<<20), "the walk allocates in proportion to depth, not depth squared")
 }
 
 func TestUnknownRunConfigFields_RetiredFieldIsUnknown(t *testing.T) {

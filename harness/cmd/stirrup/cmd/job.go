@@ -341,20 +341,11 @@ func emitTerminalFailure(tp transport.Transport, cause error, stopReason string)
 	}
 }
 
-// maxListedUnknownFields bounds how many unknown fields a rejection names.
-const maxListedUnknownFields = 16
-
 // unknownTaskFieldsError is the rejection of a task_assignment whose
 // RunConfig carries fields this harness does not know. Running it would
 // silently drop them, and a dropped field may be one that restricts the
 // run.
 func unknownTaskFieldsError(fields []string) error {
-	listed := fields
-	more := ""
-	if len(listed) > maxListedUnknownFields {
-		listed = listed[:maxListedUnknownFields]
-		more = fmt.Sprintf(", and %d more", len(fields)-maxListedUnknownFields)
-	}
-	return fmt.Errorf("task_assignment rejected: the RunConfig sets fields this harness does not know (%s%s); send only the fields listed in ready.config_fields",
-		strings.Join(listed, ", "), more)
+	return fmt.Errorf("task_assignment rejected: the RunConfig sets fields this harness does not know (%s); send only the fields listed in ready.config_fields",
+		strings.Join(fields, ", "))
 }
