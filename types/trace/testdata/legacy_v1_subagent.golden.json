@@ -335,7 +335,7 @@
       "toolUseId": "child-call-1",
       "startedAt": "0001-01-01T00:00:00Z",
       "completedAt": "0001-01-01T00:00:00Z",
-      "exitCode": 0,
+      "exitCode": null,
       "captureComplete": true,
       "stdout": {
         "rawBytes": 13,

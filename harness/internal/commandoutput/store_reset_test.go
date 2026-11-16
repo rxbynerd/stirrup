@@ -20,7 +20,7 @@ func captureOne(t *testing.T, store *Store, runID, toolUseID, stdout string) {
 	must.NoError(err, "Begin(%s)", runID)
 	_, err = capture.Stdout().Write([]byte(stdout))
 	must.NoError(err)
-	_, err = capture.Complete(Completion{ExitCode: 0})
+	_, err = capture.Complete(Completion{ExitCode: new(0)})
 	must.NoError(err, "Complete(%s)", runID)
 }
 

@@ -209,3 +209,61 @@ func TestStreamTail_StartsOnRuneBoundary(t *testing.T) {
 		})
 	}
 }
+
+func TestRunCommand_CaptureExecutorErrorAtMinimumBudgetKeepsReferencesAndLabel(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	const maxResultBytes = 1024
+	cfg := types.CommandOutputConfig{InlineMaxBytes: 16, PreviewBytesPerStream: 64 << 10, MaxBytesPerStream: 1 << 20, MaxBytesPerRun: 2 << 20}
+	exec := &scriptedStreamExecutor{
+		stdout: strings.Repeat("o", 64<<10),
+		stderr: strings.Repeat("e", 64<<10),
+		result: &executor.ExecResult{},
+		err:    errors.New("exec: stream reset " + strings.Repeat("x", 4<<10)),
+	}
+
+	got, _ := runCaptured(t, exec, cfg, maxResultBytes, context.Background(), `{"command":"build"}`)
+
+	must.True(got.IsError)
+	check.LessOrEqual(len(got.Text), maxResultBytes, "text must fit tools.maxResultBytes")
+	check.Contains(got.Text, "stdout_ref=", "the model must be able to page stdout")
+	check.Contains(got.Text, "stderr_ref=", "the model must be able to page stderr")
+	check.Contains(got.Text, "[executor error: exec: stream reset ", "the failure label must survive")
+}
+
+type recordingRecorder struct{ records []types.CommandOutputRecord }
+
+func (r *recordingRecorder) RecordCommandOutput(rec types.CommandOutputRecord) {
+	r.records = append(r.records, rec)
+}
+
+func TestRunCommand_CaptureRecordMatchesStructuredExit(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		result       *executor.ExecResult
+		err          error
+		wantExit     *int
+		wantExecutor bool
+	}{
+		{name: "clean exit", result: &executor.ExecResult{ExitCode: 3}, wantExit: new(3)},
+		{name: "executor error", result: &executor.ExecResult{}, err: errors.New("exec: container not found"), wantExecutor: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			cfg := (types.ToolsConfig{}).EffectiveCommandOutput()
+			store := newTestCaptureStore(t, cfg)
+			recorder := &recordingRecorder{}
+			store.SetRecorder(recorder)
+			exec := &scriptedStreamExecutor{result: tc.result, err: tc.err}
+			ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "run", ToolUseID: "cmd"})
+
+			_, err := RunCommandToolWithStore(exec, store, cfg, types.DefaultToolMaxResultBytes).StructuredHandler(ctx, json.RawMessage(`{"command":"true"}`))
+
+			must.NoError(err)
+			must.Len(recorder.records, 1)
+			check.Equal(tc.wantExit, recorder.records[0].ExitCode, "the record's exit code must match the structured result")
+			check.Equal(tc.wantExecutor, recorder.records[0].ExecutorError)
+		})
+	}
+}

@@ -359,7 +359,11 @@ stream cannot be opened, the shell cannot start, a capture limit was
 crossed), which is a tool error and means the command may never have
 run. With capture on, an executor error's text ends with an
 `[executor error: <message>]` or `[capture/command error: <message>]`
-marker, the message scrubbed and cut to half of `tools.maxResultBytes`.
+marker, the message scrubbed and cut to half of `tools.maxResultBytes`
+(in a spilled summary, to the room the header leaves, so the archive
+references and the label are kept). The compliance record reports the
+same outcome: `exitCode` is `null` when the command did not exit on its
+own, and `executorError` is set when the executor or the capture failed.
 Without capture, an executor error is returned as the tool error
 itself. A `null` exit code rather than a sentinel such as `-1` keeps a
 real exit status unambiguous: the executors already report `-1` for a

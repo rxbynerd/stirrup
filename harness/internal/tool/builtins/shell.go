@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +55,7 @@ func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store,
 			"Do not use for filesystem inspection that a dedicated tool covers — prefer read_file, list_directory, grep_files, find_files because they return structured, bounded output and do not need a shell. " +
 			"timeout is in seconds (default 30, max 300); when it elapses the command and the processes it started are killed (SIGTERM, then SIGKILL after a short grace), except processes that detached into their own session or process group. " +
 			"On timeout this returns the partial stdout/stderr captured before the deadline plus a '[timed out after Ns]' marker, not a hard error, so act on the partial output or rerun with a longer timeout. " +
+			"Large output is spilled to an archive: the text then opens with '[command output spilled to compliance archive]' and a header stating exit_code=N (none when the command did not exit) and timed_out=true|false, followed by stream tails and stdout_ref/stderr_ref references that read_command_output pages. " +
 			"Example: {\"command\": \"go test ./harness/internal/tool/...\", \"timeout\": 120}",
 		// Pinned to the description by TestBuiltinInputExamples_MatchDescription.
 		InputExamples:     []json.RawMessage{json.RawMessage(`{"command": "go test ./harness/internal/tool/...", "timeout": 120}`)},
@@ -132,19 +134,18 @@ func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store,
 			if execErr == nil {
 				end.exitCode = &result.ExitCode
 			}
-			captured, captureErr := capture.Complete(commandoutput.Completion{ExitCode: result.ExitCode, TimedOut: end.timedOut, Cancelled: end.cancelled})
+			captured, captureErr := capture.Complete(commandoutput.Completion{ExitCode: end.exitCode, TimedOut: end.timedOut, Cancelled: end.cancelled, ExecutorError: end.failed})
 			isError := end.cancelled || end.failed || captureErr != nil
-			var errorMarker string
+			var failure *commandFailure
 			if end.failed {
 				// A nil cause means the executor failed on its own, so the
 				// command may never have run.
-				label := "executor error"
+				failure = &commandFailure{label: "executor error", err: execErr}
 				if cause != nil {
-					label = "capture/command error"
+					failure.label = "capture/command error"
 				}
-				errorMarker = commandErrorMarker(label, execErr, maxResultBytes/2)
 			}
-			text, spilled, previews := formatCapturedCommand(captured, cfg, end, timeoutSeconds, errorMarker, maxResultBytes)
+			text, spilled, previews := formatCapturedCommand(captured, cfg, end, timeoutSeconds, failure, maxResultBytes)
 			if err := store.RecordInitial(&captured.Record, text); err != nil {
 				return tool.StructuredResult{}, fmt.Errorf("record command model result: %w", err)
 			}
@@ -197,7 +198,7 @@ func (e commandEnd) textExitCode() int {
 	return *e.exitCode
 }
 
-const cancelledMarker = "[cancelled: the run was cancelled before the command finished]"
+const cancelledMarker = "[cancelled: the run ended before the command finished]"
 
 // buildCommandResult builds the StructuredResult for an uncaptured
 // run_command invocation that exited, timed out or was cancelled. Text
@@ -255,11 +256,18 @@ func boundCommandText(stdout, stderr string, exitCode int, suffix string, maxByt
 	return formatRunCommand(elideMiddle(stdout, stdoutShare, "stdout"), elideMiddle(stderr, stderrShare, "stderr"), exitCode) + suffix, true
 }
 
-// commandErrorMarker renders err as "[label: message]" within maxBytes. The
-// message is scrubbed before it is cut so a cut cannot split a secret.
-func commandErrorMarker(label string, err error, maxBytes int) string {
-	frame := "[" + label + ": ]"
-	return "[" + label + ": " + elideMiddle(security.Scrub(err.Error()), max(maxBytes-len(frame), 0), "error") + "]"
+// commandFailure is an executor failure the model-visible text reports as
+// a "[label: message]" marker.
+type commandFailure struct {
+	label string
+	err   error
+}
+
+// marker renders the failure within maxBytes. The message is scrubbed
+// before it is cut so a cut cannot split a secret.
+func (f *commandFailure) marker(maxBytes int) string {
+	frame := "[" + f.label + ": ]"
+	return "[" + f.label + ": " + elideMiddle(security.Scrub(f.err.Error()), max(maxBytes-len(frame), 0), "error") + "]"
 }
 
 const elisionMarkerFmt = "\n[run_command %s truncated: %d of %d bytes omitted here]\n"
@@ -298,21 +306,24 @@ type streamPreviews struct{ stdout, stderr int64 }
 // spilled rendering used. Output stays inline only when it is within
 // cfg.InlineMaxBytes and its rendering fits maxBytes; otherwise the spilled
 // summary's tails shrink to fit, stderr keeping at least half the room
-// when it needs it.
-func formatCapturedCommand(c commandoutput.Captured, cfg types.CommandOutputConfig, end commandEnd, timeoutSeconds int, errorMarker string, maxBytes int) (string, bool, streamPreviews) {
+// when it needs it. The failure marker takes at most half of maxBytes, and
+// in a spilled summary no more than the room the header leaves, so the
+// archive references and the failure label survive a small maxBytes.
+func formatCapturedCommand(c commandoutput.Captured, cfg types.CommandOutputConfig, end commandEnd, timeoutSeconds int, failure *commandFailure, maxBytes int) (string, bool, streamPreviews) {
 	var markers []string
 	if end.cancelled {
 		markers = append(markers, cancelledMarker)
 	}
-	if errorMarker != "" {
-		markers = append(markers, errorMarker)
+	inlineMarkers := markers
+	if failure != nil {
+		inlineMarkers = append(slices.Clone(markers), failure.marker(maxBytes/2))
 	}
 	combined := c.Record.Stdout.ScrubbedBytes + c.Record.Stderr.ScrubbedBytes
 	if combined <= cfg.InlineMaxBytes && c.Record.CaptureComplete {
-		inline := markers
+		inline := inlineMarkers
 		// The spilled rendering states timed_out in its header instead.
 		if end.timedOut {
-			inline = append([]string{fmt.Sprintf("[timed out after %ds]", timeoutSeconds)}, markers...)
+			inline = append([]string{fmt.Sprintf("[timed out after %ds]", timeoutSeconds)}, inlineMarkers...)
 		}
 		text := appendMarkers(formatRunCommand(c.Stdout, c.Stderr, end.textExitCode()), inline)
 		if len(text) <= maxBytes {
@@ -322,6 +333,11 @@ func formatCapturedCommand(c commandoutput.Captured, cfg types.CommandOutputConf
 	previews := streamPreviews{
 		stdout: min(int64(len(c.Stdout)), cfg.PreviewBytesPerStream),
 		stderr: min(int64(len(c.Stderr)), cfg.PreviewBytesPerStream),
+	}
+	if failure != nil {
+		// The marker follows the header's last line after a newline.
+		room := maxBytes - len(formatSpilledCommand(c, end, timeoutSeconds, markers, streamPreviews{})) - 1
+		markers = append(markers, failure.marker(min(maxBytes/2, max(room, 0))))
 	}
 	text := formatSpilledCommand(c, end, timeoutSeconds, markers, previews)
 	if len(text) > maxBytes {
