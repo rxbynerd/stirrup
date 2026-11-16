@@ -2158,13 +2158,19 @@ deadline to that process and ignores the request context, so a plugin
 that hangs, for example one waiting for an interactive login or an
 unreachable metadata endpoint, cannot be cancelled. The executors and the
 dry run therefore make the first authenticated request in the
-background and stop waiting when the context ends. The step then fails
-with `credential plugin did not return: context deadline exceeded`, which
-for a dry run is the `--dry-run-timeout` budget. The plugin process is not
-killed; it is left to exit on its own, and the harness process normally
-exits first. The limit applies only to the first run of the plugin:
-credentials it returns are cached until they expire, and a later refresh
-runs the plugin again without this bound.
+background and stop waiting when the context ends before the plugin has
+returned. The step then fails with `credential plugin did not return:
+context deadline exceeded` (prefixed with the executor name for a
+construction failure), which for a dry run is the `--dry-run-timeout`
+budget. A context that ends after the plugin returned is not attributed to
+the plugin: a slow or unreachable API server surfaces as the next step's
+own error. The plugin process is not killed; the harness logs a warning
+when it is abandoned, and the process is left to exit on its own, which
+normally happens when the harness exits. The limit applies only to the
+first run of the plugin: credentials it returns are cached until they
+expire, and a later refresh runs the plugin again without this bound. A
+plugin that fails quickly is not reported by this step; the next request
+runs it again, also without the bound.
 
 A dry run starts no sandbox, so it does not exercise image pull,
 RuntimeClass admission and scheduling, the [admission check and readiness
