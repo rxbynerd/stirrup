@@ -12,7 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	clienttesting "k8s.io/client-go/testing"
 	utilexec "k8s.io/client-go/util/exec"
 )
 
@@ -44,15 +46,36 @@ func lostTestCore(pod *corev1.Pod, execErr error) (*podExecCore, *fake.Clientset
 	}
 	var execs atomic.Int32
 	core := &podExecCore{
-		clientset: cs,
-		namespace: testK8sNamespace,
-		podName:   testK8sPodName,
+		clientset:  cs,
+		namespace:  testK8sNamespace,
+		podName:    testK8sPodName,
+		lossSettle: time.Millisecond,
 		execFn: func(context.Context, []string, io.Reader, io.Writer, io.Writer) error {
 			execs.Add(1)
 			return execErr
 		},
 	}
 	return core, cs, &execs
+}
+
+func TestPodExecCore_Exec_WaitsForTheKubeletToReportTheLoss(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	core, cs, _ := lostTestCore(nil, errContainerNotFound)
+	core.lossSettle = time.Minute
+	var reads atomic.Int32
+	cs.PrependReactor("get", "pods", func(clienttesting.Action) (bool, runtime.Object, error) {
+		if reads.Add(1) < 3 {
+			return true, readyPod("uid-1"), nil
+		}
+		return true, endedPod(corev1.PodFailed, "", "", "OOMKilled", 137), nil
+	})
+
+	_, err := core.Exec(context.Background(), "true", time.Minute)
+	var lost *SandboxLostError
+	must.ErrorAs(err, &lost)
+	check.Contains(lost.State, "OOMKilled (exit code 137)")
+	check.Equal(int32(3), reads.Load())
 }
 
 func TestPodEndedState_DescribesTerminalStates(t *testing.T) {

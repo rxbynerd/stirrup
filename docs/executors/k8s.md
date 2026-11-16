@@ -526,8 +526,12 @@ moment usually returns exit code `137` as an ordinary result; the next
 container not found ("agent")`.
 
 When an `exec` fails without an exit status, and not because its own
-deadline or the run's context ended, the executor reads the Pod once,
-within 10 seconds. It treats the sandbox as lost when the read finds:
+deadline or the run's context ended, the executor reads the Pod. The
+kubelet reports a killed container about a second after the container
+runtime has removed it (*measured* on kind: terminated after about 1
+second, phase `Failed` after about 2), so a Pod that still looks usable
+is read again once a second for up to 5 seconds. The executor treats
+the sandbox as lost as soon as a read finds:
 
 - phase `Failed` or `Succeeded`;
 - the Pod being deleted, or no Pod under its name;
@@ -548,10 +552,11 @@ file operation returns the same error without contacting the cluster,
 and the run ends after the current turn with the outcome `sandbox_lost`
 and this text as its error (see
 [Terminal semantics](../integration-guide.md#terminal-semantics)). A
-Pod that is still running, a container that will restart, and a failed
-Pod read all leave the original `exec` error unchanged, so a transient
-failure stays a tool error the model can retry. The read uses the
-`get pods` permission the readiness wait already needs.
+Pod that is still running after those 5 seconds, a container that will
+restart, and a failed Pod read all leave the original `exec` error
+unchanged, so a transient failure stays a tool error the model can
+retry, returned once the 5-second window ends. The reads use
+the `get pods` permission the readiness wait already needs.
 
 ### Teardown
 

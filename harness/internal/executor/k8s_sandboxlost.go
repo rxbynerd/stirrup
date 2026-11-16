@@ -12,9 +12,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// k8sSandboxStateReadTimeout bounds the Pod read that decides whether a
-// failed exec found the sandbox gone.
-const k8sSandboxStateReadTimeout = 10 * time.Second
+const (
+	// k8sSandboxStateReadTimeout bounds the Pod reads that decide whether
+	// a failed exec found the sandbox gone.
+	k8sSandboxStateReadTimeout = 10 * time.Second
+	// k8sSandboxLossSettle is how long a Pod that still looks usable is
+	// re-read after a failed exec. The kubelet reports a killed container
+	// about a second after the runtime has removed it, and the Pod's
+	// terminal phase about a second after that.
+	k8sSandboxLossSettle     = 5 * time.Second
+	k8sSandboxLossPollPeriod = time.Second
+)
 
 // SandboxLost reports the Pod's terminal state once an exec has found it
 // ended; see SandboxLossReporter.
@@ -27,8 +35,9 @@ func (e *podExecCore) SandboxLost() error {
 
 var _ SandboxLossReporter = (*podExecCore)(nil)
 
-// sandboxLostAfter reads the Pod once after an exec failed without an exit
-// status. A Pod that has ended yields a *SandboxLostError, recorded so later
+// sandboxLostAfter reads the Pod after an exec failed without an exit
+// status, re-reading a Pod that still looks usable until the settle window
+// ends. A Pod that has ended yields a *SandboxLostError, recorded so later
 // operations fail without contacting the cluster. Anything else, including
 // a failed read, returns execErr unchanged: the failure may be transient.
 func (e *podExecCore) sandboxLostAfter(ctx context.Context, execErr error) error {
@@ -38,25 +47,41 @@ func (e *podExecCore) sandboxLostAfter(ctx context.Context, execErr error) error
 	readCtx, cancel := context.WithTimeout(ctx, k8sSandboxStateReadTimeout)
 	defer cancel()
 
-	var state string
-	pod, err := e.clientset.CoreV1().Pods(e.namespace).Get(readCtx, e.podName, metav1.GetOptions{})
-	switch {
-	case apierrors.IsNotFound(err):
-		state = fmt.Sprintf("sandbox pod %s/%s no longer exists", e.namespace, e.podName)
-	case err != nil:
-		e.log().Debug("k8s executor could not read the sandbox pod after a failed exec", "namespace", e.namespace, "pod", e.podName, "err", clusterText(err.Error()))
-		return execErr
-	default:
-		var ended bool
-		if state, ended = podEndedState(e.namespace, e.podName, pod); !ended {
+	settle := e.lossSettle
+	if settle <= 0 {
+		settle = k8sSandboxLossSettle
+	}
+	settled := time.Now().Add(settle)
+	for {
+		state, ended, err := e.readEndedState(readCtx)
+		if err != nil {
+			e.log().Debug("k8s executor could not read the sandbox pod after a failed exec", "namespace", e.namespace, "pod", e.podName, "err", clusterText(err.Error()))
+			return execErr
+		}
+		if ended {
+			if e.lost.CompareAndSwap(nil, &SandboxLostError{State: state, Err: boundClusterErr(execErr)}) {
+				e.log().Warn("k8s executor sandbox pod has ended; later operations fail without contacting it", "namespace", e.namespace, "pod", e.podName, "state", state)
+			}
+			return e.lost.Load()
+		}
+		if !time.Now().Before(settled) || !sleepCtx(readCtx, min(k8sSandboxLossPollPeriod, settle)) {
 			return execErr
 		}
 	}
+}
 
-	if e.lost.CompareAndSwap(nil, &SandboxLostError{State: state, Err: boundClusterErr(execErr)}) {
-		e.log().Warn("k8s executor sandbox pod has ended; later operations fail without contacting it", "namespace", e.namespace, "pod", e.podName, "state", state)
+// readEndedState reads the Pod and reports whether it has ended, and how; a
+// Pod that no longer exists has ended.
+func (e *podExecCore) readEndedState(ctx context.Context) (string, bool, error) {
+	pod, err := e.clientset.CoreV1().Pods(e.namespace).Get(ctx, e.podName, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
+		return fmt.Sprintf("sandbox pod %s/%s no longer exists", e.namespace, e.podName), true, nil
+	case err != nil:
+		return "", false, err
 	}
-	return e.lost.Load()
+	state, ended := podEndedState(e.namespace, e.podName, pod)
+	return state, ended, nil
 }
 
 // podEndedState reports whether the Pod can never run another exec, and

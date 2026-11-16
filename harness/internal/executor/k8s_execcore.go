@@ -52,6 +52,9 @@ type podExecCore struct {
 	fileIOTimeout time.Duration
 	// lost is set once, when an exec finds the Pod ended.
 	lost atomic.Pointer[SandboxLostError]
+	// lossSettle bounds the re-reads of a Pod that still looks usable
+	// after a failed exec; zero means k8sSandboxLossSettle.
+	lossSettle time.Duration
 }
 
 func (e *podExecCore) fileIOBound() time.Duration {
@@ -439,6 +442,9 @@ func (e *podExecCore) streamExec(ctx context.Context, command []string, stdin io
 	return e.sandboxLostAfter(ctx, err)
 }
 
+// execOnce is streamExec without the sandbox-loss check. The exec
+// reachability wait uses it: its probe failures are expected and retried,
+// and the readiness wait has already established the Pod's state.
 func (e *podExecCore) execOnce(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if e.execFn != nil {
 		return e.execFn(ctx, command, stdin, stdout, stderr)

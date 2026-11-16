@@ -230,7 +230,7 @@ func waitForExecReachable(ctx context.Context, core *podExecCore, timing k8sTimi
 	var lastCause error
 	for attempt := 1; ; attempt++ {
 		attemptCtx, cancelAttempt := context.WithTimeout(waitCtx, attemptBound)
-		err := core.streamExec(attemptCtx, execProbeCommand, nil, io.Discard, io.Discard)
+		err := core.execOnce(attemptCtx, execProbeCommand, nil, io.Discard, io.Discard)
 		attemptTimedOut := attemptCtx.Err() != nil
 		cancelAttempt()
 		if err == nil {

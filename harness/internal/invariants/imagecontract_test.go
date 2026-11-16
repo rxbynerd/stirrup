@@ -64,7 +64,7 @@ var sandboxExecSites = map[string]string{
 // package reaches the sandbox through Executor.Exec and ExecStream.
 var (
 	executorInternalExecCalls = map[string]bool{
-		"streamExec": true, "execInContainer": true, "execInContainerStream": true, "execInContainerInput": true,
+		"streamExec": true, "execOnce": true, "execInContainer": true, "execInContainerStream": true, "execInContainerInput": true,
 	}
 	executorMethodExecCalls = map[string]bool{"Exec": true, "ExecStream": true}
 )
