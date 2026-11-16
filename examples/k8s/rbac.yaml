@@ -28,6 +28,16 @@
 #                                   two verbs construction fails fail-closed,
 #                                   because a Pod whose egress cannot be
 #                                   confined must never be created.
+#                         patch   — adds the harness Pod and the sandbox Pod
+#                                   as owners once the sandbox Pod exists, so a
+#                                   policy a dead harness leaves behind is
+#                                   garbage-collected. Without it the run is
+#                                   unaffected and such a policy stays.
+#
+#   These verbs cover every NetworkPolicy in the namespace, including the
+#   standing default-deny (sandbox-egress-default-deny.yaml); RBAC cannot name
+#   the random per-run policies. docs/executors/k8s.md ("Standing default-deny
+#   egress") describes an admission policy that narrows them.
 #
 # The Role is intentionally namespaced (not a ClusterRole): the orchestrator
 # operates within a single sandbox namespace. Bind one Role per namespace if
@@ -78,6 +88,7 @@ rules:
     verbs:
       - create
       - delete
+      - patch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

@@ -14,6 +14,7 @@ every field shown here is cross-checked against it.
 | File | Kind | Apply? | Purpose |
 |---|---|---|---|
 | `namespace.yaml` | Namespace | yes | The `stirrup-sandbox` namespace with sandbox/monitoring labels and `restricted` PodSecurity. |
+| `sandbox-egress-default-deny.yaml` | NetworkPolicy | yes (required) | The standing default-deny egress policy for every sandbox Pod, so a sandbox whose per-run policy is removed before it stops stays isolated. See [Standing default-deny egress](../../docs/executors/k8s.md#standing-default-deny-egress). |
 | `rbac.yaml` | ServiceAccount + Role + RoleBinding | yes | The `stirrup-orchestrator` identity and the pod / pods/exec / networkpolicy verbs the executor's lifecycle needs. |
 | `runtimeclass.yaml` | RuntimeClass ×5 | yes (per available runtime) | The self-managed classes `runc / gvisor / kata-qemu / kata-fc / kata-clh`, with per-class node prerequisites. The sixth accepted runtime, `nitro-isolated`, uses the `isolated-sandbox` class that EKS Auto Mode provides; skip this file on EKS (see [EKS with Nitro Sandboxes](../../docs/executors/k8s.md#eks-with-nitro-sandboxes)). |
 | `taint-and-toleration.yaml` | (doc only) | no | The pattern for isolating sandbox nodes — and the note that the executor does not yet inject tolerations. |
@@ -31,6 +32,7 @@ would not be one the executor manages. The same holds for
 
 ```sh
 kubectl apply -f examples/k8s/namespace.yaml
+kubectl apply -f examples/k8s/sandbox-egress-default-deny.yaml
 kubectl apply -f examples/k8s/rbac.yaml
 kubectl apply -f examples/k8s/runtimeclass.yaml   # registered handlers only
 ```

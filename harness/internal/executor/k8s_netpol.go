@@ -1,12 +1,17 @@
 package executor
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -151,6 +156,47 @@ func egressPolicyFor(network *types.NetworkConfig, namespace, podName, runID str
 		return allowlistEgressPolicy(namespace, podName, runID), nil
 	default:
 		return nil, fmt.Errorf("k8s executor: unsupported network mode %q (want \"none\" or \"allowlist\")", network.Mode)
+	}
+}
+
+// egressPolicyOwners returns the owner references that let the garbage
+// collector remove a policy a dead harness leaves behind: the harness Pod and
+// the sandbox Pod. The collector deletes an object only when every owner is
+// gone, so the policy outlives a sandbox that is still terminating after its
+// harness died. It returns nil when the harness Pod is unknown or in another
+// namespace.
+func egressPolicyOwners(harness *HarnessPod, namespace, podName string, podUID k8stypes.UID) []metav1.OwnerReference {
+	owners := harness.ownerReferences(namespace)
+	if owners == nil {
+		return nil
+	}
+	return append(owners, metav1.OwnerReference{
+		APIVersion: "v1",
+		Kind:       "Pod",
+		Name:       podName,
+		UID:        podUID,
+	})
+}
+
+// ownEgressPolicy attaches owners to the installed policy. The sandbox Pod's
+// UID exists only once the Pod is created, and the policy must be installed
+// before that, so the references are added afterwards. A failure leaves the
+// policy unowned, as it was when installed, and is logged rather than
+// returned: the run is unaffected and only the cleanup after a harness death
+// is lost.
+func ownEgressPolicy(ctx context.Context, clientset kubernetes.Interface, owners []metav1.OwnerReference, namespace, podName, policyName, runID string, logger *slog.Logger) {
+	if len(owners) == 0 {
+		return
+	}
+	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"ownerReferences": owners}})
+	if err == nil {
+		ctx, cancel := context.WithTimeout(ctx, k8sAPITimeout)
+		defer cancel()
+		_, err = clientset.NetworkingV1().NetworkPolicies(namespace).Patch(ctx, policyName, k8stypes.MergePatchType, patch, metav1.PatchOptions{})
+	}
+	if err != nil {
+		logger.Warn("could not attach owner references to the egress NetworkPolicy; it is not garbage-collected if the harness dies",
+			"namespace", namespace, "pod", podName, "networkpolicy", policyName, "runId", runID, "err", boundClusterErr(err))
 	}
 }
 

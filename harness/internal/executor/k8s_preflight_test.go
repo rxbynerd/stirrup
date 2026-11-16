@@ -15,16 +15,19 @@ import (
 	"github.com/stretchr/testify/require"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	nodev1 "k8s.io/api/node/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	fakediscovery "k8s.io/client-go/discovery/fake"
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/utils/ptr"
 )
 
 const probeTestNamespace = "stirrup-sandbox"
@@ -48,10 +51,25 @@ func reviewReactor(denied ...string) k8stesting.ReactionFunc {
 	}
 }
 
-// accessClient returns a fake clientset holding the probe namespace whose
-// access reviews allow every permission except those named.
+// standingDenyPolicy is the reference standing default-deny egress policy.
+func standingDenyPolicy() *networkingv1.NetworkPolicy {
+	return &networkingv1.NetworkPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "stirrup-sandbox-default-deny-egress", Namespace: probeTestNamespace},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{k8sSandboxLabel: "true"}},
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+		},
+	}
+}
+
+// accessClient returns a fake clientset holding the probe namespace and the
+// standing default-deny egress policy, whose access reviews allow every
+// permission except those named.
 func accessClient(denied ...string) *fake.Clientset {
-	kube := fake.NewClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: probeTestNamespace}})
+	kube := fake.NewClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: probeTestNamespace}},
+		standingDenyPolicy(),
+	)
 	kube.PrependReactor("create", "selfsubjectaccessreviews", reviewReactor(denied...))
 	return kube
 }
@@ -78,8 +96,8 @@ func refuseRead(kube *fake.Clientset, resource string, err error) {
 }
 
 // unexpectedActions lists recorded actions other than access reviews and the
-// reads the probe is allowed to make: the namespace, the RuntimeClass and API
-// discovery.
+// reads the probe is allowed to make: the namespace, the RuntimeClass, the
+// namespace's NetworkPolicies and API discovery.
 func unexpectedActions(kube *fake.Clientset) []string {
 	var out []string
 	for _, a := range kube.Actions() {
@@ -87,6 +105,7 @@ func unexpectedActions(kube *fake.Clientset) []string {
 		switch {
 		case a.GetVerb() == "create" && resource == "selfsubjectaccessreviews":
 		case a.GetVerb() == "get" && (resource == "namespaces" || resource == "runtimeclasses" || resource == "resource"):
+		case a.GetVerb() == "list" && resource == "networkpolicies":
 		default:
 			out = append(out, a.GetVerb()+" "+resource)
 		}
@@ -119,6 +138,7 @@ func TestProbeK8sAccess_AllGrantedReportsOK(t *testing.T) {
 			must.NoError(err)
 			check.Contains(detail, fmt.Sprintf("%d required permissions granted", len(k8sRequiredAccess(executorType))))
 			check.Contains(detail, `namespace "stirrup-sandbox" exists`)
+			check.Contains(detail, `standing egress policy "stirrup-sandbox-default-deny-egress" selects every sandbox Pod`)
 			check.Empty(unexpectedActions(kube), "the probe must only review access and make the documented reads")
 		})
 	}
@@ -131,7 +151,7 @@ func TestProbeK8sAccess_ReviewsEveryRequiredVerbInTheNamespace(t *testing.T) {
 	}{
 		{"k8s", []string{
 			"create pods", "get pods", "delete pods", "create pods/exec",
-			"create networkpolicies.networking.k8s.io", "delete networkpolicies.networking.k8s.io",
+			"create networkpolicies.networking.k8s.io", "delete networkpolicies.networking.k8s.io", "patch networkpolicies.networking.k8s.io",
 		}},
 		{"k8s-sandbox", []string{
 			"create sandboxes.agents.x-k8s.io", "get sandboxes.agents.x-k8s.io", "delete sandboxes.agents.x-k8s.io",
@@ -204,7 +224,7 @@ func TestProbeK8sAccess_DeniedPermissionFailsNamingVerbResourceAndNamespace(t *t
 func TestProbeK8sAccess_EvaluationErrorReachesTheDenial(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
-	kube := fake.NewClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: probeTestNamespace}})
+	kube := fake.NewClientset(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: probeTestNamespace}}, standingDenyPolicy())
 	kube.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		review := action.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
 		review.Status.Allowed = false
@@ -409,6 +429,102 @@ func TestProbeK8sAccess_NamespaceOutcomes(t *testing.T) {
 
 		must.NoError(err)
 		check.Contains(detail, `namespace "stirrup-sandbox" not checked`)
+	})
+}
+
+func TestProbeK8sAccess_StandingEgressPolicyOutcomes(t *testing.T) {
+	sandboxSelector := metav1.LabelSelector{MatchLabels: map[string]string{k8sSandboxLabel: "true"}}
+	egressOnly := []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}
+	dnsRule := []networkingv1.NetworkPolicyEgressRule{{Ports: []networkingv1.NetworkPolicyPort{{Port: ptr.To(intstr.FromInt32(53))}}}}
+	named := func(name string, spec networkingv1.NetworkPolicySpec) *networkingv1.NetworkPolicy {
+		return &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: probeTestNamespace}, Spec: spec}
+	}
+	clientWith := func(policies ...*networkingv1.NetworkPolicy) *fake.Clientset {
+		objects := []runtime.Object{&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: probeTestNamespace}}}
+		for _, p := range policies {
+			objects = append(objects, p)
+		}
+		kube := fake.NewClientset(objects...)
+		kube.PrependReactor("create", "selfsubjectaccessreviews", reviewReactor())
+		return kube
+	}
+
+	accepted := map[string]*networkingv1.NetworkPolicy{
+		"a deny-all selecting the sandbox label": named("baseline", networkingv1.NetworkPolicySpec{PodSelector: sandboxSelector, PolicyTypes: egressOnly}),
+		"a namespace-wide deny-all":              named("baseline", networkingv1.NetworkPolicySpec{PolicyTypes: egressOnly}),
+		"an allowlist baseline":                  named("baseline", networkingv1.NetworkPolicySpec{PodSelector: sandboxSelector, PolicyTypes: egressOnly, Egress: dnsRule}),
+		"egress rules with defaulted types":      named("baseline", networkingv1.NetworkPolicySpec{PodSelector: sandboxSelector, Egress: dnsRule}),
+	}
+	for name, policy := range accepted {
+		t.Run("accepts "+name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+
+			detail, err := probeK8sAccess(context.Background(), clientWith(policy), K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace})
+
+			must.NoError(err)
+			check.Contains(detail, `standing egress policy "baseline" selects every sandbox Pod`)
+		})
+	}
+
+	rejected := map[string][]*networkingv1.NetworkPolicy{
+		"no policy":             nil,
+		"only a per-run policy": {denyAllEgressPolicy(probeTestNamespace, "stirrup-abc", "run-1")},
+		"an ingress-only policy": {named("ingress", networkingv1.NetworkPolicySpec{
+			PodSelector: sandboxSelector, PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}, Egress: dnsRule,
+		})},
+		"a policy selecting other Pods": {named("other", networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}}, PolicyTypes: egressOnly,
+		})},
+		"a policy excluding Pods with a per-Pod label": {named("narrow", networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{
+				MatchLabels:      map[string]string{k8sSandboxLabel: "true"},
+				MatchExpressions: []metav1.LabelSelectorRequirement{{Key: k8sPodNameLabel, Operator: metav1.LabelSelectorOpDoesNotExist}},
+			},
+			PolicyTypes: egressOnly,
+		})},
+	}
+	for name, policies := range rejected {
+		t.Run("fails with "+name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+
+			_, err := probeK8sAccess(context.Background(), clientWith(policies...), K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace})
+
+			must.ErrorContains(err, `no standing NetworkPolicy in namespace "stirrup-sandbox" isolates every stirrup-sandbox=true Pod for egress`)
+			check.Equal([]K8sProbeKind{K8sProbeEgressBaselineMissing}, probeErrorKinds(t, err))
+		})
+	}
+
+	for name, listErr := range map[string]error{
+		"forbidden":   apierrors.NewForbidden(schema.GroupResource{Group: "networking.k8s.io", Resource: "networkpolicies"}, "", errors.New("denied")),
+		"unavailable": apierrors.NewServiceUnavailable("apiserver restarting"),
+	} {
+		t.Run("reports a "+name+" list as not checked", func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			kube := clientWith()
+			kube.PrependReactor("list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, nil, listErr
+			})
+
+			detail, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace})
+
+			must.NoError(err)
+			check.Contains(detail, "standing egress policy not checked")
+		})
+	}
+
+	t.Run("is not looked for in a missing namespace", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		kube := fake.NewClientset()
+		kube.PrependReactor("create", "selfsubjectaccessreviews", reviewReactor())
+
+		_, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace})
+
+		must.Error(err)
+		check.Equal([]K8sProbeKind{K8sProbeNamespaceMissing}, probeErrorKinds(t, err))
 	})
 }
 

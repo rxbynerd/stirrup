@@ -1,0 +1,35 @@
+# Standing default-deny egress for every stirrup sandbox Pod in the namespace.
+#
+# REQUIRED for both the k8s and k8s-sandbox executors. Each run installs its
+# own per-Pod egress policy, but that object can disappear while the sandbox
+# container still runs: the garbage collector removes it during a foreground
+# delete of the harness Pod, which the Job TTL controller always uses.
+# NetworkPolicy allows are additive and a Pod selected by any Egress policy is
+# isolated, so with this policy in place removing a per-run policy while the
+# Pod object exists only narrows egress to what the standing policies allow.
+# See docs/executors/k8s.md, "Standing default-deny egress".
+#
+# The policy selects stirrup-sandbox=true, which every sandbox Pod carries (the
+# k8s executor's Pods and the Pods the Agent Sandbox controller creates from a
+# k8s-sandbox Sandbox alike). It has no egress rules, so it allows nothing on
+# its own; the per-run policy grants the run's allowlist (DNS and the egress
+# proxy) on top of it.
+#
+# The policy itself deliberately does NOT carry the stirrup-sandbox label: the
+# cleanup procedure selects per-run policies with -l stirrup-sandbox=true, and
+# this one must never be swept up with them.
+#
+# Set the namespace to the executor's --k8s-namespace (executor.k8sNamespace).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: stirrup-sandbox-default-deny-egress
+  namespace: stirrup-sandbox
+  labels:
+    app.kubernetes.io/part-of: stirrup
+spec:
+  podSelector:
+    matchLabels:
+      stirrup-sandbox: "true"
+  policyTypes:
+    - Egress

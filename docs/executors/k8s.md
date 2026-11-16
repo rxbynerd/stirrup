@@ -68,6 +68,7 @@ those files.
   - [Shutdown timing and grace period](#shutdown-timing-and-grace-period)
 - [RuntimeClass selection per run](#runtimeclass-selection-per-run)
 - [Egress](#egress)
+  - [Standing default-deny egress](#standing-default-deny-egress)
 - [Safety rings on Kubernetes](#safety-rings-on-kubernetes)
 - [Sandbox identity token exposure](#sandbox-identity-token-exposure)
 - [Dry-run preflight](#dry-run-preflight)
@@ -115,7 +116,7 @@ flowchart LR
   end
   SA -->|pods: create/get/delete| Pod
   SA -->|pods/exec: create| Pod
-  SA -->|networkpolicies: create/delete| NP
+  SA -->|networkpolicies: create/delete/patch| NP
   NP -.->|binds| Pod
   Pod -->|HTTP_PROXY allowlist mode| Proxy
   Proxy -->|FQDN allowlist| Net([Internet])
@@ -131,7 +132,7 @@ The pieces and their lifecycle:
   when running in-cluster), then the in-cluster ServiceAccount, then
   `$KUBECONFIG`. It holds the RBAC the executor's lifecycle needs:
   `pods` (create/get/delete), `pods/exec` (create), and
-  `networkpolicies` (create/delete). The reference Role
+  `networkpolicies` (create/delete/patch). The reference Role
   ([`examples/k8s/rbac.yaml`](../../examples/k8s/rbac.yaml)) also grants
   `pods/log` (get); the executor does not use it, so it is granted only
   for operator `kubectl logs` debugging and may be dropped to tighten
@@ -584,10 +585,16 @@ What the read in step 2 cannot establish:
 
 On a cluster that enforces NetworkPolicy a retained policy keeps
 confining a Pod that is still running and is inert once the Pod is gone.
-The policy carries no owner reference to the Pod, because garbage
-collection would remove it as soon as the Pod object disappears,
+While the Pod object still exists, a workload that outlives its policy
+stays isolated by the
+[standing default-deny egress policy](#standing-default-deny-egress).
+A policy is never owned by the sandbox Pod alone, because garbage
+collection would then remove it as soon as the Pod object disappears,
 including after a force delete that does not wait for the workload to
-stop.
+stop. When the harness runs in a Pod, the policy is owned by both the
+harness Pod and the sandbox Pod (see
+[When the harness dies](#when-the-harness-dies)), so it is collected
+only after both are gone.
 
 Every Pod create error, whatever its status, is followed by a lookup of
 the Pod under its preselected name, because a client may retry a
@@ -622,10 +629,62 @@ in a Pod in the sandbox namespace with the `STIRRUP_POD_NAME`,
 set, the sandbox Pod is also owned by the harness Pod and is
 garbage-collected with it.
 
-A harness killed by `SIGKILL` (for example at the end of its own
-termination grace period) can leave objects behind: a running Pod and
-its policy if the kill came before the Pod delete, or a terminating Pod
-and its policy if it came during the wait.
+### When the harness dies
+
+A harness that is killed, evicted, or loses its node before `Close`
+leaves a running or terminating sandbox Pod and its egress policy. What
+the cluster removes on its own depends on whether the harness runs in a
+Pod in the sandbox namespace with the `STIRRUP_POD_NAME`,
+`STIRRUP_POD_UID` and `STIRRUP_POD_NAMESPACE` downward-API variables
+set:
+
+| Object | Harness in a Pod, variables set | Otherwise |
+|---|---|---|
+| Sandbox Pod | Owned by the harness Pod; garbage-collected, and stopped within its 1-second grace period. | Left running until `activeDeadlineSeconds` marks it `Failed`; the object stays. |
+| Egress policy | Owned by the harness Pod and the sandbox Pod; garbage-collected once both are gone when the harness Pod is deleted with background propagation. A foreground delete removes it earlier (see below). | Left in place. |
+
+The policy takes the owner references after the sandbox Pod is created,
+because the Pod's UID does not exist earlier and the policy must be
+installed first. A harness that dies in the one API round trip between
+the Pod create and that patch leaves the policy without owners. When
+the patch fails, for instance because the credentials lack `patch` on
+`networkpolicies`, the executor logs `could not attach owner references
+to the egress NetworkPolicy; it is not garbage-collected if the harness
+dies` and the run continues with an unowned policy.
+
+Two owners are needed because the collector deletes the dependents of a
+deleted object concurrently. A policy owned by the harness Pod alone is
+removed at the moment the harness Pod is deleted, while the sandbox Pod
+runs on until its grace period ends.
+
+The ordering holds only for background propagation, which is the
+default for `kubectl delete pod`. A foreground delete of the harness
+Pod (`kubectl delete pod --cascade=foreground`, the Job TTL controller
+deleting the Job, Argo CD's default prune) makes the collector remove
+the policy as soon as the sandbox Pod is marked for deletion, while its
+container still runs. A foreground delete of the sandbox Pod leaves the
+policy in place only while the harness Pod object exists; once the
+harness Pod is gone it removes the policy the same way.
+
+The collector also removes the policy when the sandbox Pod disappears
+without the kubelet confirming it (a force delete, or the Pod garbage
+collector after the Node was removed) and the harness Pod is gone too.
+The workload can then outlive the policy, as described in
+[Teardown edge cases](#teardown-edge-cases).
+
+In the foreground cases the sandbox Pod object exists until its
+container stops, so the
+[standing default-deny egress policy](#standing-default-deny-egress)
+keeps it isolated for egress throughout. After a force delete or a
+Node removal the object is gone, no policy selects the workload any
+more, and what the CNI does with traffic from it is CNI-specific and
+has not been measured. The owner references only decide when the
+per-run policy is cleaned up.
+
+The `k8s-sandbox` executor sets no owner reference on its policy or its
+Sandbox. After a harness death the controller's TTL deletes the Sandbox
+and its Pod, but the policy stays until an operator removes it with
+[the procedure below](#cleaning-up-retained-objects).
 
 ### Cleaning up retained objects
 
@@ -886,6 +945,7 @@ The standing objects (namespace, RBAC, RuntimeClasses) come from
 
 ```sh
 kubectl apply -f examples/k8s/namespace.yaml
+kubectl apply -f examples/k8s/sandbox-egress-default-deny.yaml
 kubectl apply -f examples/k8s/rbac.yaml
 kubectl apply -f examples/k8s/runtimeclass.yaml   # registered handlers only
 ```
@@ -1021,6 +1081,7 @@ failure, so a normal command error is not retried. This mirrors
 
 ```sh
 kubectl apply -f examples/k8s/namespace.yaml   # stirrup-sandbox, restricted PSS
+kubectl apply -f examples/k8s/sandbox-egress-default-deny.yaml
 kubectl apply -f examples/k8s/rbac.yaml        # orchestrator SA + Role/RoleBinding
 # (skip runtimeclass.yaml on GKE — see the note in step 1)
 ```
@@ -1221,6 +1282,7 @@ the DMI diagnostic only if its guest reports a name ending `.enclave`.
 
    ```sh
    kubectl apply -f examples/k8s/namespace.yaml
+   kubectl apply -f examples/k8s/sandbox-egress-default-deny.yaml
    kubectl apply -f examples/k8s/rbac.yaml
    # skip runtimeclass.yaml: Auto Mode provides isolated-sandbox
    kubectl get runtimeclass isolated-sandbox -o yaml
@@ -1835,6 +1897,83 @@ the sandbox only while no other policy in the sandbox namespace selects
 it with a wider egress rule. Controlling who can create NetworkPolicies
 in that namespace, and which ones exist, is an operator prerequisite;
 the [admission check](#admission-check) does not compare the policy set.
+The namespace also needs the
+[standing default-deny egress policy](#standing-default-deny-egress),
+which keeps a sandbox isolated if its per-Pod policy is removed first.
+
+### Standing default-deny egress
+
+Every sandbox namespace needs a standing NetworkPolicy that selects all
+sandbox Pods and isolates them for egress. The reference manifest is
+[`examples/k8s/sandbox-egress-default-deny.yaml`](../../examples/k8s/sandbox-egress-default-deny.yaml):
+an `Egress` policy with no egress rules that selects
+`stirrup-sandbox=true`, the label every sandbox Pod carries under both
+the `k8s` and the `k8s-sandbox` executor. Set its namespace to
+`executor.k8sNamespace` and apply it once, before the first run.
+
+The per-run policy is not enough on its own, because it can disappear
+while the sandbox container is still running:
+
+- A foreground delete of the harness Pod. The sandbox Pod and the
+  per-run policy are both dependents of the harness Pod, and the policy
+  is also a dependent of the sandbox Pod, so the garbage collector
+  deletes the sandbox Pod in the foreground and removes the policy as
+  soon as the sandbox Pod is marked for deletion. The container keeps
+  running until the kubelet stops it. The Job TTL-after-finished
+  controller (`ttlSecondsAfterFinished`, which the
+  [reference Job](../../examples/k8s/harness-job.yaml) sets) always
+  deletes with foreground propagation, and so does Argo CD's default
+  prune.
+- A foreground delete of the sandbox Pod after the harness Pod object is
+  already gone, for example
+  `kubectl delete pod -l stirrup-sandbox=true --cascade=foreground`.
+- A force delete of the sandbox Pod, or its removal by the Pod garbage
+  collector after its Node was deleted, when the harness Pod is gone
+  too (see [Teardown edge cases](#teardown-edge-cases)). The standing
+  policy cannot select a Pod whose object is gone either, so in this case
+  the outcome depends on the CNI.
+
+NetworkPolicy allows are additive, and a Pod that any `Egress` policy
+selects is isolated for egress. With the standing policy in place, a
+sandbox whose per-run policy has gone keeps only what the standing
+policies allow, which for the reference manifest is nothing. Removing a
+per-run policy then narrows egress and never widens it. *Measured* on a
+kind cluster whose CNI enforced NetworkPolicy: without the standing
+policy, a foreground delete of the harness Pod let connections from the
+terminating sandbox to an external address succeed for one to two seconds;
+with it, none did.
+
+The manifest does not carry the `stirrup-sandbox` label, so the
+[cleanup procedure](#cleaning-up-retained-objects), which selects
+per-run policies by that label, does not match it. The
+`stirrup-sandbox-egress` policy under
+[`examples/k8s/egress-proxy/`](../../examples/k8s/egress-proxy/network-policy.yaml)
+also isolates every sandbox Pod, but it allows DNS and the proxy to all
+of them, including runs in mode `none`; the default-deny is the
+standing policy to use.
+
+The [dry run](#dry-run-preflight) lists the namespace's NetworkPolicies
+and fails when none of them isolates every sandbox Pod for egress. The
+reference Roles grant no `list`, so a dry run with the orchestrator's
+own credentials reports the check as `not checked` and passes; only
+credentials that can list policies detect a missing standing policy. A
+run does not check, and nothing enforces the policy at run time.
+
+The standing policy protects against the garbage collector and teardown
+edge cases, not against a leaked orchestrator credential. The reference
+Role grants `create`, `delete` and `patch` on every NetworkPolicy in the
+namespace, because per-run policy names are random and RBAC cannot name
+them in advance. Those credentials can therefore delete the standing
+policy, add an allow-all policy, rewrite a policy in place, or add owner
+references that make the garbage collector delete one later. A
+`ValidatingAdmissionPolicy` bound to the orchestrator ServiceAccount
+narrows this. Admitting changes only to policies labelled
+`stirrup-sandbox=true`, and for updates only changes to
+`metadata.ownerReferences`, protects the standing policy from deletion
+and rewriting. It does not stop a create of a labelled policy that
+allows everything; ruling that out also needs the create rule to require
+the executor's shape, a Pod selector on `stirrup.dev/pod` alone with no
+egress rules or exactly the DNS-and-proxy rules.
 
 ### Mode `none` — deny all egress
 
@@ -1971,7 +2110,7 @@ the K8s-specific mapping is:
 | Ring | On Kubernetes |
 |---|---|
 | **1 — Runtime class** | `executor.runtime` selects the Pod `RuntimeClassName`, not a host OCI runtime. `gvisor` / `kata-*` give kernel/VM isolation, and `nitro-isolated` an AWS Nitro Sandbox VM on EKS ([offline only](#network-mode-none-on-this-runtime)); empty selects the cluster default (warned). The hardened `securityContext` (drop ALL, runAsNonRoot, seccomp RuntimeDefault) is applied unconditionally beneath the runtime choice. |
-| **2 — Egress proxy** | A per-Pod `NetworkPolicy` plus the in-cluster proxy Deployment, instead of an in-process host proxy. Enforcement depends on a NetworkPolicy-enforcing CNI. |
+| **2 — Egress proxy** | A per-Pod `NetworkPolicy` over a [standing default-deny](#standing-default-deny-egress), plus the in-cluster proxy Deployment, instead of an in-process host proxy. Enforcement depends on a NetworkPolicy-enforcing CNI. |
 | **3 — Cedar policy** | Unchanged — per tool-call authorization runs in the orchestrator before the executor acts, identically across executor types. |
 | **4 — Rule of Two** | Unchanged — a pre-flight invariant on the `RunConfig`. A non-`none` `network.mode` counts toward `canCommunicateExternally` exactly as for other executors. |
 | **5 — Code scanner** | Unchanged — post-edit content check, executor-agnostic. |
@@ -2081,7 +2220,7 @@ executors:
 
 | Executor | Permissions checked |
 |---|---|
-| `k8s` | `pods`: `create`, `get`, `delete`; `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
+| `k8s` | `pods`: `create`, `get`, `delete`; `pods/exec`: `create`; `networkpolicies`: `create`, `delete`, `patch` |
 | `k8s-sandbox` | `sandboxes.agents.x-k8s.io`: `create`, `get`, `delete`; `pods`: `get` (teardown reads the controller-created Pod until it is gone); `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
 
 Every denied permission is listed in one failure, with the API server's
@@ -2107,7 +2246,7 @@ from 1.35). The check is conservative: a Role granting only `get` on
 `pods/exec` may work at run time on versions before 1.35, but fails the dry
 run.
 
-Three reads are attempted in addition. The credentials need not be able to
+Four reads are attempted in addition. The credentials need not be able to
 perform them: a read that is refused or fails is reported as `not checked`
 in the step detail, and a definitive negative fails the step.
 
@@ -2124,14 +2263,23 @@ in the step detail, and a definitive negative fails the step.
 - For `k8s-sandbox`, API discovery confirms the `agents.x-k8s.io/v1alpha1`
   group serves `sandboxes`. A group or resource that is not served fails the
   step; a discovery request that cannot be made is `not checked`.
+- The namespace's NetworkPolicies are listed, looking for the
+  [standing default-deny egress policy](#standing-default-deny-egress): an
+  `Egress` policy whose Pod selector matches every sandbox Pod. Any such
+  policy passes and is named in the detail; when there is none the step
+  fails. The reference Roles grant no `list`, so `not checked` is the
+  normal outcome with them; run the dry run with operator credentials to
+  make the check. The list is skipped when the namespace is known not to
+  exist.
 
 A `not checked` outcome does not change the step status, which stays `ok`:
-the reference Roles cannot read RuntimeClasses or namespaces, so a warning
+the reference Roles cannot read RuntimeClasses, namespaces or the
+NetworkPolicy list, so a warning
 would appear on every dry run of the recommended setup. The step detail
 must be read to see what was and was not checked:
 
 ```text
-[OK  ] executor-probe: 6 required permissions granted in namespace "stirrup-sandbox"; namespace "stirrup-sandbox" not checked (the credentials may not read namespaces); RuntimeClass "gvisor" not checked (the credentials may not read runtimeclasses)
+[OK  ] executor-probe: 7 required permissions granted in namespace "stirrup-sandbox"; namespace "stirrup-sandbox" not checked (the credentials may not read namespaces); standing egress policy not checked (the credentials may not list networkpolicies); RuntimeClass "gvisor" not checked (the credentials may not read runtimeclasses)
 [FAIL] executor-probe: credentials lack permission in namespace "stirrup-sandbox": "delete networkpolicies.networking.k8s.io"
        hint: bind a Role granting the denied verbs in executor.k8sNamespace (reference: examples/k8s/rbac.yaml)
 ```

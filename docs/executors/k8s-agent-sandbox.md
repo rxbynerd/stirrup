@@ -216,7 +216,11 @@ backing Pod gone (see
 [the TTL GC backstop](#the-controller-owned-ttl-gc-backstop)). The
 limits listed under the `k8s` executor's
 [teardown edge cases](k8s.md#teardown-edge-cases), such as a force
-delete by another actor, apply here too.
+delete by another actor, apply here too, and so does the requirement
+for the
+[standing default-deny egress policy](k8s.md#standing-default-deny-egress):
+the Pod the controller creates carries `stirrup-sandbox=true`, so the
+reference manifest selects it.
 
 Enforcement still depends on the cluster CNI: a `NetworkPolicy`-enforcing
 CNI (GKE Dataplane V2, Cilium, Calico) is required for the policy to bite.
@@ -331,9 +335,10 @@ holds the authoritative permission table. For `k8s-sandbox` that table has
 the `pods` `get` that teardown uses, so Pod-create permission does not
 satisfy it. The check also confirms through API
 discovery that `agents.x-k8s.io/v1alpha1` serves `sandboxes` (a group that
-is not served fails the step) and reads the `gvisor` RuntimeClass and the
-namespace (each reported as `not checked`, with the step still `ok`, when
-the credentials may not read it). Failure messages and fixes are in the
+is not served fails the step), reads the `gvisor` RuntimeClass and the
+namespace, and lists the namespace's NetworkPolicies to find the standing
+default-deny egress policy (each reported as `not checked`, with the step
+still `ok`, when the credentials may not read it). Failure messages and fixes are in the
 [`k8s` troubleshooting table](k8s.md#troubleshooting).
 `--no-probe-executor` skips the check without contacting the API server.
 
