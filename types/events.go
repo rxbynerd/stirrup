@@ -425,7 +425,61 @@ type HarnessEvent struct {
 	Tools           []string    `json:"tools,omitempty"`           // internal IDs of the tools a search loaded (tools_loaded only)
 	ConfigFields    []string    `json:"configFields,omitempty"`    // RunConfig field paths, in ConfigFieldPaths form, that a task_assignment can set (ready from `stirrup job` only)
 	HarnessSemver   string      `json:"harnessSemver,omitempty"`   // HarnessVersion as a semantic version without the leading "v", empty for non-release builds (ready only)
+
+	SessionPhase *SessionPhase `json:"sessionPhase,omitempty"` // what the session is doing (heartbeat from a harness advertising CapabilitySessionLiveness only)
 }
+
+// SessionPhase names what a `stirrup job` session is doing when it sends a
+// "heartbeat". Phase is one of the SessionPhase* values and Step, when set,
+// one of the SessionStep* values; both vocabularies are open, so consumers
+// preserve values they do not recognise.
+type SessionPhase struct {
+	Phase string `json:"phase"`
+	Step  string `json:"step,omitempty"`
+}
+
+// Values of SessionPhase.Phase.
+const (
+	// SessionPhaseAwaitingAssignment: "ready" is sent and no
+	// task_assignment has arrived.
+	SessionPhaseAwaitingAssignment = "awaiting_assignment"
+	// SessionPhaseConstructing: the task is being built into a run, from
+	// the task_assignment to the run's "run_started".
+	SessionPhaseConstructing = "constructing"
+	// SessionPhaseRunning: from "run_started" until the run's turns and
+	// verification end.
+	SessionPhaseRunning = "running"
+	// SessionPhasePostRun: the run's git finalisation, postRun hooks,
+	// workspace export, trace upload and result delivery, before its
+	// "done".
+	SessionPhasePostRun = "post_run"
+	// SessionPhaseIdleFollowUp: the follow-up grace window is open and no
+	// run is active.
+	SessionPhaseIdleFollowUp = "idle_followup"
+)
+
+// Values of SessionPhase.Step. An empty Step is the phase's work outside
+// the named steps.
+const (
+	// SessionStepTokenExchange: waiting for a sandbox_token_response
+	// (constructing).
+	SessionStepTokenExchange = "token_exchange"
+	// SessionStepSandboxCreate: creating the sandbox (constructing).
+	SessionStepSandboxCreate = "sandbox_create"
+	// SessionStepSandboxReady: waiting for a created sandbox to be
+	// scheduled, pull its image, start and accept commands (constructing).
+	SessionStepSandboxReady = "sandbox_ready"
+	// SessionStepRuntimeDiagnostics: checking the sandbox's isolation
+	// runtime from inside it (constructing).
+	SessionStepRuntimeDiagnostics = "runtime_diagnostics"
+	// SessionStepPreRunHooks: the run's preRun hooks (constructing).
+	SessionStepPreRunHooks = "pre_run_hooks"
+	// SessionStepRunSetup: the run's setup outside its preRun hooks, such
+	// as repository guidance and git setup (constructing).
+	SessionStepRunSetup = "run_setup"
+	// SessionStepPostRunHooks: the run's postRun hooks (post_run).
+	SessionStepPostRunHooks = "post_run_hooks"
+)
 
 // Contract capabilities a harness advertises on "ready".
 const (
@@ -449,6 +503,11 @@ const (
 	// carries a field the harness does not know, at any depth, is
 	// rejected with "error" and "done" before the run is built.
 	CapabilityStrictTaskAssignment = "strict_task_assignment"
+	// CapabilitySessionLiveness: "heartbeat" events cover the whole
+	// session, from "ready" to the session's last event, and carry
+	// SessionPhase. Advertised by `stirrup job` only, so it is not in
+	// HarnessCapabilities.
+	CapabilitySessionLiveness = "session_liveness"
 )
 
 // HarnessCapabilities returns the capabilities this harness advertises on

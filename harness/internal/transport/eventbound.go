@@ -45,8 +45,8 @@ var ErrRequestInputWithheld = errors.New("request input withheld by the secret s
 const eventTruncationFmt = "\n[truncated by harness for the control stream: %d of %d bytes shown]"
 
 // boundEventFields caps the event fields that carry tool payloads,
-// appended user text, reasoning and messages, every name, ID, source and
-// stop reason, and the tools_loaded tool list (entry count and each
+// appended user text, reasoning and messages, every name, ID, source,
+// stop reason and session phase, and the tools_loaded tool list (entry count and each
 // entry). The model's view is bounded separately by tools.maxResultBytes;
 // this cap protects the control stream when that budget is raised, a tool
 // input is large, a user_message carries a long prompt, a warning quotes
@@ -62,6 +62,13 @@ func boundEventFields(event *types.HarnessEvent) error {
 	event.StopReason = capEventIdentifier(event.StopReason)
 	event.Source = capEventIdentifier(event.Source)
 	event.Message = capEventText(event.Message)
+	if event.SessionPhase != nil {
+		phase := types.SessionPhase{
+			Phase: capEventIdentifier(event.SessionPhase.Phase),
+			Step:  capEventIdentifier(event.SessionPhase.Step),
+		}
+		event.SessionPhase = &phase
+	}
 	switch event.Type {
 	case "tool_result":
 		event.Content = capEventText(event.Content)

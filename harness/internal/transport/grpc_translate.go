@@ -50,6 +50,9 @@ func harnessEventToProto(e types.HarnessEvent) *pb.HarnessEvent {
 	}
 	pe.TraceReference = traceReferenceToProto(e.TraceReference)
 	pe.TraceContext = traceContextToProto(e.TraceContext)
+	if e.SessionPhase != nil {
+		pe.SessionPhase = &pb.SessionPhase{Phase: e.SessionPhase.Phase, Step: e.SessionPhase.Step}
+	}
 
 	return pe
 }

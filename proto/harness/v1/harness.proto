@@ -208,10 +208,18 @@ service HarnessService {
 //                   ControlEvent's request_id so the sender can retry.
 //
 //   "heartbeat"
-//     - (no additional fields) Sent during execution to signal liveness,
-//       every 30 seconds unless RunConfig.heartbeat_seconds sets another
-//       interval. The control plane should treat absence of heartbeats
-//       as a potential hang.
+//     - session_phase: what the session is doing; set by a harness that
+//                      advertises the "session_liveness" capability.
+//     Sent to signal liveness, every 30 seconds unless
+//     RunConfig.heartbeat_seconds sets another interval. Without
+//     "session_liveness", heartbeats are sent only while a run is in
+//     progress and carry no fields. With it, they are sent from just
+//     after "ready" until the session's last event, at 30 seconds until
+//     the task_assignment arrives and at the task's interval from then
+//     on; a change of phase or step sends one at once and restarts the
+//     interval, and none is sent between a run's "done" and the next
+//     phase, so "done" stays the last event of a session. The control
+//     plane should treat absence of heartbeats as a potential hang.
 //
 //   "batch_submission"
 //     - request_id: correlation ID; the control plane must echo this in
@@ -458,6 +466,47 @@ message HarnessEvent {
   // events when harness_version is a semantic version, as release tags
   // are; empty otherwise, as for "dev" and "main" builds.
   string harness_semver = 29;
+
+  // What the session is doing. Set on "heartbeat" events from a harness
+  // that advertises the "session_liveness" capability.
+  SessionPhase session_phase = 30;
+}
+
+// SessionPhase mirrors types.SessionPhase: what a `stirrup job` session is
+// doing when it sends a "heartbeat". Both fields are open vocabularies:
+// consumers must preserve values they do not recognise.
+message SessionPhase {
+  // The session's phase:
+  //   "awaiting_assignment" "ready" is sent and no task_assignment has
+  //                         arrived.
+  //   "constructing"        the task is being built into a run, from the
+  //                         task_assignment to the run's "run_started". A
+  //                         follow-up run's setup is reported here too.
+  //   "running"             from "run_started" until the run's turns and
+  //                         verification end.
+  //   "post_run"            git finalisation, postRun hooks, workspace
+  //                         export, trace upload and result delivery,
+  //                         before the run's "done".
+  //   "idle_followup"       the follow-up grace window is open and no run
+  //                         is active.
+  string phase = 1;
+
+  // The step within the phase; empty for the phase's work outside the
+  // named steps:
+  //   "token_exchange"      waiting for a sandbox_token_response
+  //                         (constructing).
+  //   "sandbox_create"      creating the sandbox (constructing).
+  //   "sandbox_ready"       waiting for a created sandbox to be scheduled,
+  //                         pull its image, start and accept commands
+  //                         (constructing; Kubernetes executors only).
+  //   "runtime_diagnostics" checking the sandbox's isolation runtime from
+  //                         inside it (constructing; Kubernetes executor
+  //                         with a runtime that runs diagnostics only).
+  //   "pre_run_hooks"       the run's preRun hooks (constructing).
+  //   "run_setup"           the run's other setup, such as repository
+  //                         guidance and git setup (constructing).
+  //   "post_run_hooks"      the run's postRun hooks (post_run).
+  string step = 2;
 }
 
 // TraceReference mirrors types.TraceReference: the identity of a run's
