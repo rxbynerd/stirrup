@@ -730,8 +730,8 @@ lifecycle.
 - **Dry-run.** `--dry-run` reports a `git-strategy` construction step and
   a `git-strategy-probe` step that runs `git --version` through the
   executor and fails with a hint when git is missing. The probe is skipped
-  for the `container` executor, because a dry-run does not start the
-  container. A sandbox image without git then surfaces at run setup.
+  for the `container`, `k8s` and `k8s-sandbox` executors, because a
+  dry-run does not start a sandbox. A sandbox image without git then surfaces at run setup.
 
 ### Transport
 

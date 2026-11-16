@@ -1219,9 +1219,9 @@ history it finds there.
 
 A `--dry-run` reports a `git-strategy` construction step and a
 `git-strategy-probe` step, which runs `git --version` through the
-executor and fails with a hint when git is missing. For the `container`
-executor the probe is skipped, because a dry-run does not start the
-container. A sandbox image without git then surfaces at run setup rather
+executor and fails with a hint when git is missing. For the `container`,
+`k8s` and `k8s-sandbox` executors the probe is skipped, because a dry-run
+does not start a sandbox. A sandbox image without git then surfaces at run setup rather
 than in the dry-run. See [`configuration.md`](configuration.md#dry-run-preflight).
 
 ## Transport

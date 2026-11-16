@@ -622,8 +622,8 @@ The harness image cannot serve as a sandbox. The `container`, `k8s` and
   inside the sandbox through the executor, and the system prompt's git
   status section uses it as well. The `--dry-run` step
   `git-strategy-probe` fails when `git` is missing, except for the
-  `container` executor, where no container starts in a dry-run and a
-  missing `git` surfaces when the run sets up.
+  `container`, `k8s` and `k8s-sandbox` executors, where no sandbox starts
+  in a dry-run and a missing `git` surfaces when the run sets up.
 
 `setsid` is optional. With it, a timed-out command's whole process group
 is signalled. Without it, only the recorded shell and its descendants
