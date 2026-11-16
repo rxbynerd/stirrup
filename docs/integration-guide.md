@@ -74,6 +74,9 @@ status.
    optional `trace_context` on the assignment makes the run's trace
    a child of the control plane's span; see
    [Joining a control-plane trace](#joining-a-control-plane-trace-trace_context).
+   A `RunConfig` that sets a field the harness does not know is
+   rejected before anything is built; see
+   [Unknown RunConfig fields](#unknown-runconfig-fields).
 4. If the `RunConfig` opts in, loop construction sends a
    `sandbox_token_request` and blocks (fail-closed, 60 s) for the
    `sandbox_token_response` before creating the sandbox. If sandbox
@@ -112,9 +115,9 @@ status.
    structured output, degraded capabilities, and the `trace_reference`
    when the run recorded an OTel span. Some early
    run failures emit a human-readable `error` event first. A task
-   rejected before its run started (an invalid `RunConfig`, a loop
-   build failure) gets a `done` with `stop_reason: "error"` and no
-   `trace`.
+   rejected before its run started (a `RunConfig` with unknown
+   fields, an invalid `RunConfig`, a loop build failure) gets a `done`
+   with `stop_reason: "error"` and no `trace`.
 8. If a follow-up grace window is configured, the stream stays open
    for `user_response` events that trigger fresh runs in the same
    process and workspace, each sending its own `run_started` with a new
@@ -168,7 +171,7 @@ instead.
 
 | `type` | Fields | Semantics |
 |---|---|---|
-| `task_assignment` | `task` (RunConfig), `trace_context` (optional) | First event on the stream. Duplicate assignments are ignored. A valid `trace_context` (`traceparent`, `tracestate`) parents the primary run's span on the control plane's span; see [Joining a control-plane trace](#joining-a-control-plane-trace-trace_context). |
+| `task_assignment` | `task` (RunConfig), `trace_context` (optional) | First event on the stream. Duplicate assignments are ignored. A `task` that sets a field the harness does not know is rejected; see [Unknown RunConfig fields](#unknown-runconfig-fields). A valid `trace_context` (`traceparent`, `tracestate`) parents the primary run's span on the control plane's span; see [Joining a control-plane trace](#joining-a-control-plane-trace-trace_context). |
 | `user_response` | `user_response`, `request_id` (optional) | During an active run: queued (bounded FIFO of 16) and injected as a user message at the run's next turn boundary — after pending tool results, before the next model call — in arrival order; the run continues past `end_turn` while input is queued. During the follow-up grace window: the oldest queued event starts a new run with its text as the prompt (from the previous run's history under `followUpHistory: "continue"`, see [Follow-up turns](#follow-up-turns)), and anything queued behind it joins that run at its first turn boundary. The text is sanitised like `dynamicContext` (XML/HTML tags stripped, capped at 50,000 bytes), each alteration reported by a `warning` echoing `request_id`. Empty text, a full queue, or arrival after `cancel` drops the event with a `warning`; nothing is dropped silently, including input still queued when the session ends. |
 | `permission_response` | `request_id`, `allowed`, `reason` | Decision for a `permission_request`. `reason` on a denial is passed to the model as context. |
 | `tool_result_response` | `request_id`, `content`, `is_error` | Result payload for a `tool_result_request`. `is_error: true` surfaces to the model as a tool failure. |
@@ -209,9 +212,10 @@ them.
 
 A `done` is emitted for every failure that happens after the task
 assignment arrives, including a `RunConfig` rejected on arrival: the
-harness emits `error` carrying the cause — config validation, secret
-resolution, policy loading, sandbox-token exchange, or any other
-component-construction failure — then `done{stop_reason:"error"}`,
+harness emits `error` carrying the cause — unknown `RunConfig`
+fields, config validation, secret resolution, policy loading,
+sandbox-token exchange, or any other component-construction failure —
+then `done{stop_reason:"error"}`,
 before exiting non-zero. A pre-loop `done` carries no `trace` (no run
 started) and no `RunResult` reaches the `resultSink`, so a consumer
 that reads `done.trace` unconditionally must tolerate its absence.
@@ -1457,6 +1461,9 @@ around silently".
     honoured. A harness without it keeps the 30 s interval and
     ignores the field, so a control plane that shortens its liveness
     deadline should gate on this capability.
+  - `strict_task_assignment`: a `task_assignment` whose `RunConfig`
+    sets a field the harness does not know is rejected instead of run
+    without it; see [Unknown RunConfig fields](#unknown-runconfig-fields).
 - `ready.config_fields` lists every `RunConfig` field a
   `task_assignment` can set on the harness. Check the task against it
   before sending `task_assignment`; see
@@ -1475,11 +1482,13 @@ around silently".
   lower-camel-case names. The MCP host allowlist spelling is
   `tools.mcpServers[].allowedMcpHosts`; the pre-#554 file spelling
   `allowedMCPHosts` is no longer accepted.
-- File-config JSON rejects unknown fields (`DisallowUnknownFields`).
-  Protobuf binary compatibility is different: an older harness ignores
-  unknown fields. Check a newly added wire field against
-  `ready.config_fields` before relying on it; do not assume it will
-  fail loudly.
+- File-config JSON rejects unknown fields (`DisallowUnknownFields`),
+  and so does `stirrup job` for a `task_assignment` when it advertises
+  `strict_task_assignment`; see
+  [Unknown RunConfig fields](#unknown-runconfig-fields). A harness
+  without that capability ignores unknown protobuf fields, so against
+  it a newly added wire field must be checked against
+  `ready.config_fields` before the control plane relies on it.
 - `tools.profile` and `traceEmitter.archive` reached the wire without a
   capability of their own. A harness built before them ignores both: it
   presents tools under their internal names and writes the
@@ -1496,10 +1505,14 @@ around silently".
 ### Negotiating RunConfig fields
 
 A control plane and a harness built at different times can disagree on
-the `RunConfig` schema. A field the harness does not know is dropped
-without notice when it arrives in a `task_assignment`. The `ready`
-event that `stirrup job` sends carries the harness's schema, so the
-control plane can find such fields before it assigns the task.
+the `RunConfig` schema. A harness advertising `strict_task_assignment`
+rejects a `task_assignment` that sets a field it does not know (see
+[Unknown RunConfig fields](#unknown-runconfig-fields)); an older
+harness drops the field without notice. The `ready` event that
+`stirrup job` sends carries the harness's schema, so the control plane
+can find such fields before it assigns the task, and choose a
+different harness or remove a field it knows is safe to omit instead
+of having the assignment rejected.
 
 `ready.config_fields` lists every `RunConfig` field a
 `task_assignment` can set on this harness: the fields it accepts that
@@ -1596,3 +1609,36 @@ schema evolves under these rules:
   `reasoning_summary`, `follow_up_history` and `lazy_tool_loading`
   capabilities predate `config_fields` and remain the gates for those
   features.
+
+### Unknown RunConfig fields
+
+A `stirrup job` harness that advertises `strict_task_assignment`
+checks every `task_assignment` for `RunConfig` fields its compiled-in
+protobuf schema does not carry, at any depth: in the `RunConfig`
+itself, in nested messages such as `executor`, in each element of a
+repeated field and in each map value. Running such a task would drop
+the field, and a dropped field may be one that restricts the run, such
+as a network mode, a protected write target or a tool limit.
+
+When any are present the harness builds nothing: it creates no sandbox,
+resolves no secret and makes no provider call. It sends `error`, then
+`done{stop_reason:"error"}` with no `trace`, and exits non-zero. The
+`error` message names each unknown field by its field number and the
+path of the message that carries it, in the path form of
+`config_fields`, with `*` standing for any map key:
+
+```text
+task_assignment rejected: the RunConfig sets fields this harness does not know (field 9001 at the top level, field 98 under executor); send only the fields listed in ready.config_fields
+```
+
+The message names at most 16 fields and counts the rest. A field
+retired from the schema is unknown too: the removed
+`max_cost_budget` (field 18) is rejected like any other.
+
+There is no lenient mode. For a rolling upgrade, the control plane
+reads `ready.config_fields` and either assigns the task to a harness
+that lists every field it sets or removes the fields its own
+safe-to-omit list names, as described in
+[Negotiating RunConfig fields](#negotiating-runconfig-fields).
+Unknown fields in control events other than `task_assignment`, and in
+a `task_assignment` outside its `task`, are ignored.
