@@ -321,6 +321,20 @@ because `containerControlPlaneTimeout` elapsed through the shared
 `ErrTimeout` sentinel, so callers matching `errors.Is(err,
 ErrTimeout)` see a wedged daemon identically to a command timeout.
 
+An executor whose sandbox can stop mid-run (`container`, `k8s`,
+`k8s-sandbox`) implements the optional `SandboxLossReporter`. When an
+operation fails because the sandbox has ended for good, the executor
+returns an `*executor.SandboxLostError` naming the terminal state and
+latches it, so later operations fail at once. The loop checks the
+reporter at the top of each turn and after each tool batch, and ends
+the run with the `sandbox_lost` outcome; a setup, verification or
+post-run failure on a lost sandbox is reported as `sandbox_lost` too
+(`core/sandboxlost.go`). What counts as ended is
+documented per executor in
+[Sandbox loss during a run](executors/k8s.md#sandbox-loss-during-a-run);
+the `container` executor counts a container the engine no longer has
+or reports as exited.
+
 Filesystem executors enforce a 10 MB file size cap, a 1 MB command
 output cap, a 30 s default command timeout, and symlink-aware
 workspace containment. The container executor is hardened with

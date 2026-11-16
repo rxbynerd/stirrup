@@ -562,6 +562,7 @@ func TestOutcomeColor_MapsOutcomeToColor(t *testing.T) {
 		{"verification failed", "verification_failed", ansiRed},
 		{"verification error", "verification_error", ansiRed},
 		{"tool failures", "tool_failures", ansiRed},
+		{"sandbox lost", "sandbox_lost", ansiRed},
 		{"max turns", "max_turns", ansiYellow},
 		{"max tokens", "max_tokens", ansiYellow},
 		{"budget exceeded", "budget_exceeded", ansiYellow},

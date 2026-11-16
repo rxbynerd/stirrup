@@ -1448,7 +1448,7 @@ exited cleanly with zero useful changes." Metrics derived from
 | `success`                                                                                 | yes           | last attempt fails  | `failed` |
 | `success`                                                                                 | no            | n/a       | `passed` *    |
 | `verification_failed`, `error`, `tool_failures`, `structured_output_failed`               | any           | any       | `failed`      |
-| `max_turns`, `budget_exceeded`, `timeout`, `max_tokens`, `stalled`, `cancelled`, `context_exhausted`, `verification_error`, `setup_failed`, `hook_failed`, `handoff_failed`, `control_stream_lost`, `guardrail_blocked`, `rule_of_two_violation`, `command_output_capture_failed`, `command_output_archive_failed` | any | any | `inconclusive` |
+| `max_turns`, `budget_exceeded`, `timeout`, `max_tokens`, `stalled`, `cancelled`, `context_exhausted`, `verification_error`, `setup_failed`, `hook_failed`, `sandbox_lost`, `handoff_failed`, `control_stream_lost`, `guardrail_blocked`, `rule_of_two_violation`, `command_output_capture_failed`, `command_output_archive_failed` | any | any | `inconclusive` |
 | anything else (provider stop reason, unknown, empty)                                      | any           | any       | `inconclusive` |
 
 \* The success-without-verifier branch is trusted as `passed` for

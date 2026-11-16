@@ -210,13 +210,27 @@ For the current `stirrup job` implementation, read
 `error`, `max_turns`, `verification_failed`, `verification_error`,
 `budget_exceeded`, `stalled`, `tool_failures`, `cancelled`, `timeout`,
 `max_tokens`, and feature-specific outcomes such as `setup_failed`,
-`hook_failed`, `guardrail_blocked`, and `rule_of_two_violation`.
+`hook_failed`, `guardrail_blocked`, `rule_of_two_violation`, and
+`sandbox_lost`.
 Provider stop reasons also pass through verbatim, such as `refusal`
 (the model declined to respond) and `pause_turn` (a paused server tool
 turn the harness stopped continuing; see
 [Paused turns](providers.md#paused-turns)).
 Consumers should preserve unknown values so outcomes can be added
 without breaking the protocol.
+
+`sandbox_lost` means the executor's sandbox stopped for good during the
+run, so no further tool call could work: on the `k8s` and `k8s-sandbox`
+executors the Pod failed, exited or was deleted, and on the `container`
+executor the container exited or was removed. The run ends after the
+turn that found it (or before calling the model, for a follow-up on a
+sandbox already lost), and `trace.error` names the terminal state, for
+example `sandbox lost: sandbox pod <ns>/<pod> has failed: container
+agent was OOMKilled (exit code 137) (...)`. A control plane can retry
+such a task in a new sandbox, with more memory for `OOMKilled`. On the
+Kubernetes executors the workspace lived in the Pod, so it is gone and
+a workspace export at the end of the run fails.
+See [Sandbox loss during a run](executors/k8s.md#sandbox-loss-during-a-run).
 
 `done.trace` carries the run summary: the harness sends `done` only
 after the final git checkpoint, the workspace export and the trace

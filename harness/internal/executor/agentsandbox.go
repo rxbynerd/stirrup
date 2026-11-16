@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -310,6 +311,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 			restConfig:      restCfg,
 			namespace:       cfg.Namespace,
 			podName:         podName,
+			podUID:          backingPodUID(ctx, clientset, cfg.Namespace, podName, logger),
 			network:         cfg.Network,
 			Security:        cfg.Security,
 			logger:          logger,
@@ -330,6 +332,18 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 		return nil, rollback(fmt.Errorf("sandbox %s/%s: %w", cfg.Namespace, name, err))
 	}
 	return exec, nil
+}
+
+// backingPodUID reads the UID of the controller-created Pod, so a Pod the
+// controller recreates under the same name is detected as a lost sandbox. A
+// failed read leaves the UID empty and detection by name alone.
+func backingPodUID(ctx context.Context, clientset kubernetes.Interface, namespace, name string, logger *slog.Logger) k8stypes.UID {
+	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		logger.Warn("agent sandbox executor could not read the backing pod's UID; a pod recreated under the same name will not be detected", "namespace", namespace, "pod", name, "err", clusterText(err.Error()))
+		return ""
+	}
+	return pod.UID
 }
 
 // Close deletes the Sandbox, waits until a read finds it gone and then until
@@ -367,8 +381,9 @@ func (e *AgentSandboxExecutor) effectiveTiming() k8sTiming {
 	return e.timing
 }
 
-// backingPod is the teardown view of the controller-created Pod. Its UID is
-// not recorded, so only a read finding no Pod under the name confirms it.
+// backingPod is the teardown view of the controller-created Pod. Teardown
+// does not use its UID, so only a read finding no Pod under the name
+// confirms it is gone.
 func (e *AgentSandboxExecutor) backingPod() podTeardown {
 	return podTeardown{
 		clientset: e.clientset,

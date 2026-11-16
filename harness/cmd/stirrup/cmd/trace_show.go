@@ -164,7 +164,7 @@ func outcomeColor(outcome string) string {
 	switch outcome {
 	case "success":
 		return ansiGreen
-	case "error", "verification_failed", "verification_error", "tool_failures":
+	case "error", "verification_failed", "verification_error", "tool_failures", "sandbox_lost":
 		return ansiRed
 	case "max_turns", "max_tokens", "budget_exceeded", "stalled", "timeout", "context_exhausted":
 		return ansiYellow

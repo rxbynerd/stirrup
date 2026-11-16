@@ -590,6 +590,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 
 	outcome = l.finalizeCommandOutput(ctx, outcome)
 	outcome = l.handoffWorkspace(ctx, config, outcome)
+	outcome = l.attributeSandboxLoss(outcome)
 
 	l.Logger.InfoContext(runCtx, "run finished", "outcome", outcome)
 
@@ -844,6 +845,10 @@ func (l *AgenticLoop) runInnerLoop(
 
 		if budgetExhausted(tokenTracker, ledger, config) {
 			return messages, "budget_exceeded", finalAssistantText, nil
+		}
+
+		if l.noteSandboxLoss() {
+			return messages, "sandbox_lost", finalAssistantText, nil
 		}
 
 		// Sentinel outcome; see outcomeCtxDone.
@@ -1328,6 +1333,9 @@ func (l *AgenticLoop) runInnerLoop(
 		// no prior tool calls; once non-zero, a later no-tool answer
 		// is a legitimate judgement and left alone.
 		priorToolCalls += len(toolCalls)
+		if l.noteSandboxLoss() {
+			return messages, "sandbox_lost", finalAssistantText, nil
+		}
 		if stallOutcome != "" {
 			return messages, stallOutcome, finalAssistantText, nil
 		}
@@ -2443,6 +2451,7 @@ func (l *AgenticLoop) finishWithOutcome(ctx context.Context, config *types.RunCo
 	l.setSessionPhase(types.SessionPhasePostRun, "")
 	l.releaseSetupWarnings()
 	l.noteFailure(outcome, err.Error())
+	outcome = l.attributeSandboxLoss(outcome)
 	outcome = l.finalizeCommandOutput(ctx, outcome)
 	if emitErr := l.Transport.Emit(types.HarnessEvent{
 		Type:    "error",

@@ -13,9 +13,11 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -34,7 +36,10 @@ type podExecCore struct {
 	restConfig *rest.Config
 	namespace  string
 	podName    string
-	network    *types.NetworkConfig
+	// podUID is the created Pod's UID when the executor created the Pod
+	// itself; empty when only the name is known.
+	podUID  k8stypes.UID
+	network *types.NetworkConfig
 	// Security is nil-checked at every call site; a zero-value core (used in
 	// unit tests) emits nothing.
 	Security SecurityEventEmitter
@@ -49,6 +54,11 @@ type podExecCore struct {
 	// sandbox identity token write and the runtime diagnostics read; zero
 	// means k8sFileIOTimeout.
 	fileIOTimeout time.Duration
+	// lost is set once, when an exec finds the Pod ended.
+	lost atomic.Pointer[SandboxLostError]
+	// lossSettle bounds the re-reads of a Pod that still looks usable
+	// after a failed exec; zero means k8sSandboxLossSettle.
+	lossSettle time.Duration
 }
 
 func (e *podExecCore) fileIOBound() time.Duration {
@@ -418,8 +428,28 @@ func (e *podExecCore) killGroup(g groupedCommand) {
 // streamExec runs a pods/exec request against the agent container,
 // wiring the supplied stdin/stdout/stderr streams. It is the single
 // SPDY/remotecommand chokepoint shared by Exec and the tar-based file
-// I/O methods. A nil stdin omits the stdin stream from the request.
+// I/O methods. A nil stdin omits the stdin stream from the request. A
+// failure that carries no exit status and did not come from ctx ending
+// is checked against the Pod's state (see sandboxLostAfter); once the
+// sandbox is lost, every call returns that error at once.
 func (e *podExecCore) streamExec(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error {
+	if lost := e.lost.Load(); lost != nil {
+		return lost
+	}
+	err := e.execOnce(ctx, command, stdin, stdout, stderr)
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	if _, exited := extractExitCode(err); exited {
+		return err
+	}
+	return e.sandboxLostAfter(ctx, err)
+}
+
+// execOnce is streamExec without the sandbox-loss check. The exec
+// reachability wait uses it: its probe failures are expected and retried,
+// and the readiness wait has already established the Pod's state.
+func (e *podExecCore) execOnce(ctx context.Context, command []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if e.execFn != nil {
 		return e.execFn(ctx, command, stdin, stdout, stderr)
 	}
