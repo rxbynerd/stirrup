@@ -70,15 +70,3 @@ func (e *HTTPSPutExporter) Export(ctx context.Context, src executor.WorkspaceArc
 	archive.fill(&receipt)
 	return receipt, nil
 }
-
-// Probe resolves the destination and checks the URL's shape for a
-// dry-run preflight, returning its origin. It sends nothing: a PUT is the
-// only request a presigned upload URL answers, and it would write the
-// object.
-func (e *HTTPSPutExporter) Probe(ctx context.Context) (string, error) {
-	target, err := httpsput.Resolve(ctx, e.secrets, e.target)
-	if err != nil {
-		return "", fmt.Errorf("workspace exporter: %w", err)
-	}
-	return target.Origin(), nil
-}

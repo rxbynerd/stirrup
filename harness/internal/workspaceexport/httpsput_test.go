@@ -121,17 +121,6 @@ func TestHTTPSPutExporter_ResolvesTheReferenceOnEveryExport(t *testing.T) {
 	must.Equal("/bucket/second.tar.gz", srv.last().URL)
 }
 
-func TestHTTPSPutExporter_ProbeResolvesWithoutContactingTheDestination(t *testing.T) {
-	must := require.New(t)
-	srv := &captureUploadServer{}
-	exp, origin := newHTTPSPutTestExporter(t, srv, tableSecrets{})
-
-	got, err := exp.Probe(context.Background())
-	must.NoError(err)
-	must.Equal(origin, got)
-	must.Empty(srv.last().URL, "a probe must send nothing")
-}
-
 func TestNewHTTPSPutExporter_RequiresTargetAndSecrets(t *testing.T) {
 	must := require.New(t)
 	_, err := NewHTTPSPutExporter(HTTPSPutExporterOptions{Secrets: tableSecrets{}})

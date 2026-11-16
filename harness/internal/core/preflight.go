@@ -14,6 +14,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/executor/egressproxy"
+	"github.com/rxbynerd/stirrup/harness/internal/httpsput"
 	"github.com/rxbynerd/stirrup/harness/internal/mcp"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/security"
@@ -221,9 +222,9 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 	preflightLazyTools(ctx, config, execResult.exec, discovery, ok, skip, warn)
 
 	preflightEgress(ctx, config, opts, ok, skip, fail)
-	// No dedicated --no-probe gate: the probe is a read-only
-	// bucket-metadata GET that spends nothing, so it always runs when an
-	// export destination is set.
+	// No dedicated --no-probe gate: the check writes nothing (a read-only
+	// bucket-metadata GET for gs://, no request at all for an HTTPS PUT
+	// destination), so it always runs when an export destination is set.
 	preflightWorkspaceExport(ctx, config, secrets, ok, skip, fail)
 
 	report.finalise()
@@ -669,7 +670,9 @@ func preflightEgress(
 // one is configured. A gs:// destination gets a read-only bucket check
 // through a GCSExporter with the default workload-identity credential
 // source (matching the CLI's newWorkspaceExporter default). An HTTPS PUT
-// destination is resolved and shape-checked but not contacted.
+// destination is resolved and shape-checked but not contacted: a PUT is
+// the only request a presigned upload URL answers, and it would write
+// the object.
 func preflightWorkspaceExport(
 	ctx context.Context,
 	config *types.RunConfig,
@@ -678,21 +681,13 @@ func preflightWorkspaceExport(
 	skip func(string, string),
 	fail func(string, error, string),
 ) {
-	if target := config.Executor.WorkspaceExportHTTPSPut; target != nil {
-		exporter, err := workspaceexport.NewHTTPSPutExporter(workspaceexport.HTTPSPutExporterOptions{
-			Target:  target,
-			Secrets: secrets,
-		})
+	if cfg := config.Executor.WorkspaceExportHTTPSPut; cfg != nil {
+		target, err := httpsput.Resolve(ctx, secrets, cfg)
 		if err != nil {
-			fail("workspace-export", err, "")
+			fail("workspace-export", fmt.Errorf("executor.workspaceExportHttpsPut: %w", err), "verify executor.workspaceExportHttpsPut.urlRef resolves in the harness environment to an https:// URL")
 			return
 		}
-		origin, err := exporter.Probe(ctx)
-		if err != nil {
-			fail("workspace-export", err, "verify executor.workspaceExportHttpsPut.urlRef resolves in the harness environment to an https:// URL")
-			return
-		}
-		ok("workspace-export", fmt.Sprintf("export URL reference resolves to %s (not contacted: only an upload would test it)", origin))
+		ok("workspace-export", fmt.Sprintf("export URL reference resolves to %s (not contacted: only an upload would test it)", target.Origin()))
 		return
 	}
 	dest := config.Executor.WorkspaceExportTo
