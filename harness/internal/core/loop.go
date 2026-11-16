@@ -846,6 +846,10 @@ func (l *AgenticLoop) runInnerLoop(
 			return messages, "budget_exceeded", finalAssistantText, nil
 		}
 
+		if l.sandboxLost() {
+			return messages, "sandbox_lost", finalAssistantText, nil
+		}
+
 		// Sentinel outcome; see outcomeCtxDone.
 		select {
 		case <-ctx.Done():
@@ -1328,6 +1332,9 @@ func (l *AgenticLoop) runInnerLoop(
 		// no prior tool calls; once non-zero, a later no-tool answer
 		// is a legitimate judgement and left alone.
 		priorToolCalls += len(toolCalls)
+		if l.sandboxLost() {
+			return messages, "sandbox_lost", finalAssistantText, nil
+		}
 		if stallOutcome != "" {
 			return messages, stallOutcome, finalAssistantText, nil
 		}

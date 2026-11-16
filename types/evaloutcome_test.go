@@ -111,6 +111,7 @@ func TestEvalOutcomeFor_MapsRunOutcomes(t *testing.T) {
 		// relying on the unknown-outcome default below.
 		{name: "setup_failed", trace: RunTrace{Outcome: "setup_failed"}, want: EvalInconclusive},
 		{name: "hook_failed", trace: RunTrace{Outcome: "hook_failed"}, want: EvalInconclusive},
+		{name: "sandbox_lost", trace: RunTrace{Outcome: "sandbox_lost"}, want: EvalInconclusive},
 		{name: "handoff_failed", trace: RunTrace{Outcome: "handoff_failed"}, want: EvalInconclusive},
 		{name: "control_stream_lost", trace: RunTrace{Outcome: "control_stream_lost"}, want: EvalInconclusive},
 		{name: "guardrail_blocked", trace: RunTrace{Outcome: "guardrail_blocked"}, want: EvalInconclusive},
@@ -146,6 +147,7 @@ func TestRunHealthFor_MapsRunOutcomes(t *testing.T) {
 		{name: "verification_error", outcome: "verification_error", want: RunFailed},
 		{name: "setup_failed", outcome: "setup_failed", want: RunFailed},
 		{name: "hook_failed", outcome: "hook_failed", want: RunFailed},
+		{name: "sandbox_lost", outcome: "sandbox_lost", want: RunFailed},
 		{name: "structured_output_failed", outcome: "structured_output_failed", want: RunFailed},
 		{name: "max_turns", outcome: "max_turns", want: RunDegraded},
 		{name: "timeout", outcome: "timeout", want: RunDegraded},

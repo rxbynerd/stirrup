@@ -50,6 +50,7 @@ var runOutcomes = map[string]outcomeClass{
 	"verification_error":            {EvalInconclusive, RunFailed},
 	"setup_failed":                  {EvalInconclusive, RunFailed},
 	"hook_failed":                   {EvalInconclusive, RunFailed},
+	"sandbox_lost":                  {EvalInconclusive, RunFailed},
 	"max_turns":                     {EvalInconclusive, RunDegraded},
 	"budget_exceeded":               {EvalInconclusive, RunDegraded},
 	"timeout":                       {EvalInconclusive, RunDegraded},

@@ -95,7 +95,7 @@ type RunTrace struct {
 	// "handoff_failed" | "control_stream_lost" | "structured_output_failed" |
 	// "guardrail_blocked" | "rule_of_two_violation" |
 	// "command_output_capture_failed" | "command_output_archive_failed" |
-	// "context_exhausted" (the smallest request the context strategy and
+	// "sandbox_lost" | "context_exhausted" (the smallest request the context strategy and
 	// tool result truncation could prepare did not fit the context budget,
 	// so it was not sent, or a turn exceeded the model's context window
 	// again after a forced compaction), or a provider stop reason passed
@@ -109,7 +109,9 @@ type RunTrace struct {
 	// run — the primary failure cause stays authoritative — and a capture
 	// failure outranks an archive failure. control_stream_lost reports a
 	// run cancelled because its gRPC control stream ended while it was
-	// active. structured_output_failed reports a final answer that still
+	// active. sandbox_lost reports a run ended because the executor's
+	// sandbox stopped for good, with its terminal state in Error.
+	// structured_output_failed reports a final answer that still
 	// did not satisfy RunConfig.OutputSchema after the corrective attempts,
 	// or that satisfied it only before secrets were scrubbed from it; such
 	// a run never reaches the verifier.
