@@ -94,6 +94,8 @@ func TestRunJob_UnknownAssignedFieldsRejectedBeforeBuild(t *testing.T) {
 	must.Equal("done", events[1].GetType())
 	check.Contains(events[0].GetMessage(), "field 9001 at the top level")
 	check.Contains(events[0].GetMessage(), "field 9002 under executor")
+	check.Equal(types.BuildFailureConfigInvalid, events[0].GetBuildFailure().GetReason(), "an unknown field is fixed in the task, like any invalid config")
+	check.Equal(types.SessionPhaseConstructing, events[0].GetBuildFailure().GetPhase().GetPhase())
 	check.Equal("error", events[1].GetStopReason())
 	check.Nil(events[1].GetTrace(), "no run started, so done carries no trace")
 

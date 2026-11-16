@@ -489,7 +489,8 @@ message HarnessEvent {
 message BuildFailure {
   // The failure's class. Values are only ever added: preserve one that is
   // not recognised and handle it as "unclassified".
-  //   "config_invalid"            the RunConfig failed validation.
+  //   "config_invalid"            the RunConfig failed validation or sets
+  //                               a field the harness does not know.
   //   "host_file"                 a file the RunConfig names could not be
   //                               used from the harness host.
   //   "credential"                a secret reference or provider

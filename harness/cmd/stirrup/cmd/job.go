@@ -209,7 +209,10 @@ func runJob(cmd *cobra.Command, args []string) error {
 	if len(assignment.UnknownTaskFields) > 0 {
 		rejectErr := unknownTaskFieldsError(assignment.UnknownTaskFields)
 		liveness.Stop()
-		emitTerminalFailure(tp, rejectErr, "error")
+		emitTerminalFailure(tp, rejectErr, &types.BuildFailure{
+			Reason: types.BuildFailureConfigInvalid,
+			Phase:  types.SessionPhase{Phase: types.SessionPhaseConstructing},
+		}, "error")
 		return rejectErr
 	}
 	liveness.SetPhase(types.SessionPhase{Phase: types.SessionPhaseConstructing})

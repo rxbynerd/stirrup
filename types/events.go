@@ -441,7 +441,8 @@ type BuildFailure struct {
 
 // Values of BuildFailure.Reason.
 const (
-	// BuildFailureConfigInvalid: the RunConfig failed validation.
+	// BuildFailureConfigInvalid: the RunConfig failed validation or sets a
+	// field the harness does not know.
 	BuildFailureConfigInvalid = "config_invalid"
 	// BuildFailureHostFile: a file the RunConfig names could not be used
 	// from the harness host.

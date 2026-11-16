@@ -279,7 +279,7 @@ contract.
 
 | `reason` | Meaning | Typical response |
 |---|---|---|
-| `config_invalid` | The `RunConfig` failed validation. | Fix the task; retrying it unchanged fails again. |
+| `config_invalid` | The `RunConfig` failed validation, or sets a field the harness does not know (see [Unknown RunConfig fields](#unknown-runconfig-fields)). | Fix the task; retrying it unchanged fails again. |
 | `host_file` | A file named by `provider.replayFile`, `permissionPolicy.policyFile` or `provider.gcpCredentialsFile` (or the same field of a `providers` entry) could not be used from the harness host. | Fix the task or the harness image; the message names only the field. Other host files a task can name, such as `executor.k8sKubeconfig`, report under their component's class. |
 | `credential` | A secret reference or provider credential could not be resolved. | Fix the secret or the workload identity. |
 | `token_exchange` | The sandbox identity token exchange was declined, timed out, or returned an unusable token. | Check the control plane's own token issuer. |
