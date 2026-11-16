@@ -540,7 +540,12 @@ The exchange audience is set on the `tokenSource` (canonically
 | Flag | Default | Notes |
 |---|---|---|
 | `--executor` | `local` | One of `local`, `container`, `k8s`, `k8s-sandbox`, `api`, `none`. `k8s-sandbox` is the [Agent Sandbox CRD variant](executors/k8s-agent-sandbox.md) of `k8s`. `none` has no execution surface at all — no local filesystem or shell access — for MCP-only / server-side-tool runs. See the naming-collision note below. |
-| `--container-runtime` | (none) | Per-`executor` closed set. For `container` (host OCI runtime): `runc`, `runsc` (gVisor), `kata`, `kata-qemu`, `kata-fc`, `kata-clh` — must be registered with the host Docker/Podman daemon. For `k8s` (a runtime mapped to the Pod `RuntimeClassName`): `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh`, `nitro-isolated` — note the name is `gvisor`, not `runsc`, and `nitro-isolated` selects AWS's `isolated-sandbox` class and requires `network.mode: none` plus positive `resources.cpus` and `resources.memoryMb` (see [EKS with Nitro Sandboxes](executors/k8s.md#eks-with-nitro-sandboxes)). `k8s-sandbox` is gVisor-only: empty or `gvisor`, any other value is rejected. Empty = engine default for `container`, cluster-default RuntimeClass for `k8s`. |
+| `--container-runtime` | (none) | Per-`executor` closed set. For `container` (host OCI runtime): `runc`, `runsc` (gVisor), `kata`, `kata-qemu`, `kata-fc`, `kata-clh` — must be registered with the host Docker/Podman daemon. For `k8s` (a runtime mapped to the Pod `RuntimeClassName`): `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh`, `nitro-isolated` — note the name is `gvisor`, not `runsc`, and `nitro-isolated` selects AWS's `isolated-sandbox` class and requires `--network-mode none` plus positive `--cpus` and `--memory-mb` (see [EKS with Nitro Sandboxes](executors/k8s.md#eks-with-nitro-sandboxes)). `k8s-sandbox` is gVisor-only: empty or `gvisor`, any other value is rejected. Empty = engine default for `container`, cluster-default RuntimeClass for `k8s`. Shell completion offers the set matching the `--executor` already typed on the command line. |
+| `--image` | (none) | Sandbox container image for the `container`, `k8s` and `k8s-sandbox` executors. Required for `k8s` and `k8s-sandbox`; the image must ship `/bin/sh`, `tar`, `ls`, `mkdir` and `readlink`. An explicit value replaces `executor.image` from `--config`. JSON path: `executor.image`. |
+| `--cpus` | `0` | CPU limit for the sandbox, in cores; fractions are allowed (`0.5`). `0` leaves CPU unbounded (namespace defaults apply on `k8s`). Required positive for `--container-runtime nitro-isolated`. A flag overrides only its own limit; the other `executor.resources` fields from `--config`, including `pids`, are kept. JSON path: `executor.resources.cpus`. |
+| `--memory-mb` | `0` | Memory limit for the sandbox, in MiB. `0` leaves memory unbounded. Required positive for `--container-runtime nitro-isolated`. JSON path: `executor.resources.memoryMb`. |
+| `--disk-mb` | `0` | Ephemeral-storage limit for the `k8s` / `k8s-sandbox` Pod, in MiB; for `nitro-isolated`, the size of the guest's disk. `0` leaves it unbounded. JSON path: `executor.resources.diskMb`. |
+| `--network-mode` | (none) | Sandbox egress mode: `none` (deny all egress) or `allowlist` (egress only through the allowlist proxy). Any other value is rejected. Required for `k8s` and `k8s-sandbox`, where `allowlist` also needs `--k8s-egress-proxy-url`. Replaces only `executor.network.mode`: the `executor.network.allowlist` entries from `--config` are kept, and there is no flag for them. JSON path: `executor.network.mode`. |
 | `--k8s-namespace` | (none) | Namespace for the `k8s` / `k8s-sandbox` sandbox Pod. Required when `--executor=k8s` or `--executor=k8s-sandbox`. JSON path: `executor.k8sNamespace`. |
 | `--k8s-kubeconfig` | (none) | Path to a kubeconfig for the `k8s` / `k8s-sandbox` executors. An explicit value wins even in-cluster; empty prefers in-cluster config, then `$KUBECONFIG`. JSON path: `executor.k8sKubeconfig`. |
 | `--k8s-node-selector` | (none) | Repeatable `key=value` `nodeSelector` constraining where the `k8s` / `k8s-sandbox` Pod schedules (e.g. `--k8s-node-selector disktype=ssd`). JSON path: `executor.k8sNodeSelector`. |
@@ -580,9 +585,9 @@ are two unrelated settings that happen to share a value:
 - `executor.network.mode: "none"` is the deny-all egress setting on a
   filesystem/shell-capable executor (`container`, `k8s`,
   `k8s-sandbox`) — the executor still reads and writes a workspace
-  and runs commands, it just has no network route out. There is no
-  top-level `--network` flag; it is set only via `executor.network`
-  in a `--config` file (see `full.json` and `k8s-gvisor.json` under
+  and runs commands, it just has no network route out. It is set via
+  `--network-mode none` or `executor.network` in a `--config` file
+  (see `full.json` and `k8s-gvisor.json` under
   [`examples/runconfig/`](../examples/runconfig/)).
 
 `executor.type: "none"` and `executor.network` are mutually
@@ -2552,14 +2557,16 @@ Both `stirrup` and `stirrup-eval` emit completion scripts for `bash`,
 names, the closed-set enum flags (`--mode`, `--provider`, `--executor`,
 `--edit-strategy`, `--verifier`, `--git-strategy`, `--transport`,
 `--trace-emitter`, `--otel-protocol`, `--container-runtime`,
-`--code-scanner`, `--guardrail`), and filesystem completion for the
+`--network-mode`, `--code-scanner`, `--guardrail`), and filesystem completion for the
 path-shaped flags (`--config`, `--workspace`, `--prompt-file`,
 `--gcp-credentials-file`, `--replay-file`, `--permission-policy-file`,
 `--trace`, `--output-runconfig`).
 
 Closed-set enum completion is sourced from the same maps the validator
 consults, so a value added to `types/runconfig.go` extends the
-completion surface automatically.
+completion surface automatically. `--container-runtime` completes the
+runtime set of the `--executor` already on the command line: the
+Kubernetes set for `k8s` and `k8s-sandbox`, the container set otherwise.
 
 ### Installation
 

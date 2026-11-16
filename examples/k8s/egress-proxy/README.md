@@ -81,13 +81,14 @@ stirrup harness \
   --executor k8s \
   --image ghcr.io/rxbynerd/stirrup-sandbox:latest \
   --k8s-namespace default \
+  --network-mode allowlist \
   --k8s-egress-proxy-url http://stirrup-egress-proxy.default.svc:8080 \
   ...
 ```
 
-The network mode comes from a RunConfig (`executor.network.mode: "allowlist"`)
-— `--k8s-egress-proxy-url` is required whenever that mode is set and rejected
-otherwise. From a RunConfig file:
+`--k8s-egress-proxy-url` is required whenever the network mode is `allowlist`
+and rejected otherwise. The allowlist entries themselves
+(`executor.network.allowlist`) are set in a RunConfig file:
 
 ```json
 {
