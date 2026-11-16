@@ -427,7 +427,56 @@ type HarnessEvent struct {
 	HarnessSemver   string      `json:"harnessSemver,omitempty"`   // HarnessVersion as a semantic version without the leading "v", empty for non-release builds (ready only)
 
 	SessionPhase *SessionPhase `json:"sessionPhase,omitempty"` // what the session is doing (heartbeat from a harness advertising CapabilitySessionLiveness only)
+	BuildFailure *BuildFailure `json:"buildFailure,omitempty"` // why the task could not be built into a run (error from `stirrup job` before any run started only)
 }
+
+// BuildFailure classifies a task that could not be built into a run.
+// Reason is one of the BuildFailure* values; the set is closed, but
+// consumers treat a value they do not recognise as BuildFailureUnclassified.
+// Phase is where construction stopped.
+type BuildFailure struct {
+	Reason string       `json:"reason"`
+	Phase  SessionPhase `json:"phase"`
+}
+
+// Values of BuildFailure.Reason.
+const (
+	// BuildFailureConfigInvalid: the RunConfig failed validation.
+	BuildFailureConfigInvalid = "config_invalid"
+	// BuildFailureHostFile: a file the RunConfig names could not be used
+	// from the harness host.
+	BuildFailureHostFile = "host_file"
+	// BuildFailureCredential: a secret reference or provider credential
+	// could not be resolved.
+	BuildFailureCredential = "credential"
+	// BuildFailureTokenExchange: the sandbox identity token exchange was
+	// declined, timed out, or returned an unusable token.
+	BuildFailureTokenExchange = "token_exchange"
+	// BuildFailureSandboxPlatform: the cluster or container engine that
+	// hosts the sandbox refused or could not serve a request, for example
+	// RBAC, a missing namespace or RuntimeClass, a quota, or an
+	// unreachable engine.
+	BuildFailureSandboxPlatform = "sandbox_platform"
+	// BuildFailureAdmissionMismatch: admission changed the sandbox Pod in
+	// a way the executor's runtime does not accept.
+	BuildFailureAdmissionMismatch = "admission_mismatch"
+	// BuildFailureRuntimeDiagnosticFailed: the sandbox's runtime
+	// diagnostics found it was not isolated as its runtime requires.
+	BuildFailureRuntimeDiagnosticFailed = "runtime_diagnostic_failed"
+	// BuildFailureSandboxImage: the sandbox image could not be pulled or
+	// was not allowed, or the sandbox container exited before it was
+	// ready.
+	BuildFailureSandboxImage = "sandbox_image"
+	// BuildFailureSandboxNotReady: the sandbox did not become ready or
+	// reachable for commands, for example within the readiness timeout.
+	BuildFailureSandboxNotReady = "sandbox_not_ready"
+	// BuildFailureControlStreamLost: the control stream ended during
+	// construction.
+	BuildFailureControlStreamLost = "control_stream_lost"
+	// BuildFailureUnclassified: any other construction failure; the
+	// error message has the detail.
+	BuildFailureUnclassified = "unclassified"
+)
 
 // SessionPhase names what a `stirrup job` session is doing when it sends a
 // "heartbeat". Phase is one of the SessionPhase* values and Step, when set,

@@ -46,13 +46,14 @@ const eventTruncationFmt = "\n[truncated by harness for the control stream: %d o
 
 // boundEventFields caps the event fields that carry tool payloads,
 // appended user text, reasoning and messages, every name, ID, source,
-// stop reason and session phase, and the tools_loaded tool list (entry count and each
-// entry). The model's view is bounded separately by tools.maxResultBytes;
-// this cap protects the control stream when that budget is raised, a tool
-// input is large, a user_message carries a long prompt, a warning quotes
-// model output, or a provider delivers a whole reasoning block as one
-// thinking_delta. text_delta stays uncapped. A request event whose input
-// is over its bound is refused with ErrRequestInputTooLarge, never cut.
+// stop reason, session phase and build failure, and the tools_loaded tool
+// list (entry count and each entry). The model's view is bounded
+// separately by tools.maxResultBytes; this cap protects the control
+// stream when that budget is raised, a tool input is large, a
+// user_message carries a long prompt, a warning quotes model output, or a
+// provider delivers a whole reasoning block as one thinking_delta.
+// text_delta stays uncapped. A request event whose input is over its
+// bound is refused with ErrRequestInputTooLarge, never cut.
 func boundEventFields(event *types.HarnessEvent) error {
 	event.ID = capEventIdentifier(event.ID)
 	event.Name = capEventIdentifier(event.Name)
@@ -68,6 +69,16 @@ func boundEventFields(event *types.HarnessEvent) error {
 			Step:  capEventIdentifier(event.SessionPhase.Step),
 		}
 		event.SessionPhase = &phase
+	}
+	if event.BuildFailure != nil {
+		failure := types.BuildFailure{
+			Reason: capEventIdentifier(event.BuildFailure.Reason),
+			Phase: types.SessionPhase{
+				Phase: capEventIdentifier(event.BuildFailure.Phase.Phase),
+				Step:  capEventIdentifier(event.BuildFailure.Phase.Step),
+			},
+		}
+		event.BuildFailure = &failure
 	}
 	switch event.Type {
 	case "tool_result":

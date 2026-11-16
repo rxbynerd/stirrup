@@ -198,8 +198,11 @@ service HarnessService {
 //     Always the last event of a run, including the failure paths below.
 //
 //   "error"
-//     - message: human-readable error description. Followed by a "done"
-//                event carrying stop_reason "error".
+//     - message:       human-readable error description. Followed by a
+//                      "done" event carrying stop_reason "error".
+//     - build_failure: why the task could not be built into a run; set by
+//                      `stirrup job` on the "error" it sends when
+//                      construction fails, before any run started.
 //
 //   "warning"
 //     - message:    human-readable warning (non-fatal).
@@ -472,6 +475,54 @@ message HarnessEvent {
   // What the session is doing. Set on "heartbeat" events from a harness
   // that advertises the "session_liveness" capability.
   SessionPhase session_phase = 30;
+
+  // Why the task could not be built into a run. Set on the "error" event
+  // `stirrup job` sends when construction fails, before any run started;
+  // its "done" follows with stop_reason "error" (or
+  // "control_stream_lost"). Unset on every other "error".
+  BuildFailure build_failure = 31;
+}
+
+// BuildFailure mirrors types.BuildFailure: a task that could not be built
+// into a run.
+message BuildFailure {
+  // The failure's class, from a closed set; treat a value that is not
+  // recognised as "unclassified":
+  //   "config_invalid"            the RunConfig failed validation.
+  //   "host_file"                 a file the RunConfig names could not be
+  //                               used from the harness host.
+  //   "credential"                a secret reference or provider
+  //                               credential could not be resolved.
+  //   "token_exchange"            the sandbox identity token exchange was
+  //                               declined, timed out, or returned an
+  //                               unusable token.
+  //   "sandbox_platform"          the cluster or container engine that
+  //                               hosts the sandbox refused or could not
+  //                               serve a request: RBAC, a missing
+  //                               namespace or RuntimeClass, a quota, an
+  //                               unreachable engine.
+  //   "admission_mismatch"        admission changed the sandbox Pod in a
+  //                               way the executor's runtime does not
+  //                               accept.
+  //   "runtime_diagnostic_failed" the sandbox's runtime diagnostics found
+  //                               it was not isolated as its runtime
+  //                               requires.
+  //   "sandbox_image"             the sandbox image could not be pulled or
+  //                               was not allowed, or the sandbox
+  //                               container exited before it was ready.
+  //   "sandbox_not_ready"         the sandbox did not become ready or
+  //                               reachable for commands, for example
+  //                               within the readiness timeout.
+  //   "control_stream_lost"       the control stream ended during
+  //                               construction.
+  //   "unclassified"              any other construction failure; the
+  //                               message has the detail.
+  string reason = 1;
+
+  // Where construction stopped: phase "constructing" and the step that
+  // was in progress, as on the session's heartbeats; an empty step is
+  // construction outside the named steps.
+  SessionPhase phase = 2;
 }
 
 // SessionPhase mirrors types.SessionPhase: what a `stirrup job` session is

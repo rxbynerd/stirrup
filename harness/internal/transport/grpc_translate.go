@@ -53,6 +53,12 @@ func harnessEventToProto(e types.HarnessEvent) *pb.HarnessEvent {
 	if e.SessionPhase != nil {
 		pe.SessionPhase = &pb.SessionPhase{Phase: e.SessionPhase.Phase, Step: e.SessionPhase.Step}
 	}
+	if e.BuildFailure != nil {
+		pe.BuildFailure = &pb.BuildFailure{
+			Reason: e.BuildFailure.Reason,
+			Phase:  &pb.SessionPhase{Phase: e.BuildFailure.Phase.Phase, Step: e.BuildFailure.Phase.Step},
+		}
+	}
 
 	return pe
 }

@@ -622,6 +622,24 @@ func TestHarnessEventToProto_HeartbeatSessionPhase(t *testing.T) {
 	must.Nil(bare.GetSessionPhase(), "a run heartbeat carries no session phase")
 }
 
+func TestHarnessEventToProto_ErrorBuildFailure(t *testing.T) {
+	must := require.New(t)
+	decoded := harnessEventWireRoundTrip(t, types.HarnessEvent{
+		Type:    "error",
+		Message: "building harness: pod not ready",
+		BuildFailure: &types.BuildFailure{
+			Reason: types.BuildFailureSandboxImage,
+			Phase:  types.SessionPhase{Phase: types.SessionPhaseConstructing, Step: types.SessionStepSandboxReady},
+		},
+	})
+	must.Equal(types.BuildFailureSandboxImage, decoded.GetBuildFailure().GetReason())
+	must.Equal(types.SessionPhaseConstructing, decoded.GetBuildFailure().GetPhase().GetPhase())
+	must.Equal(types.SessionStepSandboxReady, decoded.GetBuildFailure().GetPhase().GetStep())
+
+	bare := harnessEventWireRoundTrip(t, types.HarnessEvent{Type: "error", Message: "x"})
+	must.Nil(bare.GetBuildFailure(), "an error from a run carries no build failure")
+}
+
 func TestHarnessEventToProto_ReadyConfigFieldsAndSemver(t *testing.T) {
 	must := require.New(t)
 	decoded := harnessEventWireRoundTrip(t, types.HarnessEvent{
