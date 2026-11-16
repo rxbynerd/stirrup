@@ -23,7 +23,10 @@ func TestParseImageRef_ResolvesLikeTheEngines(t *testing.T) {
 		{"docker hub library path is unchanged", "docker.io/library/alpine", "docker.io/library/alpine", true},
 		{"one-segment docker hub path gains library", "docker.io/ubuntu:26.04", "docker.io/library/ubuntu", true},
 		{"index.docker.io folds to docker.io", "index.docker.io/library/ubuntu", "docker.io/library/ubuntu", true},
-		{"registry-1.docker.io folds to docker.io", "registry-1.docker.io/library/ubuntu:26.04", "docker.io/library/ubuntu", true},
+		{"registry-1.docker.io is a separate host", "registry-1.docker.io/library/ubuntu:26.04", "registry-1.docker.io/library/ubuntu", true},
+		{"registry-1.docker.io gains no library", "registry-1.docker.io/ubuntu", "registry-1.docker.io/ubuntu", true},
+		{"sha384 digest is accepted", "ghcr.io/acme/x@sha384:" + strings.Repeat("a", 96), "ghcr.io/acme/x", true},
+		{"repository path of 255 bytes is accepted", "ghcr.io/" + strings.Repeat("a", 255), "ghcr.io/" + strings.Repeat("a", 255), true},
 		{"index.docker.io namespace folds to docker.io", "index.docker.io/myorg/app", "docker.io/myorg/app", true},
 		{"upper-case first segment is a host", "Ghcr/acme/x", "Ghcr/acme/x", true},
 		{"ipv6 host with port", "[fd00::1]:5000/team/img", "[fd00::1]:5000/team/img", true},
@@ -71,7 +74,11 @@ func TestImageAdmissionPolicy_RejectsMalformedReferenceWithoutPolicy(t *testing.
 		{"upper-case repository", "ghcr.io/acme/X", "not a valid image reference"},
 		{"two tags", "ghcr.io/acme/x:tag:tag2", "not a valid image reference"},
 		{"short digest", "ghcr.io/acme/x@sha256:abc", "not a valid image reference"},
-		{"name over 255 bytes", "ghcr.io/" + strings.Repeat("a", 250), "longer than 255 bytes"},
+		{"sha256 digest of the wrong length", "ghcr.io/acme/x@sha256:" + strings.Repeat("a", 32), "a sha256 digest is 64"},
+		{"sha256 digest in upper case", "ghcr.io/acme/x@sha256:" + strings.Repeat("A", 64), "lower-case hexadecimal"},
+		{"unsupported digest algorithm", "ghcr.io/acme/x@md5:" + strings.Repeat("a", 32), `unsupported digest algorithm "md5"`},
+		{"repository path over 255 bytes", "ghcr.io/" + strings.Repeat("a", 256), "longer than 255 bytes"},
+		{"bare image ID", strings.Repeat("a", 64), "image ID"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -131,7 +138,7 @@ func TestImageAdmissionPolicy_PrefixPatternNeedsARepositoryBelowIt(t *testing.T)
 	must := require.New(t)
 	policy, err := ParseImageAdmissionPolicy([]string{"localhost/acme/"})
 	must.NoError(err)
-	must.Error(policy.Admit("localhost/acme"))
+	must.ErrorIs(policy.Admit("localhost/acme"), ErrImageNotAdmitted)
 	must.NoError(policy.Admit("localhost/acme/base"))
 }
 
@@ -157,7 +164,7 @@ func TestImageAdmissionPolicy_GlobPatternMatchesOneSegment(t *testing.T) {
 			if tt.want {
 				must.NoError(err)
 			} else {
-				must.Error(err)
+				must.ErrorIs(err, ErrImageNotAdmitted)
 			}
 		})
 	}
@@ -196,6 +203,26 @@ func TestImageAdmissionPolicy_IPv6HostIsMatchedLiterally(t *testing.T) {
 	must.ErrorIs(policy.Admit("d:5000/acme/evil"), ErrImageNotAdmitted)
 }
 
+func TestImageAdmissionPolicy_HostStartingWithACharacterClassIsAGlob(t *testing.T) {
+	must := require.New(t)
+	policy, err := ParseImageAdmissionPolicy([]string{"[ab]-registry.acme.internal/"})
+	must.NoError(err)
+	must.NoError(policy.Admit("a-registry.acme.internal/team/base"))
+	must.ErrorIs(policy.Admit("c-registry.acme.internal/team/base"), ErrImageNotAdmitted)
+}
+
+func TestImageAdmissionPolicy_RegistryOneDockerIoIsNotDockerHub(t *testing.T) {
+	must := require.New(t)
+	policy, err := ParseImageAdmissionPolicy([]string{"docker.io/library/ubuntu"})
+	must.NoError(err)
+	must.ErrorIs(policy.Admit("registry-1.docker.io/ubuntu"), ErrImageNotAdmitted)
+	must.ErrorIs(policy.Admit("registry-1.docker.io/library/ubuntu"), ErrImageNotAdmitted)
+
+	aliased, err := ParseImageAdmissionPolicy([]string{"registry-1.docker.io/library/"})
+	must.NoError(err)
+	must.Equal([]string{"registry-1.docker.io/library/"}, aliased.Patterns())
+}
+
 func TestImageAdmissionPolicy_DockerHubPatternUsesTheLibraryRule(t *testing.T) {
 	must := require.New(t)
 	policy, err := ParseImageAdmissionPolicy([]string{"docker.io/ubuntu"})
@@ -203,7 +230,7 @@ func TestImageAdmissionPolicy_DockerHubPatternUsesTheLibraryRule(t *testing.T) {
 	must.Equal([]string{"docker.io/library/ubuntu"}, policy.Patterns())
 	must.NoError(policy.Admit("docker.io/ubuntu:26.04"))
 	must.NoError(policy.Admit("docker.io/library/ubuntu"))
-	must.Error(policy.Admit("docker.io/ubuntu/ubuntu"))
+	must.ErrorIs(policy.Admit("docker.io/ubuntu/ubuntu"), ErrImageNotAdmitted)
 }
 
 func TestImageAdmissionPolicy_StarSlashAdmitsEveryNamedRegistry(t *testing.T) {
@@ -218,7 +245,7 @@ func TestImageAdmissionPolicy_CharacterClassNeverMatchesSlash(t *testing.T) {
 	must := require.New(t)
 	policy, err := ParseImageAdmissionPolicy([]string{"ghcr.io/acme[^x]base"})
 	must.NoError(err)
-	must.Error(policy.Admit("ghcr.io/acme/base"))
+	must.ErrorIs(policy.Admit("ghcr.io/acme/base"), ErrImageNotAdmitted)
 	must.NoError(policy.Admit("ghcr.io/acme-base"))
 }
 
@@ -258,6 +285,11 @@ func TestParseImageAdmissionPolicy_RejectsUnmatchablePatterns(t *testing.T) {
 		{"glob-only labels", "*.*/acme/", "only of glob characters"},
 		{"malformed ipv6 host", "[fd00::1/", "malformed IPv6"},
 		{"ipv6 host holding a glob", "[fd00::*]:5000/", "malformed IPv6"},
+		{"upper-case namespace", "ghcr.io/Acme/", "upper-case letter"},
+		{"upper-case letter after a glob", "ghcr.io/acme-*/Base", "upper-case letter"},
+		{"dot-dot segment", "ghcr.io/acme/../x/", "not a valid repository path component"},
+		{"trailing underscore", "ghcr.io/acme_/", "not a valid repository path component"},
+		{"leading dash", "ghcr.io/-acme/", "not a valid repository path component"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -281,6 +313,8 @@ func TestImageDigestPinned_RecognisesOCIDigests(t *testing.T) {
 		{"ghcr.io/acme/base@", false},
 		{"ghcr.io/acme/base@sha256:", false},
 		{"ghcr.io/acme/base@sha256:abc", false},
+		{"ghcr.io/acme/base@sha256:" + strings.Repeat("a", 32), false},
+		{"ghcr.io/acme/base@md5:" + strings.Repeat("a", 32), false},
 		{"ghcr.io/acme/base@foo@sha256:" + strings.Repeat("a", 64), false},
 	}
 	for _, tt := range tests {

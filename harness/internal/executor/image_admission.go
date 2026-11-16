@@ -98,7 +98,7 @@ func imagePatternMatches(pattern string, ref []string) bool {
 		return false
 	}
 	for i, seg := range segments {
-		if i == 0 && strings.HasPrefix(seg, "[") {
+		if i == 0 && ipv6LiteralHost.MatchString(seg) {
 			if seg != ref[0] {
 				return false
 			}
@@ -111,7 +111,23 @@ func imagePatternMatches(pattern string, ref []string) bool {
 	return true
 }
 
-var ipv6HostPattern = regexp.MustCompile(`^` + refIPv6Host + `(?::[0-9]+)?$`)
+// ipv6LiteralHost matches a bracketed IPv6 pattern host with an optional
+// port. The colon inside the brackets tells it from a glob character class
+// such as "[ab]".
+var ipv6LiteralHost = regexp.MustCompile(`^\[[0-9a-fA-F]*:[0-9a-fA-F:]*\](?::[0-9]+)?$`)
+
+// hasIPv6Brackets reports whether a pattern host opens with brackets that
+// hold a colon, which no glob class in a hostname does.
+func hasIPv6Brackets(host string) bool {
+	if !strings.HasPrefix(host, "[") {
+		return false
+	}
+	end := strings.IndexByte(host, ']')
+	if end < 0 {
+		end = len(host)
+	}
+	return strings.Contains(host[:end], ":")
+}
 
 func validateImagePattern(pattern string) error {
 	if pattern == "" {
@@ -137,13 +153,18 @@ func validateImagePattern(pattern string) error {
 	}
 	globs := segments
 	switch {
-	case strings.HasPrefix(host, "["):
-		if !ipv6HostPattern.MatchString(host) {
+	case hasIPv6Brackets(host):
+		if !ipv6LiteralHost.MatchString(host) {
 			return fmt.Errorf("image admission pattern %q has a malformed IPv6 registry host; an IPv6 host is matched literally and cannot hold a glob", pattern)
 		}
 		globs = segments[1:]
 	case pattern != "*/" && !hostHasLiteralLabel(host):
 		return fmt.Errorf("image admission pattern %q has a registry host made only of glob characters; name the registry (for example %q), or write \"*/\" to admit every registry", pattern, "*.corp.example/")
+	}
+	for _, seg := range segments[1:] {
+		if err := validateRepositorySegment(pattern, seg); err != nil {
+			return err
+		}
 	}
 	for _, seg := range globs {
 		if strings.Contains(seg, "**") {
@@ -152,6 +173,19 @@ func validateImagePattern(pattern string) error {
 		if _, err := path.Match(seg, ""); err != nil {
 			return fmt.Errorf("image admission pattern %q is not a valid glob: %w", pattern, err)
 		}
+	}
+	return nil
+}
+
+// validateRepositorySegment refuses a repository segment no normalised
+// reference could match: a glob-free segment must satisfy the path-component
+// grammar, and no segment may hold an upper-case letter.
+func validateRepositorySegment(pattern, seg string) error {
+	if strings.IndexFunc(seg, unicode.IsUpper) >= 0 {
+		return fmt.Errorf("image admission pattern %q has an upper-case letter in a repository segment; repository paths are lowercase", pattern)
+	}
+	if !strings.ContainsAny(seg, `*?[\`) && !pathComponentPattern.MatchString(seg) {
+		return fmt.Errorf("image admission pattern %q has the repository segment %q, which is not a valid repository path component", pattern, seg)
 	}
 	return nil
 }
@@ -173,16 +207,13 @@ func hostHasLiteralLabel(host string) bool {
 	})
 }
 
-// normalisePattern folds the Docker Hub pull aliases onto docker.io and
+// normalisePattern folds the index.docker.io alias onto docker.io and
 // applies Docker Hub's library/ rule to a whole-reference pattern with one
 // repository segment, so a pattern names references the way parseImageRef
 // resolves them.
 func normalisePattern(pattern string) string {
-	for _, alias := range []string{"index.docker.io/", "registry-1.docker.io/"} {
-		if rest, ok := strings.CutPrefix(pattern, alias); ok {
-			pattern = "docker.io/" + rest
-			break
-		}
+	if rest, ok := strings.CutPrefix(pattern, "index.docker.io/"); ok {
+		pattern = "docker.io/" + rest
 	}
 	if rest, ok := strings.CutPrefix(pattern, "docker.io/"); ok && rest != "" && !strings.Contains(rest, "/") {
 		return "docker.io/library/" + rest
@@ -204,13 +235,21 @@ const (
 	refName            = `(?:` + refDomain + `/)?` + refPathComponent + `(?:/` + refPathComponent + `)*`
 	refTag             = `[\w][\w.-]{0,127}`
 	refDigest          = `[A-Za-z][A-Za-z0-9]*(?:[-_+.][A-Za-z][A-Za-z0-9]*)*:[0-9a-fA-F]{32,}`
-	refNameMaxBytes    = 255
+	refPathMaxBytes    = 255
 )
+
+// digestHexLengths gives the hex length of each digest algorithm the engines
+// accept; go-digest accepts only lower-case hex for them.
+var digestHexLengths = map[string]int{"sha256": 64, "sha384": 96, "sha512": 128}
+
+var identifierPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+var pathComponentPattern = regexp.MustCompile(`^` + refPathComponent + `$`)
 
 var imageReferencePattern = regexp.MustCompile(`^(` + refName + `)(?::(` + refTag + `))?(?:@(` + refDigest + `))?$`)
 
 // parsedImageRef is an image reference resolved the way the engines resolve
-// it: the Docker Hub pull aliases folded onto docker.io, and library/ added
+// it: index.docker.io folded onto docker.io, and library/ added
 // to a one-segment Docker Hub repository.
 type parsedImageRef struct {
 	segments      []string
@@ -233,24 +272,48 @@ func parseImageRef(image string) (parsedImageRef, error) {
 	if m == nil {
 		return parsedImageRef{}, fmt.Errorf("image %q is not a valid image reference (an optional registry host, a lowercase repository path, an optional :tag and an optional @digest)", image)
 	}
-	name := m[1]
-	if len(name) > refNameMaxBytes {
-		return parsedImageRef{}, fmt.Errorf("image %q has a repository name longer than %d bytes", image, refNameMaxBytes)
+	if identifierPattern.MatchString(image) {
+		return parsedImageRef{}, fmt.Errorf("image %q is not a valid image reference: a 64-character hexadecimal string is an image ID, not a name", image)
 	}
+	if err := validateImageDigest(image, m[3]); err != nil {
+		return parsedImageRef{}, err
+	}
+	name := m[1]
 	host, remainder, namesRegistry := "docker.io", name, false
 	if first, rest, found := strings.Cut(name, "/"); found &&
 		(first == "localhost" || strings.ContainsAny(first, ".:") || strings.ToLower(first) != first) {
 		host, remainder, namesRegistry = first, rest, true
 	}
-	if host == "index.docker.io" || host == "registry-1.docker.io" {
+	if host == "index.docker.io" {
 		host = "docker.io"
 	}
 	if host == "docker.io" && !strings.Contains(remainder, "/") {
 		remainder = "library/" + remainder
+	}
+	if len(remainder) > refPathMaxBytes {
+		return parsedImageRef{}, fmt.Errorf("image %q has a repository path longer than %d bytes", image, refPathMaxBytes)
 	}
 	return parsedImageRef{
 		segments:      append([]string{host}, strings.Split(remainder, "/")...),
 		namesRegistry: namesRegistry,
 		digest:        m[3],
 	}, nil
+}
+
+// validateImageDigest applies the check go-digest makes after the grammar:
+// a supported algorithm and a lower-case hex value of its length. An absent
+// digest is valid.
+func validateImageDigest(image, digest string) error {
+	if digest == "" {
+		return nil
+	}
+	algorithm, hex, _ := strings.Cut(digest, ":")
+	want, known := digestHexLengths[algorithm]
+	if !known {
+		return fmt.Errorf("image %q is not a valid image reference: unsupported digest algorithm %q", image, algorithm)
+	}
+	if len(hex) != want || strings.ToLower(hex) != hex {
+		return fmt.Errorf("image %q is not a valid image reference: a %s digest is %d lower-case hexadecimal characters", image, algorithm, want)
+	}
+	return nil
 }

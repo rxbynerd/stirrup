@@ -865,16 +865,20 @@ harness through `harness/harnessapi` runs without a policy.
 The harness first checks `executor.image` against the reference grammar
 that Docker, containerd, Podman and CRI-O parse references with
 (`github.com/distribution/reference`). That grammar requires a
-lowercase repository path, at most one tag, a well-formed digest, and a
-name of at most 255 bytes. A reference the grammar rejects is refused
-whether or not a policy is set.
+lowercase repository path of at most 255 bytes, at most one tag, and a
+digest the engines accept: `sha256`, `sha384` or `sha512` with a
+lower-case hexadecimal value of the matching length. A 64-character
+hexadecimal string is an image ID, not a name, and is refused. A
+reference the grammar rejects is refused whether or not a policy is set.
 
 Patterns are matched against the normalised reference: the registry
 host and repository path, with the tag and digest removed. The host is
 split off by the engines' rule. The first segment is a host when it
 contains a `.` or `:`, is `localhost`, or has an upper-case letter.
 Otherwise the reference is a Docker Hub short name. The `index.docker.io`
-and `registry-1.docker.io` aliases fold to `docker.io`. A Docker Hub
+alias folds to `docker.io`, as it does in the engines;
+`registry-1.docker.io` stays a separate host, so a policy that admits
+`docker.io/` does not admit it. A Docker Hub
 repository with one path segment gains `library/`, as it does in the
 engines: `ubuntu` and `docker.io/ubuntu` both become
 `docker.io/library/ubuntu`. Patterns get the same folding and `library/`
@@ -902,6 +906,12 @@ otherwise start a glob character class.
 `platform/` namespace of one account's ECR registry, and
 `harbor.acme.internal:8443/sandboxes/` admits a Harbor project at any
 depth.
+
+The policy decides where a sandbox image comes from, not which executor a
+`RunConfig` selects. A `RunConfig` that sets `executor.type: local` runs
+on the host without an image, and the policy does not refuse it. A
+deployment that must guarantee a sandbox has to enforce the executor type
+by other means.
 
 A glob in the host segment trusts every owner of every matching host,
 so it must span only hosts the deployment controls, such as
