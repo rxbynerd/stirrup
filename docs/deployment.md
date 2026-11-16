@@ -320,7 +320,9 @@ reports (see Token lifetime, below).
   `task_assignment` and before the sandbox is created, then before
   first delivery when startup took the token past its refresh point,
   then again on each refresh; at most eight per run. Carries `request_id`
-  (correlation; `sbid-1`, `sbid-2`, … in issue order) and `audience`,
+  (correlation; `sbid-<n>`, with `n` increasing in issue order but not
+  contiguous, because one sequence numbers every request the harness
+  issues) and `audience`,
   the intended JWT `aud` claim (e.g. `https://haybale.internal`). The
   event deliberately carries no harness-asserted identity field: the
   control plane derives the run identity from the authenticated

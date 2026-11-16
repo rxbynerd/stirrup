@@ -41,19 +41,21 @@ type PayloadExtractor func(event types.ControlEvent) (id string, payload any)
 //
 // A single Correlator may be attached to at most one event type per
 // AttachTo call but may be attached multiple times to different types
-// on the same transport. Concurrent calls to Await are safe; each call
-// receives a unique request ID and its own response channel.
+// on the same transport. Several Correlators may share one transport:
+// request IDs come from NewRequestID, so no two pending requests in the
+// process share an ID and a response resolves at most one Await.
+// Concurrent calls to Await are safe; each call receives a unique
+// request ID and its own response channel.
 type Correlator struct {
 	idPrefix string
 
 	mu      sync.Mutex
-	nextID  int
 	pending map[string]chan any
 }
 
 // NewCorrelator constructs a Correlator. The idPrefix is used to format
-// request IDs as "<prefix>-<n>" with a monotonic counter starting at 1.
-// If idPrefix is empty, "req" is used.
+// request IDs as "<prefix>-<n>" (see NewRequestID). If idPrefix is
+// empty, "req" is used.
 func NewCorrelator(idPrefix string) *Correlator {
 	if idPrefix == "" {
 		idPrefix = "req"
@@ -86,10 +88,10 @@ func (c *Correlator) AttachTo(t HasOnControl, extract PayloadExtractor) {
 }
 
 // deliver routes a payload to the pending channel for the given request
-// ID, if one is registered. The channel is buffered to capacity 1 so a
-// late delivery (after the awaiter has timed out and removed the entry)
-// would never reach this code path; if the entry is missing the delivery
-// is silently dropped.
+// ID, if one is registered. A response for an unknown, already-resolved,
+// timed-out or cancelled ID finds no entry and is dropped, so it can
+// never resolve a later request; the awaiter of an unanswered request
+// fails closed on its timeout or context.
 func (c *Correlator) deliver(id string, payload any) {
 	c.mu.Lock()
 	ch, ok := c.pending[id]
@@ -177,8 +179,5 @@ func (c *Correlator) PendingCount() int {
 }
 
 func (c *Correlator) nextRequestID() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.nextID++
-	return fmt.Sprintf("%s-%d", c.idPrefix, c.nextID)
+	return NewRequestID(c.idPrefix)
 }
