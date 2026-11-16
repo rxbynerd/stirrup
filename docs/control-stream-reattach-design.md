@@ -9,8 +9,8 @@ cancels the run). Code follows only after the note is merged and the
 Drafts 1 and 2 were reviewed adversarially. Draft 3 changes four
 things of substance:
 
-- Liveness now requires proof that the control plane is receiving, not
-  only that it is sending.
+- Liveness now requires proof that the control plane is receiving and
+  that its outbox is delivering, not only that it is sending.
 - The hold on tool dispatch is now a gate on every phase that runs in
   the sandbox or acts outside the harness.
 - The safety claim is narrowed to what holds, with the work that still
@@ -64,17 +64,21 @@ A new `RunConfig` field, `controlStreamGraceSeconds` (proto field 62,
 default 0, range 60-300), opens a bounded window after the control
 stream is lost.
 
-- **Detection.** The control plane acknowledges what it has received.
-  The harness treats any event or heartbeat left unacknowledged for
-  30 s as a loss, so a control plane that keeps sending but has stopped
-  receiving is detected.
-- **While detached**, the model may keep streaming, but every tool call,
-  hook, verifier run and post-run step waits at a gate until the stream
-  is back. A detached run gains no capability. Steps already running
-  when the loss is detected finish, and the up to 40 s before detection
-  runs as if attached; [What still runs unwatched](#what-still-runs-unwatched)
-  lists and bounds both. Requests to the control plane keep their
-  timeouts and fail closed.
+- **Detection.** The control plane acknowledges what it has received
+  and reports the head of its outbox. The harness treats an
+  acknowledgement that stops advancing for 30 s, or an outbox head it
+  has not been sent for 30 s, as a loss. A control plane that keeps
+  sending but has stopped receiving, or keeps receiving but has stopped
+  delivering, is detected.
+- **While detached**, the model may keep streaming, but each run start,
+  hook, git checkpoint, tool call, verifier run and post-run step waits
+  at a gate until the stream is back. A detached run gains no
+  capability. Steps already running when the loss is detected finish,
+  the up to 40 s before detection runs as if attached, and processes an
+  earlier command left in the background keep running for the break;
+  [What still runs unwatched](#what-still-runs-unwatched) lists and
+  bounds all three. Requests to the control plane keep their timeouts
+  and fail closed.
 - **Redial.** The harness redials `CONTROL_PLANE_ADDR` and calls a new
   RPC, `ResumeTask`. It presents a resume credential that the control
   plane issued on the `task_assignment` and replaces on every re-attach.
@@ -136,8 +140,9 @@ offers a session protocol instead:
 - Nothing is applied twice.
 - Once a loss is detected, no gated step starts until the stream is
   back.
-- The work that does run unwatched is bounded and does not grow with
-  the window.
+- The work started after detection is bounded independently of the
+  window. Background processes and in-flight model calls are the
+  exception: they run for the break.
 - The fence is state-based.
 
 Whether that meets the bar is
@@ -149,7 +154,7 @@ Whether that meets the bar is
 |---|---|
 | A run survives a control-plane restart, deploy or brief network break shorter than the window. | Surviving a harness process restart or a Pod reschedule. That needs the persisted session log of [`sessions-spec-draft.md`](sessions-spec-draft.md) (#456). |
 | With the field unset, stream-loss and delivery behaviour is unchanged. | Exactly-once execution of side effects across a fence. The fence prevents two workers; it does not make tools idempotent. |
-| A detached run gains no capability. Once a loss is detected, no gated step starts until the stream is back, and the work that runs unwatched is bounded independently of the window. | Stopping a step that is already running when a loss is detected. |
+| A detached run gains no capability. Once a loss is detected, no gated step starts until the stream is back, and the work that runs unwatched is listed with its bounds. | Stopping a step that is already running when a loss is detected, or a background process an earlier command started ([open question 15](#open-questions-for-the-maintainer)). |
 | After a re-attach, neither side applies an event twice or misses one silently. | Moving a live stream between control-plane replicas. A resumed stream may land on any replica; the control plane shares session state between them. |
 | The loop stays a pure function of its interfaces: re-attach lives in the transport and the `cmd` package, and the phase gate is an injected interface. | Re-attach for `stirrup harness --transport grpc` or a `harnessapi` embedder. Neither has a `task_assignment` to carry a credential. |
 | | A timed lease that lets a control plane reschedule without stopping the harness ([open question 2](#open-questions-for-the-maintainer)). |
@@ -251,9 +256,9 @@ environment. Each failure rejects the task with `error` and
 
 The cap of 300 s covers a rolling deploy or a control-plane restart. A
 longer window lengthens waiting time, model spend and the delay before
-a `cancel` sent during the break lands. It does not lengthen the
-unwatched work, which is bounded by the detection bound and by the
-steps already running (see
+a `cancel` sent during the break lands. It also lengthens one kind of
+unwatched work: processes that an earlier command left running in the
+sandbox, and model calls already in flight, run for the break (see
 [What still runs unwatched](#what-still-runs-unwatched)). The cap is
 [open question 3](#open-questions-for-the-maintainer).
 
@@ -273,20 +278,34 @@ receiving.
 | Direction | Signal | Rule |
 |---|---|---|
 | Harness to control plane | `heartbeat` for the whole session, at the effective heartbeat interval or 10 s, whichever is shorter. Each carries a session-scoped `heartbeat_seq` and the harness's `last_control_seq`. The transport sends these itself; the loop's run heartbeats (`harness/internal/core/loop.go:1545`) gain the same fields. | The control plane treats 30 s without an event on the session's live stream, or the stream ending, as the stream being dead. Until then it refuses a re-attach for that session with a retryable rejection, so a valid credential cannot take over a stream that is still live. |
-| Control plane to harness | `ControlEvent{type:"ack", ack_seq, heartbeat_ack}`, sent within 10 s of receiving each sequenced event or heartbeat, from the path that persisted it | `ack_seq` is the highest harness `seq` the control plane has durably processed; `heartbeat_ack` is the highest `heartbeat_seq` it has recorded. |
+| Control plane to harness | `ControlEvent{type:"ack", ack_seq, heartbeat_ack, control_head}`, sent within 10 s of receiving each sequenced event or heartbeat, from the path that persisted it | `ack_seq` is the highest harness `seq` the control plane has durably processed; `heartbeat_ack` is the highest `heartbeat_seq` it has recorded; `control_head` is the highest `control_seq` it has assigned, read from the store. On `ack`, 0 in any of the three means "no change". |
 
-**The progress rule.** Every sequenced event and every heartbeat is
-*outstanding* from the moment it is handed to the current stream's send
-path until an `ack` covers it (`ack_seq ≥ seq`, or
-`heartbeat_ack ≥ heartbeat_seq`). If any item has been outstanding for
-more than 30 s, the harness treats the stream as lost. It cancels that
-stream's context and enters `detached`. Cancelling a stream is local to
-that stream; it is not the session context, so `recordStreamEnd` does
-not read it as a local close.
+**The progress rule.** A sequenced event or heartbeat is *outstanding*
+from the moment it is handed to the current stream's send path until
+an `ack` covers it (`ack_seq ≥ seq`, or `heartbeat_ack ≥
+heartbeat_seq`). The harness treats the stream as lost when either of
+these holds for more than 30 s:
+
+- `ack_seq` or `heartbeat_ack` has not advanced while that counter has
+  an item outstanding. Measuring the counter, not each item's age, means
+  a slow but healthy link that drains a large replay is not mistaken
+  for a stall.
+- `control_head` is above the highest `control_seq` the harness has
+  dispatched. The control plane is receiving, but its outbox is not
+  delivering, so a `cancel` there would never arrive.
+
+On a loss the harness cancels that stream's context and enters
+`detached`. Cancelling a stream is local to that stream; it is not the
+session context, so `recordStreamEnd` does not read it as a local
+close. The re-attach re-sends the outbox, which is the recovery for an
+outbox that stopped delivering.
 
 - **Detection bound.** A heartbeat is sent at most 10 s after the
-  control plane stops receiving, and it is outstanding for 30 s, so a
-  receive path that stops is detected within 40 s. A stream that fails
+  control plane stops receiving, and its counter then fails to advance
+  for 30 s, so a receive path that stops is detected within 40 s. An
+  outbox that stops delivering is detected within 30 s of the first
+  `ack` that reports a head the harness has not received, and that
+  `ack` arrives within 10 s of the next heartbeat. A stream that fails
   visibly (a reset, a non-OK status) is detected at once.
 - **Acks that stall while other events arrive.** Other inbound events
   (`permission_response`, `user_response`, `cancel`, `batch_result`) are
@@ -304,13 +323,18 @@ not read it as a local close.
   [Inbound sequence numbers](#inbound-sequence-numbers)). A value above
   the highest the harness has assigned is a protocol error and detaches
   the stream.
-- **Replays.** An item's age is measured from its most recent send on
-  the current stream, so a replayed event does not count as overdue
-  because it was first sent before the break.
+- **Replays.** An item is outstanding from its most recent send on the
+  current stream, so a replayed event does not count as overdue because
+  it was first sent before the break. The replay is acknowledged only by
+  an `ack` with `ack_seq ≥ replay_through_seq` and `heartbeat_ack` at or
+  above the `heartbeat_seq` that `resumed` carries. An empty replay
+  therefore still needs one `ack` on the new stream before the gate
+  opens.
 
 A blocked `Send` holds the transport's write lock (`grpc.go:137-150`).
-Items waiting behind it are outstanding, so a control plane that stops
-reading is detected by the same rule. Cancelling the stream unblocks
+Items waiting behind it are outstanding and their counter stops
+advancing, so a control plane that stops reading is detected by the
+same rule. Cancelling the stream unblocks
 the `Send`, so a flow-control stall cannot hold a correlator timer past
 its timeout by more than the detection bound.
 
@@ -319,7 +343,7 @@ its timeout by more than the detection bound.
 | Parameter | Value | Reason |
 |---|---|---|
 | Target | `CONTROL_PLANE_ADDR`, read once at process start (`job.go:84`) | A `RunConfig` cannot redirect the redial. |
-| Connection | A fresh `grpc.ClientConn` per attempt; the old one is closed after its reader has exited | The new connection re-resolves DNS and lands on any healthy replica, without grpc-go's connect backoff, which grows to 120 s. Waiting for the old reader keeps one reader dispatching at a time. |
+| Connection | A fresh `grpc.ClientConn` per attempt; the old one is closed after its reader has exited | The new connection re-resolves DNS and lands on any healthy replica, without grpc-go's connect backoff, which grows to 120 s. Waiting for the old reader keeps one reader dispatching at a time, and `last_control_seq` for the `reattach` is read only after it has exited, so a control event it dispatched late is not re-sent. |
 | TLS material | The CA bundle and client key pair are re-read on every attempt | Short-lived certificates (cert-manager, SPIFFE) rotate during a session; today they are loaded once (`harness/internal/transport/tls.go:105-110`). |
 | Backoff | First attempt immediately, then a full-jitter delay of up to `min(15 s, 0.5 s × 2^n)`; a server retry-pushback value is honoured | Many harnesses lose one replica at once; full jitter spreads their reconnects, and the cap protects a recovering control plane from a reconnect storm. |
 | Per-attempt deadline | `min(10 s, time left in the break)` for the dial, the `ResumeTask` open and `reattach_accepted` | A stalled handshake does not consume the window. Control planes answer within 5 s, including the store's compare-and-set. |
@@ -331,7 +355,7 @@ starting also return `UNAUTHENTICATED`, `PERMISSION_DENIED` or
 `NOT_FOUND`. The control plane answers a `reattach` it will never
 accept with `ControlEvent{type:"reattach_rejected", permanent: true,
 reason}` and then ends the RPC with OK. The harness goes to `lost`, and
-`RunTrace.error` carries the reason after scrubbing and a 1 KiB cap.
+`RunTrace.error` carries the reason after scrubbing, removal of control characters (the rule of `sanitizeReason`, `sandboxidentity/exchange.go:70-72`) and a 1 KiB cap.
 Every other outcome is retried within the window. That includes
 `UNIMPLEMENTED` from an old replica during a rolling deploy, a
 `reattach_rejected` with `permanent: false`, a lost compare-and-set or
@@ -392,7 +416,7 @@ numbers are the next free ones at `0f0bc8e9` and are illustrative.
 | `HarnessEvent` | `string incarnation = 31` | On `ready` and `reattach`: a random ID per harness process, so `(incarnation, seq)` stays unique if #456 later resumes across processes. Set on `ready` whenever the build advertises the capability, since the window is not known until the assignment. |
 | `HarnessEvent` | `string session_id = 32`, `string run_id = 33` | On `reattach`: the session echo and the active run, both informational (see [Authenticating](#authenticating-a-re-attach)). |
 | `HarnessEvent` | `uint64 last_seq = 34`, `uint64 last_control_seq = 35` | On `reattach`: the highest `seq` assigned, and the highest `control_seq` the harness processed. `last_control_seq` is also on every `heartbeat` while the window is non-zero. |
-| `HarnessEvent` | `uint64 replay_through_seq = 36` | On `resumed`: the last `seq` that is a replay. Events above it are live. |
+| `HarnessEvent` | `uint64 replay_through_seq = 36` | On `resumed`: the last `seq` that is a replay. Events above it are live. `resumed` also carries the current `heartbeat_seq` (field 39). |
 | `HarnessEvent` | `repeated PendingRequest pending_requests = 37` | On `resumed`: each request still waiting for a response, as `(type, request_id)`. |
 | `HarnessEvent` | `bool evicted = 38` | On a tombstone; see [Retention](#outbound-sequence-numbers-and-retention). |
 | `HarnessEvent` | `uint64 heartbeat_seq = 39` | On `heartbeat` while the window is non-zero: session-scoped, from 1. |
@@ -400,7 +424,7 @@ numbers are the next free ones at `0f0bc8e9` and are illustrative.
 | `ControlEvent` | `uint64 control_seq = 12` | Session-scoped, assigned by the control plane to every outbox event (see [Inbound sequence numbers](#inbound-sequence-numbers)) when the window is non-zero. |
 | `ControlEvent` | `uint64 ack_seq = 13` | On `ack` and `reattach_accepted`. |
 | `ControlEvent` | `bool permanent = 14` | On `reattach_rejected`. `reason` (field 6) carries the explanation. |
-| `ControlEvent` | `uint64 heartbeat_ack = 15` | On `ack`. |
+| `ControlEvent` | `uint64 heartbeat_ack = 15`, `uint64 control_head = 16` | On `ack`. See [Liveness](#liveness-and-loss-detection). |
 | `ControlEvent` types | `ack`, `reattach_accepted`, `reattach_rejected` | `ack` is valid on both RPCs; the other two only as the first event on `ResumeTask`. None of the three carries a `control_seq` or is kept in the outbox. |
 | Credential | `resume_token` | Carried in a dedicated proto message field on `task_assignment`, `reattach_accepted` and `reattach`, never translated into `types.ControlEvent` or `types.HarnessEvent`. |
 
@@ -423,13 +447,13 @@ needed.
 |---|---|
 | Issued by | The control plane, on `task_assignment`, only on a stream that arrived over TLS or a verified mesh identity. It is not part of `RunConfig`, for the reason `trace_context` is not (`harness.proto:632-638`): `RunConfig` is recorded, redacted and replayed, and replaying a configuration must not grant a resume. The project's invariants also forbid secrets in `RunConfig`. |
 | Format | A random handle of at least 256 bits, printable ASCII, at most 4 KiB. The control plane stores only its hash, looks the session up by that hash and compares in constant time. A self-contained signed token is not enough, since single use cannot be enforced without server-side state. |
-| Validation in the harness | An empty, oversized or non-printable value is rejected, never truncated, using the rule of the sandbox token's `validToken` (`harness/internal/sandboxidentity/exchange.go:61-68`). |
+| Validation in the harness | An empty, oversized or non-printable value is rejected, never truncated, using the rule of the sandbox token's `validToken` (`harness/internal/sandboxidentity/exchange.go:61-68`). It is read only from the `task_assignment` that `stirrup job` accepts, never from a duplicate (`job.go:149-157`). |
 | Bound to | The session only. `session_id` and `run_id` on `reattach` are consistency checks for logs, not part of authentication. A run can start or end during the break (construction finishing, a run finishing, or a follow-up started from queued input, `harness/internal/core/loop.go:1455-1481`). The replay tells the control plane about those transitions. |
 | Client identity | Where the control plane can see a per-Pod client identity (a per-Pod mTLS certificate or a mesh SPIFFE ID), it must require that a re-attach comes from the same identity as the original stream. That makes a stolen credential useless off the Pod. Where every Pod shares one certificate, the credential is the only binding. |
 | Generations | The session record holds a generation number, the hash of the credential last presented in an accepted re-attach (the previous one) and the hash of the credential last issued (the current one). A re-attach presenting either is accepted through a compare-and-set whose predicate is the generation and `revoked = false`. The loser of a race between replicas ends its RPC with `ABORTED`, which the harness retries. |
 | Rotation | Every `reattach_accepted` issues a new credential. The harness replaces its copy before it sends `resumed`. |
 | Retirement | When `resumed` arrives, the replica promotes its stream to the session's live stream and retires the previous credential, in one compare-and-set on the generation it accepted. If the generation has moved on, the promotion fails and the replica ends the RPC with `ABORTED`. If `resumed` never arrives, the next attempt presents the previous credential, which is still accepted. |
-| Lifetime | The control plane rejects a credential permanently once the session is revoked, cancelled or completed, or once 30 s plus the window have passed since the last event received on the session's live stream. That time is persisted, taken from the store's clock rather than a replica's, and updated only by events on the current generation's live stream: a `reattach`, or an event on a superseded stream, does not refresh it. |
+| Lifetime | The control plane rejects a credential permanently once the session is revoked, cancelled or completed, or once 40 s, the harness's detection bound, plus the window have passed since the last event received on the session's live stream. That time is persisted, taken from the store's clock rather than a replica's, and updated only by events on the current generation's live stream: a `reattach`, or an event on a superseded stream, does not refresh it. |
 | Storage in the harness | One transport-private type whose `String`, `GoString`, `LogValue` and `MarshalJSON` redact it. The transport reads it from the proto `task_assignment` before translation, so no control handler sees it. It is never logged, traced, written to `RunConfig`, `RunResult` or the trace, passed to the executor or exposed to the model. A random handle matches no scrubber pattern, so these rules, pinned by an invariants test, are the only protection. |
 
 **What mTLS already provides.** With `CONTROL_PLANE_TLS_CERT_FILE`
@@ -524,6 +548,25 @@ show whether it arrived.
   `reattach` has lost state. It must answer
   `reattach_rejected{permanent: true}` rather than number new events
   from its stale counter.
+- **Missing numbers.** A control event other than the three exceptions
+  that arrives without a `control_seq` on a session with the window on
+  is a protocol error and detaches the stream; it is not read as a
+  regression.
+- **Writes lost above what the harness saw.** The regression rules
+  catch a counter that falls below what the harness dispatched. They
+  cannot catch outbox writes that a failover loses above it: if the
+  harness dispatched up to 112 and a failover loses 116 to 120, the
+  harness receives 113 to 115 and neither side can see the gap. A
+  control plane therefore reports a control event, a `cancel`
+  included, as accepted only after its outbox write is durable on a
+  replica that survives failover (obligation 8). The guarantees below
+  hold under that obligation.
+- **Sandbox tokens.** A `sandbox_token_response` carries a live sandbox
+  identity token, so the outbox keeps only a placeholder:
+  `(control_seq, request_id)`. On a re-send, the control plane mints a
+  fresh token only if the `request_id` is in `pending_requests`, and
+  sends it under the placeholder's `control_seq`; otherwise it sends the
+  response without a token, which the correlator drops.
 
 This covers `permission_response`, `tool_result_response`,
 `sandbox_token_response`, `batch_result`, `user_response` and `cancel`.
@@ -535,41 +578,57 @@ protection against a double apply.
 
 ## The phase gate and requests while detached
 
-**The phase gate.** While the session is detached or replaying, every
-step that runs in the sandbox or acts outside the harness on the run's
-behalf waits before it starts. The gate is an interface the factory
-injects into the loop; the loop keeps no knowledge of transports. The
-gate points are:
+**The phase gate.** While the session is detached or replaying, each
+step listed below waits before it starts. The gate is an interface the
+factory injects into the loop and the hook runner; neither keeps any
+knowledge of transports. The gate points are:
 
 | Gate point | Where |
 |---|---|
+| The start of each run, primary and follow-up, before `preRun` hooks, guidance, the prompt build and the first model call | the top of `AgenticLoop.Run` (`harness/internal/core/loop.go:158`), which every follow-up enters (`loop.go:1480`) |
+| Each hook, `preRun` and `postRun`, one at a time | `hook.ExecRunner.run` (`harness/internal/hook/runner.go:64-68`), before each entry |
+| The git strategy's setup | `loop.go:343` |
 | Each tool call, before the permission check | `executeToolCall`, ahead of the `WorkspaceMutating` / `RequiresApproval` branch (`harness/internal/core/types.go:574`) |
 | The same, in every sub-agent | The child loop is built field by field (`harness/internal/core/subagent.go:262-311`), so the gate must be copied to it, as `GuardRail` is |
-| `preRun` hooks, for the primary run and every follow-up run | `loop.go:256-266` |
-| The git strategy's setup | `loop.go:343` |
+| Each per-turn git checkpoint | `loop.go:1328` |
 | Each verifier run | `loop.go:483` |
-| Each post-run step: the git final checkpoint, `postRun` hooks, command-output finalisation, the workspace export and result delivery | `loop.go:555`, `:562`, `:576-577`; `harness/internal/core/handoff.go:159`; the same helpers on the setup-failure path (`loop.go:2427-2435`) |
+| Each post-run step: the git final checkpoint, command-output finalisation, the workspace export and result delivery | `loop.go:555`, `:576-577`; `harness/internal/core/handoff.go:159`; the same helpers on the setup-failure path (`loop.go:2427-2435`) |
 
-The trace finish is not gated: it writes the run's own record, which a
-control plane needs after a lapse.
+The gate wait comes before a step creates its budget: each post-run
+helper creates its `detachedContext` inside (`githandoff.go:20`,
+`loop.go:560`, `handoff.go:184`), so a wait inside the budget would
+spend it and turn a re-attached run into `handoff_failed`.
+
+Not gated, and listed in
+[What still runs unwatched](#what-still-runs-unwatched): construction,
+which creates the sandbox before the run's context exists; the trace
+finish, which writes the run's own record that a control plane needs
+after a lapse; and the `offload-to-file` context strategy's workspace
+writes, which run with context preparation before each model call
+(`harness/internal/context/offload.go:95`).
 
 The gate's result depends on the session state:
 
-| State | Gate returns | A tool call, hook, setup or verifier step | A post-run step |
+| State | Gate returns | A run start, hook, setup, checkpoint, tool or verifier step | A post-run step |
 |---|---|---|---|
 | attached | At once | Runs | Runs |
 | detached, replaying | When the state changes | Waits | Waits |
 | lost | `ErrControlStreamLost` | Does not run; the run is being cancelled with `control_stream_lost` | Runs, as on any loss today; this keeps the post-run behaviour that #740 made deliberate |
-| ended locally (SIGTERM, `Close`) | At once | Does not run, because the run context is cancelled | Proceeds, as today: a second signal abandons post-run work (`harness/internal/core/types.go:150-158`, `loop.go:639-655`) |
+| ended locally (SIGTERM, `Close`) | The context's error | Does not run | Proceeds, as today: a second signal abandons post-run work (`harness/internal/core/types.go:150-158`, `loop.go:639-655`) |
 
-A tool call waits under the run context, so the run's timeout or a
-`cancel` releases it without running the tool. A post-run step waits
-under the session, because post-run work also follows a timed-out run.
-The model's stream is not gated, so the turn's output still arrives.
-Gating only the tools that consult the permission policy would miss
-MCP and other tools that are neither `WorkspaceMutating` nor
+A step that is not post-run waits under the run context, so the run's
+timeout or a `cancel` releases it without running the step. A post-run
+step waits under the session, because post-run work also follows a
+timed-out run. The model's stream is not gated, so the turn's output
+still arrives. Gating only the tools that consult the permission policy
+would miss MCP and other tools that are neither `WorkspaceMutating` nor
 `RequiresApproval`, so the gate covers every call
 ([open question 7](#open-questions-for-the-maintainer)).
+
+A missing gate must not read as "attached". In a job with the window
+on, the transport refuses to enable re-attach until a gate has
+registered with it, and the invariants test pins that every loop built
+outside the factory carries the gate.
 
 **Why before the permission check.** A gate after the permission check
 would raise each tool's `permission_request` while detached. With the
@@ -582,32 +641,56 @@ the permission chain (`factory.go:2265-2268`), so it is gated with it.
 This changes how the issue's fifth criterion is met; see
 [open question 12](#open-questions-for-the-maintainer).
 
-**What was chosen, and why.** The gate covers the phases above because
-each is one wait at an existing boundary, through the same interface. It
-does not stop a step that is already running, and it does not close the
+**What a `cancel` does at a gate.** A `cancel` that the outbox delivers
+on re-attach cancels the run context, so a gate that is not post-run
+releases without running its step, and a gate before the verifier
+reclassifies the run as cancelled (`loop.go:535-537`). A post-run step
+behaves as it does on an attached run today: the outcome is fixed
+before post-run work starts, and post-run work runs on detached
+contexts (`loop.go:547-555`, `:639-655`). A `cancel` that lands at a
+post-run gate therefore does not stop the git checkpoint, the
+`postRun` hooks or the export. The post-run gate makes those steps run
+while the control plane can see them; it does not make them stoppable.
+Whether a `cancel` at a post-run gate should skip the side-effecting
+steps is part of [open question 7](#open-questions-for-the-maintainer).
+
+**What was chosen, and why.** The gate covers the points above because
+each is one wait at an existing boundary, through the same interface.
+It does not stop a step that is already running, it does not contain
+processes already running in the sandbox, and it does not close the
 detection gap. Stopping a running command leaves the workspace in a
 partial state and changes the trajectory of a run that the re-attach
-would have saved. Closing the gap would need a control-plane round trip
-before every tool call (see
-[Alternatives considered](#alternatives-considered)). The claim is
-narrowed to match.
+would have saved. Containing background processes needs a per-executor
+mechanism ([open question 15](#open-questions-for-the-maintainer)).
+Closing the gap would need a control-plane round trip before every tool
+call (see [Alternatives considered](#alternatives-considered)). The
+claim is narrowed to match.
 
 ### What still runs unwatched
 
 "Unwatched" means the control plane cannot see the step or stop it.
-None of these bounds depends on the window.
+The first group is bounded independently of the window. The second
+group runs for the break, so a longer window lengthens it.
 
 | What | For how long | Where |
 |---|---|---|
+| **Bounded independently of the window** | | |
 | Everything, as if attached, between the moment the control plane stops receiving and detection | Up to 40 s; immediate when the stream fails visibly | [Liveness](#liveness-and-loss-detection) |
 | A tool call already executing at detection | To its own end or timeout: `run_command` up to 300 s, MCP and `web_fetch` up to 30 s. A `spawn_agent` child keeps making model calls, but its tool calls wait at the inherited gate. | `harness/internal/tool/builtins/shell.go:77-85` |
-| A hook already executing at detection | Up to its timeout, at most 1800 s per hook | `types/runconfig.go:1321` |
+| A hook already executing at detection | Up to its own timeout, at most 1800 s; the next hook waits at the gate | `types/runconfig.go:1321` |
 | A test-runner verifier already executing at detection | Up to its timeout, 5 minutes by default | `harness/internal/verifier/testrunner.go:14` |
-| A post-run step already executing at detection | Up to its budget: 30 s for the git checkpoint, the hook budget, 5 minutes for the export, 60 s for result delivery | `loop.go:627`, `:2409-2417`; `handoff.go:18-23` |
-| Processes that an earlier command detached into their own session or process group | Until the sandbox is torn down, as today | `shell.go:53` |
-| Model calls: the turn's stream, guard classifiers, compaction summaries and an LLM-judge verifier already running | For the break, inside the run's token budget and timeout | — |
+| A post-run step already executing at detection | Up to its budget: 30 s for the git checkpoint, the hook's timeout, 5 minutes for the export, 60 s for result delivery | `loop.go:628`, `:2409-2417`; `handoff.go:18-23` |
+| Model calls already in flight, and the few that start without passing a gate: queued input absorbed at the end of a turn, up to two structured-output corrections, up to two output-limit recoveries, a missed-tool escalation and a stall nudge | A fixed number of provider calls, inside the run's token budget and timeout; no single call has a total time limit, only the 120 s idle-read bound | `loop.go:1240-1246`; `structuredoutput.go:18`; `outputlimit.go:11` |
+| The `offload-to-file` strategy's workspace writes during those calls | One write per offloaded block, with each call | `offload.go:95` |
+| The trace finish | 90 s, after the run | `loop.go:631` |
 | After `lost`: the post-run work | As on any loss today | `loop.go:547-576` |
+| **Runs for the break** | | |
+| Construction, when the break lands during it: sandbox creation, the egress policy, MCP sessions and the first sandbox-token exchange | Until construction finishes, which can take minutes on a cold node | `job.go:199-216` |
+| Processes that an earlier command left running in the sandbox. The executors kill a command's process group only when its context ends (`harness/internal/executor/container.go:613-616`; `k8s_execcore.go:365-367`), so a background job of a command that returned normally survives, as does one that detached into its own session. | Until the sandbox is torn down, which is after the session ends: up to one window per break and three per session later than today | `shell.go:53`; `job.go:236` |
 
+Today a lost stream already leaves such processes running until the
+sandbox is torn down, which follows the post-run work (up to about
+40 minutes with hooks). The window adds at most three windows to that.
 A detached run raises no new `permission_request`,
 `tool_result_request` or sandbox-token refresh from a gated step. A
 request raised before detection is still pending and follows the rules
@@ -660,11 +743,11 @@ time out before its answer arrives; the late answer is then dropped
 | Where the break lands | With the window non-zero | If the session goes to `lost` |
 |---|---|---|
 | Before `task_assignment` | Unchanged: the grace is not known yet and no credential exists. | The job fails as today (`job.go:180-181`). |
-| Construction | The harness enables re-attach as soon as it accepts the assignment, before `buildJobLoop`, so the build watcher (`job.go:203`) fires only on `lost`. Construction itself is not gated: it creates the sandbox and requests the first sandbox token, which fails closed at its timeout. The run's `preRun` hooks then wait at the gate. | Construction is cancelled; the job fails with `control_stream_lost`, as today. |
+| Construction | The harness enables re-attach as soon as it accepts the assignment, before `buildJobLoop`, so the build watcher (`job.go:203`) fires only on `lost`. Construction itself is not gated: it creates the sandbox and requests the first sandbox token, which fails closed at its timeout. The run then waits at its start gate. | Construction is cancelled; the job fails with `control_stream_lost`, as today. |
 | Active run | The run continues; gated steps wait. | `ControlStreamLost` runs; the run ends `control_stream_lost` after its post-run work; exit non-zero. |
 | The last turn ends while detached | The verifier and then each post-run step wait at the gate. `done` follows them, so it is sent after the re-attach. | The run ends `control_stream_lost`; post-run work runs as today. |
 | Run finishes while detached (a break during post-run work) | The step in progress finishes; later steps wait. `done` is protected and retained. The harness waits for a re-attach to deliver it, for at most the rest of the break. | The run keeps its real outcome in `RunTrace` and the `resultSink`. The process exits non-zero, since `done` was never delivered ([open question 9](#open-questions-for-the-maintainer)). |
-| Idle follow-up window | The `followUpGrace` timer pauses while detached and resumes with its remaining time after the re-attach ([open question 13](#open-questions-for-the-maintainer)). Today it runs regardless (`loop.go:1451-1452`). Input queued before the break can start a follow-up run while detached (`loop.go:1455-1481`); its `preRun` hooks and tool calls wait. `followUpHistory: "continue"` is unaffected. | The window closes; the exit status is that of today's rule. |
+| Idle follow-up window | The `followUpGrace` timer pauses while detached and resumes with its remaining time after the re-attach ([open question 13](#open-questions-for-the-maintainer)). Today it runs regardless (`loop.go:1451-1452`). Input queued before the break can start a follow-up run while detached (`loop.go:1455-1481`); the run waits at its start gate, before hooks, guidance, the prompt build and its first model call. `followUpHistory: "continue"` is unaffected. | The window closes; the exit status is that of today's rule. |
 | Follow-up window ends while detached | Not possible while the timer is paused, except when the session's detached-time budget runs out, which goes to `lost`. | Exit as today. |
 | SIGTERM / SIGINT | The session context is cancelled; redialling stops; gates release; shutdown runs as today. | Not applicable. |
 
@@ -693,9 +776,12 @@ Claim, in two parts:
    and only from a stream the control plane already considers dead.
 2. **Once a loss is detected, no gated step starts until the stream is
    back or the session is lost.** The work that runs unwatched is listed
-   in [What still runs unwatched](#what-still-runs-unwatched), and none
-   of its bounds depends on the window. After `lost`, the run behaves as
-   on any loss today.
+   in [What still runs unwatched](#what-still-runs-unwatched). Work that
+   starts after detection is bounded independently of the window.
+   Construction under way, processes an earlier command left running in
+   the sandbox, and in-flight model calls run for the break, so their
+   exposure grows with the window. After `lost`, the run behaves as on
+   any loss today.
 
 The design does not claim that a detached run takes no unwatched
 action.
@@ -704,7 +790,7 @@ action.
 |---|---|---|---|
 | Tool execution | Under the permission policy | No new call starts; a call already running finishes | Under the policy, as before |
 | Tool approval (`ask-upstream`) | Only on `permission_response{allowed:true}` (`askupstream.go:86`) | No new request; a pending one fails at its timeout | Only on an explicit allow for a request ID still pending; `control_seq` stops duplicates |
-| Hooks, git setup, verifier, post-run steps | Run | No new step starts | Run |
+| Run starts, hooks, git setup and checkpoints, verifier, post-run steps | Run | No new step starts | Run |
 | Control-plane tool results | From `tool_result_response` | Time out | As before |
 | Sandbox identity token | Per `sandbox_token_response` | None issued; the refresher pauses; the current token expires on schedule | Issued only for listed pending requests, from the verified session binding |
 | Model input (`user_response`) | Queued and screened | None arrives; queued input still runs | Exactly once, through `control_seq` |
@@ -716,14 +802,14 @@ What the window costs, and how each cost is bounded:
 
 | Cost | Bound or mitigation |
 |---|---|
-| The control plane cannot `cancel` a detached run. | No gated step starts while detached, so a `cancel` sent during the break, which waits in the outbox, lands before any of them. The steps that can still act are listed above with their bounds. Model calls continue for at most the break, inside the run's token budget. |
-| A control plane that keeps sending but has stopped receiving. | The progress rule detects it within 40 s. Repeated failures spend the per-session budgets. |
-| A control plane that loses recent writes. | A sequence regression in either direction ends the session; a re-attach to such a control plane is refused permanently. A `cancel` is never silently dropped. |
-| An on-path attacker who can only drop packets, even under TLS, now delays the run instead of cancelling it. | The per-session budgets (three windows, 10 re-attaches) bound the delay. The gate means the attacker gains no new step; the unwatched work is bounded as above. |
-| A lapsed run still does post-run work: the git checkpoint, `postRun` hooks (the sum of their timeouts, each up to 1800 s, plus 30 s), the workspace export (5 min), the trace finish (90 s) and result delivery (60 s). | This is today's behaviour on any loss (`harness/internal/core/loop.go:547-576`, `:2409-2417`; `harness/internal/core/handoff.go:18-23`). It is why the only sanctioned fence is to stop the harness and wait for confirmation. |
+| The control plane cannot `cancel` a detached run. | No gated step starts while detached, so a `cancel` sent during the break, which waits in the outbox, lands before the next one. It stops every gated step except post-run steps, which run regardless, as after any cancel today. The steps that can still act are listed above with their bounds; background processes in the sandbox run for the break. |
+| A control plane that keeps sending but has stopped receiving, or keeps receiving but has stopped delivering its outbox. | The progress rule detects the first within 40 s and the second through `control_head`. Repeated failures spend the per-session budgets. |
+| A control plane that loses recent writes. | A sequence regression in either direction ends the session; a re-attach to such a control plane is refused permanently. Writes lost above what the harness saw are undetectable, so a control plane reports a `cancel` as accepted only once its outbox write is durable (obligation 8). Under that obligation a `cancel` is never silently dropped. |
+| An on-path attacker who can only drop packets, even under TLS, now delays the run instead of cancelling it. | The per-session budgets (three windows, 10 re-attaches) bound the delay. The gate means the attacker gains no new step. Background processes in the sandbox run for the delay, as listed above. |
+| A lapsed run still does post-run work: the git checkpoint, `postRun` hooks (the sum of their timeouts, at most 1800 s, plus 30 s; `types/runconfig.go:3826-3827`), the workspace export (5 min), the trace finish (90 s) and result delivery (60 s). | This is today's behaviour on any loss (`harness/internal/core/loop.go:547-576`, `:2409-2417`; `harness/internal/core/handoff.go:18-23`). It is why the only sanctioned fence is to stop the harness and wait for confirmation. |
 | Two workers, if the control plane reschedules while the original lives. | [Control-plane obligations](#control-plane-obligations), item 3. |
 | The redial trusts the network again. | Plaintext re-attach is refused unless the operator opts in. |
-| A stolen credential. A thief who wins a re-attach race holds the live stream, and the legitimate harness is refused as "still live" until its window lapses. Meanwhile the thief can mint sandbox identity tokens up to the per-session count, put attacker-written `permission_request` text in front of a human approver, read `user_response` text from the outbox and deliver a forged `done{success}`. | Theft needs a compromised harness process or a control-plane leak. The credential lives only in a redacting transport type, never reaches the sandbox, the model or a record, and is rejected under the `local` executor. The control plane stores only its hash, never logs or persists the plaintext, and keeps it out of the outbox. It is rotated on every re-attach and retired on `resumed`. It is accepted only for a stream the control plane considers dead, so it cannot take over a healthy run. A per-Pod client identity is required where one exists. Every session-record write is fenced by generation, so a superseded stream cannot act. |
+| A stolen credential. A thief who wins a re-attach race holds the live stream, and the legitimate harness is refused as "still live" until its window lapses. Meanwhile the thief can mint sandbox identity tokens up to the per-session count, put attacker-written `permission_request` text in front of a human approver, read `user_response`, `tool_result_response` and `batch_result` content from the outbox, receive the retained harness events (up to 8 MiB of scrubbed transcript, tool output and request inputs, from an `ack_seq` it chooses) and deliver a forged `done{success}`. | Theft needs a compromised harness process or a control-plane leak. The credential lives only in a redacting transport type, never reaches the sandbox, the model or a record, and is rejected under the `local` executor. The control plane stores only its hash, never logs or persists the plaintext, and keeps it and minted sandbox tokens out of the outbox. It is rotated on every re-attach and retired on `resumed`. It is accepted only for a stream the control plane considers dead, so it cannot take over a healthy run. A per-Pod client identity is required where one exists. Every session-record write is fenced by generation, so a superseded stream cannot act. |
 | Retained events hold transcript content in memory. | Already scrubbed and bounded; only the unacknowledged suffix; 8 MiB cap. |
 
 The read-only-mode invariant, the secret-reference rule and the event
@@ -784,18 +870,27 @@ become part of the `control_stream_reattach` capability's contract.
    dead (30 s since its last event).
 6. **Acknowledge from the receive path.** Send `ack` within 10 s of
    receiving each sequenced event or heartbeat, carrying only values
-   the path that receives and persists events has written. A replica
-   that declares a stream dead ends that RPC with `UNAVAILABLE` rather
-   than keep it open.
+   the path that receives and persists events has written. Read
+   `control_head` from the store on that path. A replica that declares a
+   stream dead ends that RPC with `UNAVAILABLE` rather than keep it
+   open, and so does a replica that sees the `last_control_seq` on
+   heartbeats trail its outbox head for 30 s.
 7. **Number and keep control events** (`control_seq`, outbox) and send
    only from the replica holding the current generation. Never put
-   `ack`, `reattach_accepted` or `reattach_rejected` in the outbox. Trim
-   only at or below the `last_control_seq` the harness reported.
-8. **Detect lost state.** Answer a `reattach` whose `last_control_seq`
-   is above the highest `control_seq` assigned with
-   `reattach_rejected{permanent: true}`. A store that can lose
-   acknowledged writes (asynchronous replication, a restore) makes this
-   path likely after a failover; synchronous replication avoids it.
+   `ack`, `reattach_accepted` or `reattach_rejected` in the outbox, and
+   store a `sandbox_token_response` only as a placeholder, minting a
+   fresh token on a re-send (see
+   [Inbound sequence numbers](#inbound-sequence-numbers)). Trim only at
+   or below the `last_control_seq` the harness reported.
+8. **Make outbox writes durable, and detect lost state.** Report a
+   control event as accepted, to a user or an API caller, only after its
+   outbox write is durable on a replica that survives failover; writes
+   lost above what the harness has seen are otherwise undetectable.
+   Answer a `reattach` whose `last_control_seq` is above the highest
+   `control_seq` assigned with `reattach_rejected{permanent: true}`. A
+   store that can lose acknowledged writes (asynchronous replication, a
+   restore) makes this path likely after a failover; synchronous
+   replication avoids it.
 9. **Act on replayed requests only when listed** in `pending_requests`,
    and never prompt a person for an approval that is not listed.
 10. **Derive run identity on a resumed stream** only from the verified
@@ -804,8 +899,8 @@ become part of the `control_stream_reattach` capability's contract.
     with a lifetime of at least the window plus 60 s.
 11. **Issue the credential only over TLS** or a verified mesh identity,
     and revoke it when the task is rejected, cancelled or completed.
-    Never log or persist the plaintext credential, including in an
-    audit log of outbound events. Require the original client identity
+    Never log or persist the plaintext credential or a minted sandbox
+    token, including in an audit log of outbound events. Require the original client identity
     on a re-attach where per-Pod identities exist.
 12. **End a stream with `UNAVAILABLE`**, not OK, when draining for a
     deploy, to invite a re-attach; OK means the session is over. A
@@ -846,6 +941,7 @@ existing test that changes.
 | Gating after the permission check (draft 2) | Approval-gated runs would fail every approval in a break longer than the approval timeout; see [Why before the permission check](#the-phase-gate-and-requests-while-detached). |
 | Gating each tool call on the `ack` of its own `tool_call` event | It closes the detection gap, but it puts a control-plane store write and round trip in front of every tool call, and it needs the control plane to acknowledge each event at once rather than within 10 s. The progress rule bounds the gap at 40 s instead. |
 | Stopping steps already running when a loss is detected | A killed command leaves the workspace part-changed and changes the trajectory of a run that a re-attach would have saved. Today's behaviour on `lost` already cancels the run. |
+| Checking only that the control plane receives, with outbox delivery unchecked | A control plane whose outbox sender stalls while its ack path works would keep the harness attached while a `cancel` waits unseen. `control_head` on `ack` closes that. |
 | A per-Pod proxy that terminates the stream locally | It moves the stream endpoint into a second process that can fail the same way, and adds a component to every deployment. |
 
 ## Implementation map
@@ -856,8 +952,9 @@ existing test that changes.
 | `types/runconfig.go` | Field, range, JSON name. The range error message names the 60 s minimum and its reason. |
 | `proto/harness/v1/harness.proto`, `gen/` | `ResumeTask`, field 62, the event fields and types, `PendingRequest`; `just proto`. |
 | `harness/internal/transport/grpc_translate.go` | The field, and the new event fields both ways, with a translation test for the event fields (the proto-mirror invariant covers `RunConfig` only, `harness/internal/invariants/protomirror_test.go:282`). |
-| `harness/internal/transport/` | A session holder behind the existing `GRPCTransport` API: retention with tombstones, both sequence numbers and their regression checks, `ack` handling and the progress rule, the transport's own heartbeats, redial, the handshake, and the replay on its own goroutine, all through one bounded send path. Session-scoped `Done`/`Err` and a separate per-stream signal for `Close`. The credential type. A pending-request registry. |
-| `harness/internal/core/` | The phase-gate interface and its calls at each gate point, injected by the factory and copied into sub-agent loops; the follow-up timer pause in `RunFollowUpLoop`; the gate-wait span and the break span events through an optional transport interface. No transport import in `loop.go`. |
+| `harness/internal/transport/` | A session holder behind the existing `GRPCTransport` API: retention with tombstones, both sequence numbers and their regression checks, `ack` handling and the progress rule, `control_head` and the outbox-delivery check, the transport's own heartbeats, redial, the handshake, and the replay on its own goroutine, all through one bounded send path. Session-scoped `Done`/`Err` and a separate per-stream signal for `Close`. The credential type. A pending-request registry. |
+| `harness/internal/core/` | The phase-gate interface and its calls at each gate point, injected by the factory and copied into sub-agent loops, with each wait placed before the step's budget is created; the follow-up timer pause in `RunFollowUpLoop`; the gate-wait span and the break span events through an optional transport interface. No transport import in `loop.go`. |
+| `harness/internal/hook/` | `ExecRunner` takes the gate and waits before each hook. |
 | `harness/internal/sandboxidentity/` | Pause the refresher while detached, and refresh at once on re-attach if the refresh point passed. |
 | `harness/cmd/stirrup/cmd/job.go` | After accepting the assignment: read the window and credential, run the checks in [Configuration](#configuration), enable re-attach before `buildJobLoop`. |
 | `harness/cmd/stirrup/cmd/harness.go`, `harness/harnessapi/` | Ignore a non-zero window with a warning. |
@@ -877,13 +974,13 @@ unless the row says otherwise.
 | 3 | Break mid-turn, re-attach inside the window, real outcome, complete sequence or explicit gap | Over bufconn, a fake control plane fails the RPC with `UNAVAILABLE` while the provider call is blocked, accepts the `ResumeTask`, then the provider is released. Asserts outcome `success`, a contiguous `seq` from 1 to `done`, and no tombstone. A variant with a small cap asserts tombstones for droppable events and every protected event intact. |
 | 4 | The window lapses | The control plane never returns. Asserts `control_stream_lost`, the cause in `RunTrace.error`, a non-zero exit, and an end about one window after the loss. |
 | 5 | A permission request raised while detached is auto-denied at its normal timeout (the issue's wording; the harness reports a permission error, never an allow) | 1 s policy timeout. A tool needing approval raises its request; the fake control plane breaks the stream before reading it. Asserts the tool result "Permission check error" with category `permission_error` at about 1 s, not at emit time and not at lapse. A second approval-gated tool called after detection raises no request until the re-attach, then raises it and runs on the answer. After the re-attach, the first request is in the replay, absent from `pending_requests`, and a late `permission_response` for it is dropped. |
-| 6 | Phase gate | An auto-allowed tool, an MCP tool and a tool called by a `spawn_agent` child, each called after detection, do not run until re-attach, and never run if the session goes to `lost`. A break before the last turn ends holds the test-runner verifier and each post-run step until re-attach; on `lost` the post-run steps run and the verifier does not. A follow-up started from queued input during a break holds its `preRun` hooks. |
+| 6 | Phase gate | An auto-allowed tool, an MCP tool and a tool called by a `spawn_agent` child, each called after detection, do not run until re-attach, and never run if the session goes to `lost`. A break before the last turn ends holds the test-runner verifier and each post-run step until re-attach; on `lost` the post-run steps run and the verifier does not. A follow-up started from queued input during a break waits at its start gate, before guidance, the prompt build and its first model call. With two `postRun` hooks and a break during the first, the second waits. A per-turn checkpoint after a batch whose last call was running at detection waits. A gate wait does not spend the post-run step's budget. A `cancel` delivered at a post-run gate does not skip the post-run steps, as on an attached run. |
 | 7 | OK end | An OK end during a run gives today's `control_stream_lost`; an OK end after `done` ends the session with no redial and releases retained events, so the exit status is the run's. An OK end before `reattach_accepted` is retried. |
-| 8 | Liveness | A control plane whose acks continue with a frozen `ack_seq` and `heartbeat_ack` causes a detach within 40 s, while other control events still arrive; a `cancel` among them still acts. An idle session with a frozen `heartbeat_ack` is detected the same way. A control plane that stops reading (flow-control stall) is detected by the same rule. A replayed event is not counted overdue from its first send. A real grpc-go server with default keepalive enforcement sees no pings from the harness. |
+| 8 | Liveness | A control plane whose acks continue with a frozen `ack_seq` and `heartbeat_ack` causes a detach within 40 s, while other control events still arrive; a `cancel` among them still acts. An idle session with a frozen `heartbeat_ack` is detected the same way. A control plane that stops reading (flow-control stall) is detected by the same rule. A replayed event is not counted overdue from its first send, and a slow but advancing replay of the full 8 MiB is not a loss. An empty replay keeps the gate closed until one `ack` arrives on the new stream. Acks that continue covering every heartbeat while `control_head` stays ahead of what was delivered cause a detach within 40 s, and a `cancel` held in the outbox lands after the re-attach. An `ack` with 0 in a field changes nothing. A real grpc-go server with default keepalive enforcement sees no pings from the harness. |
 | 9 | Rejections | `reattach_rejected{permanent:true}` goes to `lost` with the scrubbed reason. `UNIMPLEMENTED`, `UNAUTHENTICATED` without that event, and `ABORTED` are retried. |
 | 10 | Credential lifecycle | Rotation on every re-attach; the previous credential accepted until `resumed`, rejected after; a lost `reattach_accepted` recovered with the previous credential; an oversized or non-printable credential rejected; a missing credential rejects the task. |
 | 11 | Supersession and generation fencing | A `reattach` while the old stream is live is refused retryably and succeeds once the old stream is dead. A retried `reattach` does not refresh the last-event time. Two overlapping accepts on different replicas: the stale replica's `resumed` promotion fails with `ABORTED`, and it acts on no event from its stream. |
-| 12 | Credential hygiene | The credential never appears in logs, the JSONL trace, OTel attributes, `RunResult`, `RunConfig.Redact()`, any `types` event, any control handler, or the example control plane's outbox. |
+| 12 | Credential hygiene | The credential never appears in logs, the JSONL trace, OTel attributes, `RunResult`, `RunConfig.Redact()`, any `types` event, any control handler, or the example control plane's outbox. The example control plane's outbox holds no sandbox token; a re-sent `sandbox_token_response` carries a freshly minted token. |
 | 13 | Posture checks | Plaintext without the opt-in, and the `local` executor, each reject the task. |
 | 14 | Inbound sequence | A `user_response` queued before the break and not yet echoed is not applied twice when the outbox re-sends it. A `cancel` sent during the break lands after re-attach. A `cancel` delivered while `replaying` cancels the held tools rather than releasing them when the replay's `ack` arrives. |
 | 15 | Replay boundary | A replayed request outside `pending_requests` is not acted on by the example control plane. |
@@ -896,6 +993,7 @@ unless the row says otherwise.
 | 22 | Validation and wiring | Range 0 or 60-300; the proto-mirror invariant covers field 62; `stirrup harness` ignores the field with a warning; `ready` carries the capability and the path; `-race` over `Emit` concurrent with replay. |
 | 23 | Sequence regression | A `reattach_accepted.ack_seq`, or an `ack`, below one already received goes to `lost`. A live control event with a `control_seq` at or below the last dispatched, or skipping one, goes to `lost`; a `cancel` in that position is applied first. A control plane whose outbox counter is below `last_control_seq` answers a permanent rejection. |
 | 24 | Sandbox-token refresh | No refresh request is sent while detached. A refresh point that passes during the break triggers a refresh as soon as the stream is back. |
+| 25 | Background processes | A process started in the background by a `run_command` that returned normally is still running at the end of a break, and is stopped by the sandbox teardown. This pins the documented exposure; it changes if [open question 15](#open-questions-for-the-maintainer) is answered with containment. |
 
 ## Open questions for the maintainer
 
@@ -904,11 +1002,13 @@ Each question has a recommendation; the design above assumes it.
 1. **Does this protocol meet the 2026-10-08 bar** for continuing after
    a loss? *Recommendation:* yes, as a session protocol, not as a
    lease. Its properties are an authenticated, acknowledged re-attach;
-   no duplicate delivery; progress-based loss detection; no gated step
-   after detection; and a state-based fence. The unwatched work it
-   leaves is bounded independently of the window: up to 40 s before
-   detection, and steps already running at detection. #456 stays the
-   home of continuity across process restarts.
+   no duplicate delivery; progress-based loss detection in both
+   directions; no gated step after detection; and a state-based fence.
+   The unwatched work it leaves is listed with its bounds: up to 40 s
+   before detection and steps already running at detection, both
+   independent of the window, plus background processes and in-flight
+   model calls, which run for the break ([open question 15](#open-questions-for-the-maintainer)).
+   #456 stays the home of continuity across process restarts.
 2. **A real lease?** An acknowledged lease would let the harness expire
    itself and skip side-effecting post-run steps after a lapse, so a
    control plane could reschedule without stopping the harness. It is
@@ -919,9 +1019,14 @@ Each question has a recommendation; the design above assumes it.
    feature. The lease changes post-run behaviour on every loss.
 3. **The cap and the floor.** A cap of 60 s, 300 s or 600 s, and a
    floor of 60 s. *Recommendation:* 300 s and 60 s. A longer window
-   costs waiting time, model spend and a later `cancel`. It does not
-   add unwatched work. The floor follows from the 30 s dead-stream
-   bound.
+   costs waiting time, model spend and a later `cancel`. It also lets
+   processes an earlier command left in the sandbox run unwatched for
+   longer: up to one window per break and three per session beyond
+   today, where a loss already leaves them running through the post-run
+   work. At 300 s that is at most 15 minutes per session; with
+   containment ([open question 15](#open-questions-for-the-maintainer))
+   it would be close to nothing. The floor follows from the 30 s
+   dead-stream bound.
 4. **Session budgets.** Three windows of total detached time and 10
    accepted re-attaches per session, or per run. *Recommendation:* per
    session as written. The drain obligation (a replica marked for drain
@@ -932,10 +1037,15 @@ Each question has a recommendation; the design above assumes it.
 6. **Retention cap.** Fixed at 8 MiB (recommended for v1), or an
    operator environment variable. A `RunConfig` field is not
    recommended.
-7. **Phase gate scope.** Gate every tool call, `preRun` hooks, the git
-   setup, each verifier run and each post-run step (recommended); gate
-   tool calls only; or gate only tools that consult the permission
-   policy.
+7. **Phase gate scope.** Gate each run start, each hook, the git setup
+   and per-turn checkpoints, every tool call, each verifier run and each
+   post-run step (recommended); gate tool calls only; or gate only tools
+   that consult the permission policy. A related choice: a `cancel` that
+   lands at a post-run gate can either leave the post-run steps to run,
+   as a `cancel` does on an attached run today (recommended, so attached
+   and detached runs behave alike), or skip the `postRun` hooks, export
+   and result delivery while keeping the git checkpoint and trace
+   finish.
 8. **Record breaks in `RunTrace`?** For example `controlStreamBreaks`
    and `controlStreamDetachedMs`. *Recommendation:* span events only in
    v1.
@@ -981,6 +1091,19 @@ Each question has a recommendation; the design above assumes it.
     its kubelet confirms termination. A force delete is never a fence.
     A lease ([open question 2](#open-questions-for-the-maintainer)) is
     the longer-term answer.
+15. **Containing sandbox processes while detached.** A process that an
+    earlier command left running (a background job, or one in its own
+    session) keeps running for the break, and it can reach any host the
+    egress allowlist permits. *Options:* accept it for v1 and keep the
+    300 s cap; have the egress proxy refuse new connections while
+    detached, which is one flag for the `container` executor's
+    in-process proxy (`harness/internal/executor/container.go:224`) and
+    needs a signal to the proxy Pod for `k8s`; freeze the sandbox once
+    in-flight steps finish, which exists only for `container`; or lower
+    the cap. *Recommendation:* accept it for v1 and file the egress
+    refusal as a follow-up. The exposure exists today for the length of
+    a lapsed run's post-run work, and the window adds at most three
+    windows to it.
 
 ## Related issues
 
