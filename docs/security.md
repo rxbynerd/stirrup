@@ -54,8 +54,7 @@ first; errors, `fmt.Stringer` values and byte slices become scrubbed
 strings, groups are scrubbed recursively, and any other composite value
 (map, slice, struct) is rendered as one scrubbed JSON string. Numeric,
 boolean, time and duration values are unchanged. Nineteen regex patterns
-are scrubbed,
-covering:
+are scrubbed, covering:
 
 - Anthropic API keys
 - OpenAI and Stripe API keys
@@ -123,8 +122,8 @@ before any handler (JSON, text, OTel log exporter) sees the
 attribute. A secret with no recognisable format is not redacted.
 
 The `user:password` check on Basic-auth matches runs in the log
-scrubber, which also covers captured OTel span content, and in the
-Rule-of-Two detector. The code scanner's hardcoded-secret rules reuse
+scrubber, in the scrubbing of captured OTel span content (which goes
+through `security.Scrub`, not the log handler), and in the Rule-of-Two detector. The code scanner's hardcoded-secret rules reuse
 the same pattern set without that check, so they still match prose such
 as "basic documentation" in a written file (issue #773).
 

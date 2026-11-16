@@ -190,21 +190,20 @@ IMDS, GitHub Actions OIDC). See
    `request_id`.
 8. **Done.** A final `HarnessEvent{type:"done", stop_reason, trace}`
    carries the run metrics, the run span's `trace.trace_reference`
-   when the run recorded an OTel span, and the reason the loop ended
-   (`end_turn`, `max_turns`, `timeout`, `stalled`, `tool_failures`,
-   `cancelled`, `budget_exceeded`, `error`, `setup_failed`,
-   `hook_failed`). `error`, `setup_failed`, and `hook_failed` are the
+   when the run recorded an OTel span, and the run outcome in
+   `stop_reason` (`success`, `max_turns`, `timeout`, `stalled`,
+   `tool_failures`, `cancelled`, `budget_exceeded`, `error`,
+   `setup_failed`, `hook_failed`, and the others in
+   `RunTrace.Outcome`). `error`, `setup_failed`, and `hook_failed` are the
    early-termination outcomes — a build-system-prompt failure, a
    `GitStrategy.Setup` failure, or (issue #461) a fatal `preRun` /
    `postRun` lifecycle hook failure — and, like every other outcome,
    are always paired with a `done` event and a `RunResult` on the
    configured `resultSink`, even though the harness process's own Go
    error return is also non-nil for these. The nested `trace.outcome`
-   is the canonical terminal status for downstream analytics — the
-   full `RunTrace.Outcome` set, which adds `success`,
-   `verification_failed`, `verification_error`, and `max_tokens` on
-   top of the loop's stop reasons. `trace.stop_reason` mirrors it for
-   backward compatibility. Provider stop reasons such as `refusal`
+   carries the same value and is the canonical terminal status for
+   downstream analytics; `trace.stop_reason` mirrors it for backward
+   compatibility. Provider stop reasons such as `refusal`
    pass through verbatim as the outcome. A refusal's category and explanation reach operators
    through the trace emitters (the JSONL and GCS `RunTrace`, and the
    `stop.category` attribute on the OTel `provider.stream` span) and
@@ -283,9 +282,10 @@ markers with different lifetimes:
 | `/tmp/ready` | Readiness — idle and assignable. | Only during the assignment wait (step 4); removed the instant a `task_assignment` arrives. |
 
 The distinction matters because a K8s Job pod does one task and
-exits: liveness should hold through the whole run so a hung process
-still gets restarted, but readiness should drop once a task is
-assigned, since the pod is no longer available to accept more work.
+exits: liveness holds through the whole run, but readiness should drop
+once a task is assigned, since the pod is no longer available to accept
+more work. The liveness marker is written once and never refreshed, so
+the probe does not detect a hung process.
 
 ```yaml
 livenessProbe:

@@ -1302,7 +1302,8 @@ A sandbox Pod cannot start its own host-side proxy, so the network ring
 is split: a per-Pod `NetworkPolicy` confines the Pod's egress, and the
 allowlist proxy runs as a separate in-cluster Deployment many Pods
 share. The executor installs the policy **before** the Pod is created,
-so there is no window in which a Running Pod has cluster-default egress.
+so a Running Pod never exists without its policy object. Whether the
+policy is enforced depends on the CNI (see the enforcement note below).
 
 - `network.mode: none` installs a deny-all egress policy.
 - `network.mode: allowlist` installs a policy permitting egress only to
