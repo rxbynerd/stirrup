@@ -963,9 +963,10 @@ implemented.
 `executor.registryAllowlist` no longer exists. A JSON `RunConfig` that
 sets it fails to parse with an error that names this policy. The
 `ExecutorConfig` proto field it used is reserved. A control plane that
-still sends the field has it ignored, and the harness logs a warning
-that names `STIRRUP_IMAGE_ALLOWLIST`. The field no longer appears in the
-`ready` event's `config_fields`. The removed built-in default admitted
+still sends the field has its `task_assignment` rejected as setting an
+unknown field, and the harness logs a warning that names
+`STIRRUP_IMAGE_ALLOWLIST`. The field no longer appears in the `ready`
+event's `config_fields`. The removed built-in default admitted
 only `ghcr.io/rxbynerd/*` and `docker.io/library/*` for the `container`
 executor. A deployment that relied on it now admits every valid
 reference until it sets a policy.
