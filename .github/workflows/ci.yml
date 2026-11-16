@@ -3,7 +3,9 @@ name: CI
 on:
   push:
   # Weekly rebuild of the GHCR dev images from main, so the sandbox
-  # image's apt-installed packages stay current between merges.
+  # image's apt-installed packages stay current between merges. The
+  # rebuild moves :main and :latest only; a sha-<commit> tag is pushed
+  # once and never overwritten.
   schedule:
     - cron: '17 4 * * 1'
   workflow_dispatch:
@@ -367,12 +369,15 @@ jobs:
     # still dual-publish, and free continuous CVE re-evaluation
     # against loaded SBOMs continues for everything already in GAR.
     if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && github.repository == 'rxbynerd/stirrup'
+    # statuses: write records each sha-<commit> tag's digest as a commit
+    # status, which image-pins.yml compares against the registry.
     permissions:
       contents: read
       packages: write
+      statuses: write
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Mirrors the eval-gate version-computation step. The `if:` guard
       # above currently restricts this job to refs/heads/main pushes, so
@@ -417,6 +422,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # A sha-<commit> tag names fixed bytes: it is pushed the first time
+      # a commit is built and left alone afterwards, so the weekly
+      # rebuild and re-runs move :main and :latest only. A failed lookup
+      # fails the job rather than risking an overwrite.
+      - name: Check whether the commit tag is already published
+        id: commit-tag
+        env:
+          IMAGE: ghcr.io/rxbynerd/stirrup
+        run: |
+          set -euo pipefail
+          tag="sha-${GITHUB_SHA::7}"
+          rc=0
+          digest=$(scripts/release/registry.sh digest "${IMAGE}:${tag}") || rc=$?
+          case "$rc" in
+            0)
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::${IMAGE}:${tag} already points at ${digest}; this build moves :main and :latest only."
+              ;;
+            3) echo "publish=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$rc" ;;
+          esac
+
       # SHA-pinned to v6.0.0. SHA verified via the GitHub API on
       # 2026-05-10 (`gh api repos/docker/metadata-action/git/refs/tags/v6.0.0`,
       # which also matches the v6 floating tag's current target). Pinned
@@ -432,7 +459,7 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
-            type=sha,prefix=sha-
+            type=sha,prefix=sha-,enable=${{ steps.commit-tag.outputs.publish == 'true' }}
 
       # SHA-pinned to v7.1.0. SHA verified via the GitHub API on
       # 2026-05-10 (`gh api repos/docker/build-push-action/git/refs/tags/v7.1.0`,
@@ -441,6 +468,7 @@ jobs:
       # credentials; pinning to an immutable commit is non-negotiable
       # here for the same reason as gcp-auth and login-action.
       - name: Build and push container image
+        id: docker-push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -453,6 +481,19 @@ jobs:
             VERSION=${{ steps.ver.outputs.label }}
             COMMIT=${{ steps.ver.outputs.sha }}
 
+      - name: Record the commit tag's digest
+        if: steps.commit-tag.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.docker-push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -f state=success \
+            -f context=image-digest/stirrup \
+            -f description="$DIGEST" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > /dev/null
+
   publish-sandbox-container:
     name: Publish Sandbox Container
     runs-on: ubuntu-latest
@@ -463,12 +504,15 @@ jobs:
     # executors run agent workloads in — it contains no Go build, so
     # there is no VERSION/COMMIT build-arg step to mirror.
     if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && github.repository == 'rxbynerd/stirrup'
+    # statuses: write records each sha-<commit> tag's digest as a commit
+    # status, which image-pins.yml compares against the registry.
     permissions:
       contents: read
       packages: write
+      statuses: write
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # Action pins below mirror publish-container above; see the
       # comments there for the SHA-verification provenance.
@@ -485,6 +529,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # A sha-<commit> tag names fixed bytes: it is pushed the first time
+      # a commit is built and left alone afterwards, so the weekly
+      # rebuild and re-runs move :main and :latest only. A failed lookup
+      # fails the job rather than risking an overwrite.
+      - name: Check whether the commit tag is already published
+        id: commit-tag
+        env:
+          IMAGE: ghcr.io/rxbynerd/stirrup-sandbox
+        run: |
+          set -euo pipefail
+          tag="sha-${GITHUB_SHA::7}"
+          rc=0
+          digest=$(scripts/release/registry.sh digest "${IMAGE}:${tag}") || rc=$?
+          case "$rc" in
+            0)
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::${IMAGE}:${tag} already points at ${digest}; this build moves :main and :latest only."
+              ;;
+            3) echo "publish=true" >> "$GITHUB_OUTPUT" ;;
+            *) exit "$rc" ;;
+          esac
+
       - name: Generate image metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -494,9 +560,10 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
-            type=sha,prefix=sha-
+            type=sha,prefix=sha-,enable=${{ steps.commit-tag.outputs.publish == 'true' }}
 
       - name: Build and push sandbox image
+        id: docker-push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -505,3 +572,16 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Record the commit tag's digest
+        if: steps.commit-tag.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ steps.docker-push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -f state=success \
+            -f context=image-digest/stirrup-sandbox \
+            -f description="$DIGEST" \
+            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > /dev/null
