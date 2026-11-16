@@ -10,9 +10,9 @@ Two images ride the same pipeline:
 
 - **`stirrup`** (`./Dockerfile`) — the distroless harness image.
 - **`stirrup-sandbox`** (`./Dockerfile.sandbox`) — the Debian-based
-  sandbox image agent workloads run in. It ships the `/bin/sh`, `tar`,
-  `ls`, and `git` the container/k8s executors exec (see
-  [`executors/k8s.md`](executors/k8s.md)). Published to GHCR as
+  sandbox image agent workloads run in. It meets the
+  [sandbox image contract](executors/image-contract.md) the
+  container/k8s executors require. Published to GHCR as
   `ghcr.io/rxbynerd/stirrup-sandbox` with the same tag scheme, and to
   GAR under the `${GAR_IMAGE}-sandbox` image name at release time.
 

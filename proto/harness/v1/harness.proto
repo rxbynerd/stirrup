@@ -2367,7 +2367,11 @@ message ExecutorConfig {
   // inside the container where the workspace is mounted.
   string workspace = 3;
 
-  // For "container": the container image to use (e.g. "ghcr.io/rxbynerd/stirrup:latest").
+  // For "container", "k8s" and "k8s-sandbox": the sandbox image commands run
+  // in (e.g. "ghcr.io/rxbynerd/stirrup-sandbox:latest"). It must meet the
+  // sandbox image contract in docs/executors/image-contract.md; the
+  // distroless harness image ("ghcr.io/rxbynerd/stirrup") has no shell and
+  // cannot serve.
   string image = 4;
 
   // For "container": network egress policy. Defaults to no network access.

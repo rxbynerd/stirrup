@@ -5353,7 +5353,11 @@ type ExecutorConfig struct {
 	// defaults to the current directory. For "container", this is the path
 	// inside the container where the workspace is mounted.
 	Workspace string `protobuf:"bytes,3,opt,name=workspace,proto3" json:"workspace,omitempty"`
-	// For "container": the container image to use (e.g. "ghcr.io/rxbynerd/stirrup:latest").
+	// For "container", "k8s" and "k8s-sandbox": the sandbox image commands run
+	// in (e.g. "ghcr.io/rxbynerd/stirrup-sandbox:latest"). It must meet the
+	// sandbox image contract in docs/executors/image-contract.md; the
+	// distroless harness image ("ghcr.io/rxbynerd/stirrup") has no shell and
+	// cannot serve.
 	Image string `protobuf:"bytes,4,opt,name=image,proto3" json:"image,omitempty"`
 	// For "container": network egress policy. Defaults to no network access.
 	Network *NetworkConfig `protobuf:"bytes,5,opt,name=network,proto3" json:"network,omitempty"`

@@ -1170,10 +1170,12 @@ Three things this needs:
   none fits. Add one, implement it in
   `harness/internal/security/securityevent.go` and in the test recorder
   (`k8s_unit_test.go`), and list it in `docs/security.md`.
-- **Only tools the image contract already requires** (`/bin/sh`,
-  `tar`, `ls`, `mkdir`, `readlink`; `k8s.go:63-66`). `cat` is not in the
-  contract, so read the file with the shell's `read` builtin. Bound the
-  check with `k8sFileIOTimeout`.
+- **Only tools every run already requires** (`/bin/sh`, `tar`, `ls`,
+  `mkdir`, `readlink`; the full list is the
+  [sandbox image contract](executors/image-contract.md)). `cat` is
+  required only by runs with `sandboxIdentity` or `gitProxy`, so the
+  diagnostic reads the file with the shell's `read` builtin instead. Bound
+  the check with `k8sFileIOTimeout`.
 - **Evidence that the DMI string is stable.** EKS Auto Mode chooses the
   instance type per Pod. If the string differs on some family
   (Graviton, for example), runs would fail depending on where they

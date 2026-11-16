@@ -679,12 +679,12 @@ appropriate to its own boundary:
   the write, not a concurrent process; on the container executor the
   engine performs the write.
 
-  The sandbox image must ship a `readlink` that supports `-f` and
-  `mkdir` for writes, and `tar` for reads (and for writes on
-  `k8s`/`k8s-sandbox`). An image with no `readlink` at all fails
-  closed: the first read or write returns an error naming it. These
-  guards cover `read_file`, `write_file`, and `edit_file`; the
-  sandboxed `grep_files`/`find_files` path is described below.
+  The commands the guards need from the sandbox image are listed in the
+  [sandbox image contract](executors/image-contract.md). An image with
+  no `readlink` at all fails closed: the first read or write returns an
+  error naming it. These guards cover `read_file`, `write_file`, and
+  `edit_file`; the sandboxed `grep_files`/`find_files` path is described
+  below.
 - **`api`** uses `url.PathEscape` on every path segment before
   constructing the GitHub Contents API URL.
 

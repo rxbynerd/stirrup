@@ -77,7 +77,8 @@ const (
 var nitroIsolatedAllowedInterfaces = map[string]bool{"lo": true, "dummy0": true}
 
 // guestFileDumpScript prints each file named in its arguments using only
-// shell builtins, since the image contract does not include cat. A readable
+// shell builtins, since only runs with a sandbox identity need cat from the
+// image. A readable
 // file is framed by "begin <path>" and "end <path>" with every content line
 // prefixed by one space, so content can never be read as a frame line; the
 // "|| [ -n ...]" keeps a last line that has no trailing newline. A path that

@@ -1,17 +1,13 @@
 # syntax=docker/dockerfile:1.7
 
-# Sandbox image for agent workloads — the `--image` the container, k8s,
-# and k8s-sandbox executors run commands in. Distinct from ./Dockerfile
-# (the distroless harness image), which ships no shell and cannot satisfy
-# the executors' exec contract: a POSIX shell at /bin/sh plus tar, ls,
-# mkdir, and readlink on PATH (harness/internal/executor/container.go,
-# k8s_execcore.go, workspaceread.go; operator doc docs/executors/k8s.md).
-# Timed-out commands are killed through the shell's kill builtin; setsid
-# (util-linux, busybox) is used when present so the whole process group
-# is reached, and is optional (harness/internal/executor/proctree.go).
-# Debian slim
-# already carries the shell and coreutils; git and ca-certificates are
-# added so agents can operate on checkouts and fetch over HTTPS.
+# Sandbox image for agent workloads: the image (`executor.image`) the
+# container, k8s, and k8s-sandbox executors run commands in. Distinct from
+# ./Dockerfile (the distroless harness image), which ships no shell and
+# cannot satisfy the executors' requirements. Everything an image must
+# provide is stated in docs/executors/image-contract.md; this image meets
+# every entry. Debian slim already carries the shell and coreutils; git
+# and ca-certificates are added so agents can operate on checkouts and
+# fetch over HTTPS.
 FROM debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
 
 RUN apt-get update \

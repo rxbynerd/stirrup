@@ -81,10 +81,8 @@ var errK8sOutputCap = errors.New("output exceeded 10 MB cap")
 // factory under ExecutorConfig.Type == "k8s". See docs/executors/k8s.md for
 // the network/egress posture and the kindnet enforcement caveat.
 type K8sExecutorConfig struct {
-	// Image must ship a POSIX shell at /bin/sh plus `tar`, `ls`, `mkdir`,
-	// and `readlink` on PATH: command execution runs `/bin/sh -c`, file I/O
-	// streams `tar` over the pods/exec subresource, and workspace reads and
-	// writes resolve the real path with `readlink -f` first.
+	// Image is the sandbox image. What it must provide is stated in
+	// docs/executors/image-contract.md.
 	Image        string
 	Namespace    string
 	Kubeconfig   string
@@ -124,8 +122,8 @@ type K8sExecutorConfig struct {
 
 // K8sExecutor implements Executor by running operations inside a sandbox
 // Pod, created on construction and deleted on Close(). Command execution
-// and file I/O both ride the pods/exec subresource — see
-// K8sExecutorConfig.Image for the required shell/tar/ls.
+// and file I/O both ride the pods/exec subresource; the image requirements
+// are in docs/executors/image-contract.md.
 type K8sExecutor struct {
 	podExecCore
 	podUID k8stypes.UID
