@@ -143,10 +143,10 @@ The pieces and their lifecycle:
   (the distroless "nonroot" UID), and `seccompProfile.type:
   RuntimeDefault`. `automountServiceAccountToken` is **always** `false`,
   so the sandbox itself has no Kubernetes API access regardless of the
-  ServiceAccount named. For the `k8s` executor, `enableServiceLinks` is
-  `false`, so the namespace's Services are not listed in the sandbox
-  environment as `<SERVICE>_SERVICE_HOST` and `_PORT` variables; the
-  [`k8s-sandbox`](k8s-agent-sandbox.md) Pod does not set it. `restartPolicy` is
+  ServiceAccount named. `enableServiceLinks` is `false`, so the
+  namespace's Services are not listed in the sandbox environment as
+  `<SERVICE>_SERVICE_HOST` and `_PORT` variables; the
+  [`k8s-sandbox`](k8s-agent-sandbox.md) Pod template sets it too. `restartPolicy` is
   `Never` (one-shot), the container is named `agent`, and the
   entrypoint is `/bin/sh -c "sleep
   infinity"` — all real work runs through subsequent `exec` calls, not
@@ -221,6 +221,9 @@ reaches one of these states:
 - phase `Failed` (for example `DeadlineExceeded` or `Evicted`);
 - phase `Succeeded` before the Pod became Ready;
 - the `agent` container terminated;
+- the `agent` container restarted (a non-zero restart count, for example
+  in `CrashLoopBackOff`); with `restartPolicy: Never` this happens only
+  when something other than the executor changed the policy;
 - the `agent` container waiting with reason `InvalidImageName` (the
   image reference cannot be parsed) or `ErrImageNeverPull`
   (`imagePullPolicy: Never` and the image is absent from the node the Pod
@@ -256,8 +259,8 @@ PodScheduled False (Unschedulable: 0/3 nodes are available: 3 Insufficient cpu.)
 context deadline exceeded
 ```
 
-Once the Pod is Ready, the `k8s` executor waits for `pods/exec` to
-reach it before using it; the `k8s-sandbox` executor has no such wait. On a node that has just joined the cluster, a Pod can
+Once the Pod is Ready, the executor waits for `pods/exec` to
+reach it before using it. On a node that has just joined the cluster, a Pod can
 be Ready before the kubelet's serving certificate is issued, and until
 then the API server cannot dial the kubelet, so every `exec` fails.
 *Measured* on the 2026-11-13 EKS run, a new node's certificate request
@@ -294,12 +297,12 @@ A cancellation or run deadline during the wait fails construction with
 to every runtime of the `k8s` executor; for `nitro-isolated` it runs before the
 [runtime diagnostics](#runtime-diagnostics).
 
-The [`k8s-sandbox`](k8s-agent-sandbox.md) executor shares only the
-5-minute ceiling and the immediate failure on `Forbidden` or
-`Unauthorized`. It waits on the Sandbox's `Ready` condition and has none
-of the Pod states above, no progress lines, no admission check and no
-wait for `exec` to reach the Pod, so a permanently broken image there
-waits the full five minutes.
+The [`k8s-sandbox`](k8s-agent-sandbox.md) executor runs the same wait
+on the controller-created Pod, with the same states, progress lines,
+admission check and `exec` wait, and additionally requires the
+Sandbox's `Ready` condition; its
+[readiness differences](k8s-agent-sandbox.md#readiness-and-the-backing-pod)
+are described there.
 
 ### Admission check
 
@@ -2082,7 +2085,7 @@ executors:
 | Executor | Permissions checked |
 |---|---|
 | `k8s` | `pods`: `create`, `get`, `delete`; `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
-| `k8s-sandbox` | `sandboxes.agents.x-k8s.io`: `create`, `get`, `delete`; `pods`: `get` (teardown reads the controller-created Pod until it is gone); `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
+| `k8s-sandbox` | `sandboxes.agents.x-k8s.io`: `create`, `get`, `delete`; `pods`: `get` (the readiness wait reads the controller-created Pod, and teardown reads it until it is gone); `pods/exec`: `create`; `networkpolicies`: `create`, `delete` |
 
 Every denied permission is listed in one failure, with the API server's
 reason in parentheses when it gives one. Holding Pod-create permission does

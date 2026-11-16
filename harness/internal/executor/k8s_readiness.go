@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -43,50 +44,93 @@ type podReadiness struct {
 // errors are retried until timing.readyTimeout or ctx ends. It logs when it
 // starts and every timing.progressPeriod while it waits.
 func waitForPodReady(ctx context.Context, clientset kubernetes.Interface, namespace, name string, admission podAdmission, timing k8sTiming, logger *slog.Logger) (*corev1.Pod, error) {
+	poll := podReadinessPoll{clientset: clientset, namespace: namespace, name: name, logger: logger}
+	var ready *corev1.Pod
+	err := pollReadiness(ctx, timing, logger, []any{"namespace", namespace, "pod", name}, poll.seen.summary, func(ctx context.Context) (bool, error) {
+		pod, err := poll.poll(ctx, admission.checkPoll)
+		ready = pod
+		return pod != nil, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return ready, nil
+}
+
+// pollReadiness runs step every timing.pollPeriod until it reports done or
+// fails, within timing.readyTimeout and ctx. It logs when it starts and, every
+// timing.progressPeriod, what summary renders; the timeout error carries the
+// last summary and wraps errPodNotReady.
+func pollReadiness(ctx context.Context, timing k8sTiming, logger *slog.Logger, attrs []any, summary func() string, step func(context.Context) (bool, error)) error {
 	waitCtx, cancel := context.WithTimeout(ctx, timing.readyTimeout)
 	defer cancel()
 
-	logger.Info("k8s executor waiting for sandbox pod readiness", "namespace", namespace, "pod", name, "timeout", timing.readyTimeout)
-	var seen podReadiness
+	logger.Info("k8s executor waiting for sandbox pod readiness", append(slices.Clone(attrs), "timeout", timing.readyTimeout)...)
 	nextProgress := time.Now().Add(timing.progressPeriod)
 	for {
-		pod, err := clientset.CoreV1().Pods(namespace).Get(waitCtx, name, metav1.GetOptions{})
-		switch {
-		case err == nil:
-			seen.observe(pod)
-			if err := admission.checkPoll(pod); err != nil {
-				return nil, fmt.Errorf("%w: %w", errPodNotReady, err)
-			}
-			if reason, terminal := podTerminalReason(pod); terminal {
-				return nil, fmt.Errorf("%w: %s", errPodNotReady, reason)
-			}
-			if podReady(pod) {
-				return pod, nil
-			}
-		case apierrors.IsNotFound(err):
-			if seen.sawPod {
-				return nil, fmt.Errorf("%w: the pod was deleted during the readiness wait", errPodNotReady)
-			}
-			return nil, fmt.Errorf("%w: the pod was not found", errPodNotReady)
-		case apierrors.IsForbidden(err), apierrors.IsUnauthorized(err):
-			return nil, fmt.Errorf("%w: get pod: %w", errPodNotReady, boundClusterErr(err))
-		case waitCtx.Err() == nil:
-			seen.lastAPIErr = err
-			logger.Debug("transient error polling pod readiness, retrying", "namespace", namespace, "pod", name, "err", err)
+		done, err := step(waitCtx)
+		if err != nil || done {
+			return err
 		}
 
 		if timing.progressPeriod > 0 && !time.Now().Before(nextProgress) {
-			logger.Info("k8s executor still waiting for sandbox pod readiness", "namespace", namespace, "pod", name, "status", seen.summary())
+			logger.Info("k8s executor still waiting for sandbox pod readiness", append(slices.Clone(attrs), "status", summary())...)
 			nextProgress = time.Now().Add(timing.progressPeriod)
 		}
 
 		if !sleepCtx(waitCtx, timing.pollPeriod) {
 			if err := ctx.Err(); err != nil {
-				return nil, fmt.Errorf("%w before the run context ended: %s: %w", errPodNotReady, seen.summary(), err)
+				return fmt.Errorf("%w before the run context ended: %s: %w", errPodNotReady, summary(), err)
 			}
-			return nil, fmt.Errorf("%w within %s: %s: %w", errPodNotReady, timing.readyTimeout, seen.summary(), waitCtx.Err())
+			return fmt.Errorf("%w within %s: %s: %w", errPodNotReady, timing.readyTimeout, summary(), waitCtx.Err())
 		}
 	}
+}
+
+// podReadinessPoll reads one Pod for a readiness wait and keeps what it last
+// observed.
+type podReadinessPoll struct {
+	clientset kubernetes.Interface
+	namespace string
+	name      string
+	logger    *slog.Logger
+	// awaitCreation keeps the wait going while a Pod another component
+	// creates has not been observed yet; otherwise a missing Pod fails it.
+	awaitCreation bool
+	seen          podReadiness
+}
+
+// poll reads the Pod once. It returns the Pod when it is Ready, nil while it
+// may still become Ready, and an error wrapping errPodNotReady when it cannot.
+// check runs on every observation, before the terminal states.
+func (p *podReadinessPoll) poll(ctx context.Context, check func(*corev1.Pod) error) (*corev1.Pod, error) {
+	pod, err := p.clientset.CoreV1().Pods(p.namespace).Get(ctx, p.name, metav1.GetOptions{})
+	switch {
+	case err == nil:
+		p.seen.observe(pod)
+		if err := check(pod); err != nil {
+			return nil, fmt.Errorf("%w: %w", errPodNotReady, err)
+		}
+		if reason, terminal := podTerminalReason(pod); terminal {
+			return nil, fmt.Errorf("%w: %s", errPodNotReady, reason)
+		}
+		if podReady(pod) {
+			return pod, nil
+		}
+	case apierrors.IsNotFound(err):
+		if p.seen.sawPod {
+			return nil, fmt.Errorf("%w: the pod was deleted during the readiness wait", errPodNotReady)
+		}
+		if !p.awaitCreation {
+			return nil, fmt.Errorf("%w: the pod was not found", errPodNotReady)
+		}
+	case apierrors.IsForbidden(err), apierrors.IsUnauthorized(err):
+		return nil, fmt.Errorf("%w: get pod: %w", errPodNotReady, boundClusterErr(err))
+	case ctx.Err() == nil:
+		p.seen.lastAPIErr = err
+		p.logger.Debug("transient error polling pod readiness, retrying", "namespace", p.namespace, "pod", p.name, "err", err)
+	}
+	return nil, nil
 }
 
 // observe records the diagnostics a timeout error reports.
@@ -164,6 +208,15 @@ func podTerminalReason(pod *corev1.Pod) (string, bool) {
 	}
 	if term := cs.State.Terminated; term != nil {
 		return fmt.Sprintf("agent container terminated (exit code %d, %s: %s)", term.ExitCode, clusterText(term.Reason), clusterText(term.Message)), true
+	}
+	// The agent container's command never exits, so any restart is a crash
+	// loop; it is reachable only when the Pod's restartPolicy is not Never.
+	if cs.RestartCount > 0 {
+		reason := fmt.Sprintf("agent container restarted (restart count %d", cs.RestartCount)
+		if last := cs.LastTerminationState.Terminated; last != nil {
+			reason += fmt.Sprintf(", last exit code %d, %s: %s", last.ExitCode, clusterText(last.Reason), clusterText(last.Message))
+		}
+		return reason + ")", true
 	}
 	if w := cs.State.Waiting; w != nil && permanentWaitingReasons[w.Reason] {
 		return fmt.Sprintf("agent container cannot start: %s (%s)", w.Reason, clusterText(w.Message)), true

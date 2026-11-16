@@ -250,6 +250,7 @@ func TestBuildSandboxObject_EmitsSandboxCR(t *testing.T) {
 	t.Run("keeps the hardened pod security context", func(t *testing.T) {
 		must := require.New(t)
 		must.Equal(false, ptSpec["automountServiceAccountToken"])
+		must.Equal(false, ptSpec["enableServiceLinks"])
 
 		podSC := asObjectMap(t, "spec.podTemplate.spec.securityContext", ptSpec["securityContext"])
 		must.Equal(int64(k8sRunAsUserUID), podSC["fsGroup"])

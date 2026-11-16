@@ -327,15 +327,12 @@ func withTeardownErr(cause, teardownErr error) error {
 }
 
 // buildSandboxPod builds the k8s executor's sandbox Pod. Beyond the shared
-// spec it carries the profile's RuntimeClass, disabled service links, the
-// run-ID label, the lifetime bound as activeDeadlineSeconds, and an owner
-// reference to the harness pod when that pod shares the sandbox's namespace.
+// spec it carries the profile's RuntimeClass, the run-ID label, the lifetime
+// bound as activeDeadlineSeconds, and an owner reference to the harness pod
+// when that pod shares the sandbox's namespace.
 func buildSandboxPod(cfg K8sExecutorConfig, profile k8sRuntimeProfile, podName string, proxyEnv []corev1.EnvVar) *corev1.Pod {
 	spec := buildSandboxPodSpec(cfg, proxyEnv, cfg.ExtraEnv)
 	spec.RuntimeClassName = optionalRuntimeClassName(profile.runtimeClassName)
-	// Service links would put every namespace Service's host and port into
-	// the sandbox environment.
-	spec.EnableServiceLinks = ptr.To(false)
 	if secs, ok := cfg.Lifecycle.seconds(); ok {
 		spec.ActiveDeadlineSeconds = &secs
 	}
@@ -418,7 +415,10 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraE
 		// AutomountServiceAccountToken is always false, even when
 		// ServiceAccountName is caller-provided.
 		AutomountServiceAccountToken: ptr.To(false),
-		NodeSelector:                 cfg.NodeSelector,
+		// Service links would put every namespace Service's host and port into
+		// the sandbox environment.
+		EnableServiceLinks: ptr.To(false),
+		NodeSelector:       cfg.NodeSelector,
 		// FSGroup makes the /workspace emptyDir group-writable for the
 		// non-root UID the agent runs as; otherwise a kubelet-auto-created
 		// workspace dir is root-owned and every WriteFile/mkdir fails EACCES.
