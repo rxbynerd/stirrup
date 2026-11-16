@@ -24,20 +24,18 @@ const (
 	kindCommandOutputChunk = types.ToolResultKindCommandOutputChunk
 )
 
-// commandResult is the structured payload for run_command. TimedOut reports
-// whether the command was killed by its timeout: every executor wraps
-// executor.ErrTimeout into the returned error on a genuine deadline expiry
-// while still returning whatever partial stdout/stderr it captured, so
-// RunCommandTool classifies that case via errors.Is and reports it as a soft
-// outcome — TimedOut true, no handler error — rather than discarding the
-// output. ExitCode is executor-dependent when TimedOut is true (local.go
-// leaves it 0; container.go and k8s_execcore.go set -1), so callers must gate
-// on TimedOut and never read ExitCode as a real exit code when it is true.
+// commandResult is the structured payload for run_command. ExitCode is null
+// unless the command exited on its own; TimedOut, Cancelled and
+// ExecutorError say why it did not. A timeout returns the partial output as
+// a soft outcome, not a tool error. ExecutorError means the executor or the
+// output capture failed, so the command may never have run.
 type commandResult struct {
 	Stdout              string `json:"stdout"`
 	Stderr              string `json:"stderr"`
-	ExitCode            int    `json:"exit_code"`
+	ExitCode            *int   `json:"exit_code"`
 	TimedOut            bool   `json:"timed_out"`
+	Cancelled           bool   `json:"cancelled,omitempty"`
+	ExecutorError       bool   `json:"executor_error,omitempty"`
 	TimeoutSeconds      int    `json:"timeout_seconds"`
 	Spilled             bool   `json:"spilled,omitempty"`
 	CaptureComplete     bool   `json:"capture_complete"`

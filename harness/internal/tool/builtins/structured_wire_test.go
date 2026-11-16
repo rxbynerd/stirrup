@@ -42,7 +42,7 @@ func TestStructuredEnvelopes_WireViewKeepsEveryNonBodyField(t *testing.T) {
 		{
 			kind: kindCommandResult,
 			payload: commandResult{
-				Stdout: "out", Stderr: "err", ExitCode: 1, TimedOut: true, TimeoutSeconds: 30,
+				Stdout: "out", Stderr: "err", ExitCode: new(1), TimeoutSeconds: 30, Cancelled: true, ExecutorError: true,
 				Spilled: true, CaptureComplete: true, ArchiveID: "arch",
 				StdoutRef: "stirrup://command-output/r/stdout", StderrRef: "stirrup://command-output/r/stderr",
 				StdoutRawBytes: 1, StderrRawBytes: 2, StdoutScrubbedBytes: 3, StderrScrubbedBytes: 4,

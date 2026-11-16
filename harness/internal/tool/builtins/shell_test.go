@@ -91,7 +91,6 @@ func TestRunCommandTool_TimeoutReturnsPartialOutputAsSoftOutcome(t *testing.T) {
 		want := commandResult{
 			Stdout:         "partial stdout before kill\n",
 			Stderr:         "partial stderr before kill\n",
-			ExitCode:       0,
 			TimedOut:       true,
 			TimeoutSeconds: 5,
 		}
@@ -107,11 +106,10 @@ func TestRunCommandTool_TimeoutReturnsPartialOutputAsSoftOutcome(t *testing.T) {
 
 // TestRunCommandTool_NonTimeoutErrorStillPropagates is the counterpart to
 // TestRunCommandTool_TimeoutReturnsPartialOutputAsSoftOutcome: an Exec error
-// that does NOT wrap executor.ErrTimeout (e.g. a plain context cancellation,
-// or any other exec failure) must still propagate as a hard tool error
-// exactly as before. This guards against a classification that is too
-// broad — errors.Is must exclude cancellation so a SIGTERM-driven shutdown
-// isn't mistaken for a timed-out command's soft outcome.
+// that wraps neither executor.ErrTimeout nor a cancellation of the run's own
+// context must propagate as a hard tool error. A cancellation-shaped error
+// while the run's context is live is an executor failure, not a cancelled
+// run.
 func TestRunCommandTool_NonTimeoutErrorStillPropagates(t *testing.T) {
 	must := require.New(t)
 	cancelErr := fmt.Errorf("command cancelled: %w", context.Canceled)
@@ -151,18 +149,17 @@ func TestRunCommandTool_DescriptionStatesProcessTreeKillGuarantee(t *testing.T) 
 // TestRunCommandTool_UncapturedOutputBoundedKeepsStderrAndExitCode checks
 // that without a capture store run_command bounds its own text to the
 // result budget while keeping the head and tail of both streams and the
-// exit-code and timeout markers that follow them.
+// exit-code marker that follows them.
 func TestRunCommandTool_UncapturedOutputBoundedKeepsStderrAndExitCode(t *testing.T) {
 	must := require.New(t)
 	const budget = 8 << 10
-	execErr := fmt.Errorf("%w after 5s", executor.ErrTimeout)
 	exec := &mockExecutor{
 		execFunc: func(_ context.Context, _ string, _ time.Duration) (*executor.ExecResult, error) {
 			return &executor.ExecResult{
 				Stdout:   "STDOUT-HEAD" + strings.Repeat("o", 3_000_000) + "STDOUT-TAIL",
 				Stderr:   "STDERR-HEAD" + strings.Repeat("e", 200_000) + "STDERR-TAIL",
 				ExitCode: 1,
-			}, execErr
+			}, nil
 		},
 	}
 
@@ -188,8 +185,8 @@ func TestRunCommandTool_UncapturedOutputBoundedKeepsStderrAndExitCode(t *testing
 		})
 	}
 
-	must.True(strings.HasSuffix(got.Text, "STDERR-TAIL\n[exit code: 1]\n[timed out after 5s]"),
-		"text must end with the stderr tail, then the exit-code and timeout markers")
+	must.True(strings.HasSuffix(got.Text, "STDERR-TAIL\n[exit code: 1]"),
+		"text must end with the stderr tail, then the exit-code marker")
 	must.Nil(got.Structured, "truncated result must not keep its structured envelope")
 	must.Empty(got.Kind, "truncated result must not keep its structured envelope")
 	must.True(tl.SelfBoundedResult, "uncaptured run_command must report SelfBoundedResult")

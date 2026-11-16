@@ -62,7 +62,9 @@ func TestRunCommand_SpillsLargeOutputAndReadsBack(t *testing.T) {
 	must.FileExists(store.Archive())
 }
 
-func TestRunCommand_TimeoutReturnsPartialOutputAsError(t *testing.T) {
+// A timeout on the capture path is a soft outcome, as on the uncaptured
+// path: the partial output reaches the model without a tool error.
+func TestRunCommand_CaptureTimeoutReturnsPartialOutputAsSoftOutcome(t *testing.T) {
 	must := require.New(t)
 	exec, err := executor.NewLocalExecutor(t.TempDir())
 	must.NoError(err)
@@ -75,13 +77,15 @@ func TestRunCommand_TimeoutReturnsPartialOutputAsError(t *testing.T) {
 	ctx := tool.WithCallContext(context.Background(), tool.CallContext{RunID: "run-timeout", ToolUseID: "timeout"})
 	result, err := run.StructuredHandler(ctx, json.RawMessage(`{"command":"printf partial; sleep 5","timeout":1}`))
 	must.NoError(err)
-	must.True(result.IsError)
+	must.False(result.IsError, "a timeout must not be a tool error")
 	must.Contains(result.Text, "partial")
 
 	var structured commandResult
 	must.NoError(json.Unmarshal(result.Structured, &structured))
 	must.True(structured.TimedOut)
 	must.True(structured.CaptureComplete)
+	must.Nil(structured.ExitCode, "a timed-out command has no exit status")
+	must.Contains(string(result.Structured), `"exit_code":null`)
 }
 
 func TestCommandOutputReplay_RecordedResultsReturnedVerbatim(t *testing.T) {

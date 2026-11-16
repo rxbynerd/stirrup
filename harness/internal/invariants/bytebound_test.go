@@ -21,7 +21,7 @@ var unboundedEmitters = map[string]string{
 // selfBoundedTools are the tools allowed to skip the loop's
 // tools.maxResultBytes cut because their handler applies it.
 var selfBoundedTools = map[string]string{
-	"harness/internal/tool/builtins/shell.go:RunCommandToolWithStore": "keeps the head and tail of each stream within maxResultBytes",
+	"harness/internal/tool/builtins/shell.go:RunCommandToolWithStore": "keeps its text within maxResultBytes: uncaptured, the head and tail of each stream; captured, inline output only when it fits, otherwise the spilled summary with tails shrunk to fit",
 	"harness/internal/tool/builtins/shell.go:ReadCommandOutputTool":   "reads a chunk sized to maxResultBytes",
 	"harness/internal/tool/builtins/toolsearch.go:ToolSearchTool":     "returns at most maxResults short entries",
 }
