@@ -195,11 +195,13 @@ const (
 //	  RunConfig.heartbeat_seconds sets another interval. Without
 //	  "session_liveness", heartbeats are sent only while a run is in
 //	  progress and carry no fields. With it, they are sent from just
-//	  after "ready" until the session's last event, at 30 seconds until
-//	  the task_assignment arrives and at the task's interval from then
-//	  on; a change of phase or step sends one at once and restarts the
-//	  interval, and none is sent between a run's "done" and the next
-//	  phase, so "done" stays the last event of a session. The control
+//	  after "ready" until the session ends, at most one interval apart:
+//	  at 30 seconds until the task_assignment arrives and at the task's
+//	  interval from then on. A change of phase or step sends one at once
+//	  and restarts the interval. None is sent between a run's "done" and
+//	  the session's next phase, so a session without a follow-up window
+//	  ends with "done"; with one, "idle_followup" heartbeats follow
+//	  "done" while the harness still accepts a user_response. The control
 //	  plane should treat absence of heartbeats as a potential hang.
 //
 //	"batch_submission"

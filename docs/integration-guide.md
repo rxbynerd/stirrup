@@ -71,7 +71,9 @@ status.
    [Negotiating RunConfig fields](#negotiating-runconfig-fields).
    When `CONTROL_PLANE_SESSION_ID` is set in the Pod environment,
    the `id` field echoes it so the stream can be correlated to the
-   session that launched the Pod.
+   session that launched the Pod; `CONTROL_PLANE_REQUIRE_SESSION_ID`
+   makes the job refuse to start without one (see
+   [`deployment.md`](deployment.md#optional-environment-variables)).
 3. The control plane sends
    `ControlEvent{type:"task_assignment", task: RunConfig}` — this
    must be the first `ControlEvent`. The harness waits at most
@@ -334,7 +336,9 @@ control plane that ignores the new field keeps working unchanged.
 
 #### Interval
 
-Heartbeats are sent every 30 seconds by default.
+Heartbeats are sent every 30 seconds by default, and because a phase
+change sends one at once, consecutive heartbeats are at most one
+interval apart rather than exactly one apart.
 `RunConfig.heartbeat_seconds` (JSON `heartbeatSeconds`,
 `--heartbeat-seconds` on the CLI) sets another interval: `0` or unset
 keeps 30 s, and any other value must be between 5 and 600. Until the
@@ -343,6 +347,8 @@ keeps 30 s, and any other value must be between 5 and 600. Until the
 validation, through construction, the primary run and every follow-up
 run. A harness whose `ready.capabilities` lacks `heartbeat_interval`
 ignores the field and keeps 30 s (see [Compatibility](#compatibility)).
+A deadline for `awaiting_assignment` is therefore sized against 30 s,
+whatever interval the task will set.
 
 #### The session phase
 
@@ -358,8 +364,10 @@ Each heartbeat from a `session_liveness` harness carries
 | `idle_followup` | the run's `done`, when a follow-up grace window is open | the next run starts or the window closes | — |
 
 An empty `step` is the phase's work outside the named steps, such as
-building providers and tools during `constructing`. Both vocabularies
-are open: preserve and display values that are not recognised.
+building providers and tools during `constructing`. A step name is
+never reused by another phase. Both vocabularies are open: preserve and
+display values that are not recognised. A heartbeat means the harness
+is alive, not that a run is active: only `running` says that.
 
 A change of phase or step sends a heartbeat at once and restarts the
 interval, so the heartbeat that opens a phase marks when it began. A
@@ -369,19 +377,23 @@ sandbox start, a long model call or tool execution, and `postRun` hooks
 that run past the run's deadline (see
 [`security.md`](security.md#lifecycle-hooks)).
 
-Heartbeats stop just before each `done` and resume with the next phase,
-and they stop for good before the session's last event. `done` is
-therefore the last event of a session that ends without a follow-up
-window, and a build failure's `error` and `done` pair is never followed
-by a heartbeat.
+Heartbeats stop just before each `done` and resume with the next phase.
+A session without a follow-up window therefore ends with `done`, and a
+build failure's `error` and `done` pair is never followed by a
+heartbeat. With a follow-up window open, `idle_followup` heartbeats
+follow the run's `done` for as long as the harness accepts a
+`user_response`, and stop when the window closes.
 
 #### Choosing reap deadlines
 
 A control plane that reaps a Pod after missing heartbeats should pick a
 deadline of several intervals, not one, so a single delayed event does
 not trigger a reap. With `session_liveness`, a gap of that length in any
-phase means the harness or its stream has stopped; there is no phase
-in which a healthy harness is silent. Separate per-phase ceilings guard
+phase means the harness or its stream has stopped. A healthy harness is
+silent only between a run's `done` and the next phase (a moment) and
+after the session's last event, while it releases its sandbox and
+exits; on Kubernetes that teardown can take tens of seconds, and the
+stream is already done with. Separate per-phase ceilings guard
 against a harness that is alive but stuck: for example a `constructing`
 ceiling sized for the slowest expected cold start (image pull and node
 scale-up included), and a `post_run` ceiling sized for the `postRun`

@@ -105,7 +105,7 @@ first `ControlEvent` on the stream.
 | Variable | Purpose |
 |---|---|
 | `CONTROL_PLANE_SESSION_ID` | Session correlation ID echoed back in the initial `ready` event so the control plane can match this gRPC stream to the session that launched it. When unset, `ready.id` is empty. |
-| `CONTROL_PLANE_REQUIRE_SESSION_ID` | `true` makes the job refuse to start without a non-empty `CONTROL_PLANE_SESSION_ID`: it exits non-zero before dialling the control plane, so a misconfigured Pod fails instead of opening a stream the control plane cannot correlate. Accepts the values Go's `strconv.ParseBool` reads (`true`, `1`, `false`, `0`, ...); any other value also fails the job. Unset or `false` keeps the ID optional. |
+| `CONTROL_PLANE_REQUIRE_SESSION_ID` | `true` makes the job refuse to start without a non-empty `CONTROL_PLANE_SESSION_ID`: it exits non-zero before dialling the control plane, so a misconfigured Pod fails instead of opening a stream the control plane cannot correlate. Accepts the values Go's `strconv.ParseBool` reads (`true`, `1`, `false`, `0`, ...); any other value also fails the job. Unset or `false` keeps the ID optional. The ID correlates the stream; it does not authenticate the job, since any client the control plane accepts can claim any ID. |
 | `STIRRUP_FOLLOWUP_GRACE` | Idle seconds to keep the gRPC stream open after each run completes, so the control plane can deliver a follow-up `user_response` that starts the next run. The window restarts after every run. Capped at 3600 s; a positive `RunConfig.followUpGrace` takes precedence. |
 
 Per-provider secrets (Anthropic API key, AWS / GCP / Azure
