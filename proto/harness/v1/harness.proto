@@ -2738,6 +2738,13 @@ message TraceEmitterConfig {
   //             "run" span with child spans for turns, tool calls, provider
   //             streaming, context compaction, verification, permission checks,
   //             and git operations. The wire protocol is selected by `protocol`.
+  //   "gcs"   — upload the run's JSONL trace line to
+  //             gs://{bucket}/{object_prefix}{runId}.jsonl. Requires bucket.
+  //   "https-put" — upload the run's JSONL trace line with one HTTP PUT
+  //             to the URL https_put.url_ref resolves to. Requires
+  //             https_put. The destination names one object, so every
+  //             run of a session uploads to the URL its reference
+  //             resolves to then.
   string type = 1;
 
   // For "jsonl": filesystem path to the output trace file.
@@ -2834,6 +2841,11 @@ message TraceEmitterConfig {
   // reported as the RunResult's commandOutputArchive. See
   // docs/configuration.md#command-output-capture.
   TraceArchiveConfig archive = 14;
+
+  // For "https-put": the destination the JSONL trace line is uploaded
+  // to. Required when type == "https-put"; rejected by validation for
+  // every other type.
+  HttpsPutConfig https_put = 15;
 
   // Credential override for the "gcs" emitter is intentionally NOT
   // surfaced on the wire today. The runtime resolves credentials via

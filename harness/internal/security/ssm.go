@@ -156,6 +156,7 @@ func collectSecretRefs(config *types.RunConfig) []string {
 	if config.ResultSink != nil {
 		refs = append(refs, config.ResultSink.HTTPSPut.SecretRefs()...)
 	}
+	refs = append(refs, config.TraceEmitter.HTTPSPut.SecretRefs()...)
 	return refs
 }
 

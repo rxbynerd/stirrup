@@ -286,3 +286,61 @@ func TestRunConfigRedact_HidesTheHTTPSPutResultSinkDestination(t *testing.T) {
 	check.Equal(map[string]string{"Authorization": "secret://[REDACTED]"}, got.HTTPSPut.Headers)
 	check.Equal("secret://RESULT_URL", cfg.ResultSink.HTTPSPut.URLRef, "the live config is untouched")
 }
+
+func traceEmitterErrors(cfg TraceEmitterConfig) []string {
+	var errs []string
+	validateTraceEmitterProtocolAndHeaders(&cfg, &errs)
+	return errs
+}
+
+func TestValidateTraceEmitter_AcceptsAnHTTPSPutEmitter(t *testing.T) {
+	check := assert.New(t)
+	check.Empty(traceEmitterErrors(TraceEmitterConfig{
+		Type:     "https-put",
+		HTTPSPut: &HTTPSPutConfig{URLRef: "secret://TRACE_URL", Headers: map[string]string{"x-ms-blob-type": "BlockBlob"}},
+	}))
+	check.True(validTraceEmitterTypes["https-put"])
+}
+
+func TestValidateTraceEmitter_RejectsHTTPSPutMisuse(t *testing.T) {
+	target := &HTTPSPutConfig{URLRef: "secret://TRACE_URL"}
+	cases := []struct {
+		name string
+		cfg  TraceEmitterConfig
+		want string
+	}{
+		{"missing block", TraceEmitterConfig{Type: "https-put"}, `traceEmitter type "https-put" requires httpsPut`},
+		{"inline URL", TraceEmitterConfig{Type: "https-put", HTTPSPut: &HTTPSPutConfig{URLRef: inlinePresignedURL}}, "traceEmitter.httpsPut.urlRef must be a secret reference"},
+		{"block on jsonl", TraceEmitterConfig{Type: "jsonl", HTTPSPut: target}, `traceEmitter.httpsPut is only valid when traceEmitter.type is "https-put"`},
+		{"block on gcs", TraceEmitterConfig{Type: "gcs", Bucket: "stirrup-traces", HTTPSPut: target}, `traceEmitter.httpsPut is only valid when traceEmitter.type is "https-put"`},
+		{"block on the default type", TraceEmitterConfig{HTTPSPut: target}, `traceEmitter.httpsPut is only valid when traceEmitter.type is "https-put"`},
+		{"bucket on https-put", TraceEmitterConfig{Type: "https-put", HTTPSPut: target, Bucket: "stirrup-traces"}, `traceEmitter.bucket is only valid when traceEmitter.type is "gcs"`},
+		{"otel headers on https-put", TraceEmitterConfig{Type: "https-put", HTTPSPut: target, Headers: map[string]string{"X-Tenant": "a"}}, `traceEmitter.headers is only valid when traceEmitter.type is "otel"`},
+		{"capture content on https-put", TraceEmitterConfig{Type: "https-put", HTTPSPut: target, CaptureContent: true}, `traceEmitter.captureContent is only valid when traceEmitter.type is "otel"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			errs := traceEmitterErrors(tc.cfg)
+			must.NotEmpty(errs)
+			joined := strings.Join(errs, "\n")
+			must.Contains(joined, tc.want)
+			must.NotContains(joined, "deadbeefcafe")
+		})
+	}
+}
+
+func TestRunConfigRedact_HidesTheHTTPSPutTraceEmitterDestination(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cfg := RunConfig{TraceEmitter: TraceEmitterConfig{
+		Type:     "https-put",
+		HTTPSPut: &HTTPSPutConfig{URLRef: "secret://TRACE_URL", Headers: map[string]string{"Authorization": "secret://TRACE_AUTH"}},
+	}}
+
+	got := cfg.Redact().TraceEmitter.HTTPSPut
+	must.NotNil(got)
+	check.Equal("secret://[REDACTED]", got.URLRef)
+	check.Equal(map[string]string{"Authorization": "secret://[REDACTED]"}, got.Headers)
+	check.Equal("secret://TRACE_URL", cfg.TraceEmitter.HTTPSPut.URLRef, "the live config is untouched")
+}

@@ -616,6 +616,7 @@ func (rc RunConfig) Redact() RunConfig {
 		}
 		redacted.Tools.MCPServers = servers
 	}
+	redacted.TraceEmitter.HTTPSPut = redacted.TraceEmitter.HTTPSPut.redacted()
 	// Trace-emitter headers may carry secret:// references for cloud
 	// gateway auth (e.g. {"Authorization": "secret://GRAFANA_CLOUD_AUTH"}).
 	// The reference itself is not sensitive (it points at the env var
@@ -1423,7 +1424,7 @@ type TransportConfig struct {
 
 // TraceEmitterConfig selects the trace emitter implementation.
 type TraceEmitterConfig struct {
-	Type            string `json:"type"`                      // "jsonl" | "otel" | "gcs"
+	Type            string `json:"type"`                      // "jsonl" | "otel" | "gcs" | "https-put"
 	FilePath        string `json:"filePath,omitempty"`        // for jsonl
 	Endpoint        string `json:"endpoint,omitempty"`        // for otel tracing (default: localhost:4317 for grpc; full URL for http/protobuf)
 	MetricsEndpoint string `json:"metricsEndpoint,omitempty"` // for otel metrics (defaults to Endpoint if unset)
@@ -1442,10 +1443,15 @@ type TraceEmitterConfig struct {
 	ObjectPrefix string `json:"objectPrefix,omitempty"`
 
 	// Credential overrides the default credential resolution for the
-	// "gcs" emitter (default: gcp-workload-identity). Rejected on jsonl
-	// and otel. Secret-bearing sub-fields are scrubbed by Redact() the
+	// "gcs" emitter (default: gcp-workload-identity). Rejected on every
+	// other type. Secret-bearing sub-fields are scrubbed by Redact() the
 	// same way as Provider.Credential.
 	Credential *CredentialConfig `json:"credential,omitempty"`
+
+	// HTTPSPut is the destination the "https-put" emitter uploads the
+	// run's JSONL trace line to. Required when Type == "https-put";
+	// rejected for every other type.
+	HTTPSPut *HTTPSPutConfig `json:"httpsPut,omitempty"`
 
 	// Protocol selects the OTLP wire protocol for the otel emitter.
 	// Closed set: "" (defaults to the platform's required protocol, else
@@ -2287,9 +2293,10 @@ var validTransportTypes = map[string]bool{
 }
 
 var validTraceEmitterTypes = map[string]bool{
-	"jsonl": true,
-	"otel":  true,
-	"gcs":   true,
+	"jsonl":     true,
+	"otel":      true,
+	"gcs":       true,
+	"https-put": true,
 }
 
 // runIDPattern bounds the characters allowed in RunConfig.RunID. RunID
@@ -5947,6 +5954,17 @@ func validateTraceEmitterProtocolAndHeaders(cfg *TraceEmitterConfig, errs *[]str
 		}
 	}
 	validateTraceEmitterPlatform(cfg, errs)
+	if cfg.Type == "https-put" {
+		if cfg.HTTPSPut == nil {
+			*errs = append(*errs, "traceEmitter type \"https-put\" requires httpsPut")
+		}
+		validateHTTPSPutConfig("traceEmitter.httpsPut", cfg.HTTPSPut, errs)
+	} else if cfg.HTTPSPut != nil {
+		*errs = append(*errs, fmt.Sprintf(
+			"traceEmitter.httpsPut is only valid when traceEmitter.type is \"https-put\" (got type %q)",
+			cfg.Type,
+		))
+	}
 	// gcs-specific field validation. Bucket is required for gcs and
 	// rejected on every other type so a stale value cannot silently
 	// keep a bucket reference alive across a type change.

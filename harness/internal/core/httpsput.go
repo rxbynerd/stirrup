@@ -25,6 +25,11 @@ func checkHTTPSPutDestinations(ctx context.Context, config *types.RunConfig, sec
 			return httpsPutDestinationError("resultSink.httpsPut", err)
 		}
 	}
+	if config.TraceEmitter.Type == "https-put" {
+		if _, err := httpsput.Resolve(ctx, secrets, config.TraceEmitter.HTTPSPut); err != nil {
+			return fmt.Errorf("traceEmitter.httpsPut: %w", err)
+		}
+	}
 	return nil
 }
 

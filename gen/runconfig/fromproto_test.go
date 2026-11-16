@@ -1598,6 +1598,26 @@ func TestRunConfigFromProto_CopiesTheHTTPSPutResultSinkDestination(t *testing.T)
 	check.Nil(runConfigFromProto(&pb.RunConfig{ResultSink: &pb.ResultSinkConfig{Type: "gcs"}}).ResultSink.HTTPSPut)
 }
 
+func TestRunConfigFromProto_CopiesTheHTTPSPutTraceEmitterDestination(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	raw, err := proto.Marshal(&pb.RunConfig{TraceEmitter: &pb.TraceEmitterConfig{
+		Type:     "https-put",
+		HttpsPut: &pb.HttpsPutConfig{UrlRef: "secret://TRACE_URL", Headers: map[string]string{"x-ms-blob-type": "BlockBlob"}},
+	}})
+	must.NoError(err, "marshal")
+	var decoded pb.RunConfig
+	must.NoError(proto.Unmarshal(raw, &decoded), "unmarshal")
+
+	te := runConfigFromProto(&decoded).TraceEmitter
+	check.Equal("https-put", te.Type)
+	must.NotNil(te.HTTPSPut)
+	check.Equal("secret://TRACE_URL", te.HTTPSPut.URLRef)
+	check.Equal(map[string]string{"x-ms-blob-type": "BlockBlob"}, te.HTTPSPut.Headers)
+
+	check.Nil(runConfigFromProto(&pb.RunConfig{TraceEmitter: &pb.TraceEmitterConfig{Type: "jsonl"}}).TraceEmitter.HTTPSPut)
+}
+
 // TestRunConfigFromProto_WorkspaceExportRequiredTriState pins that an
 // unset workspace_export_required stays nil (so the destination default
 // applies) and that both explicit values survive the wire and translate.

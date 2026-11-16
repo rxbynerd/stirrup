@@ -865,7 +865,7 @@ func TestBuildHookRunner_PostRunOnlyReturnsExecRunner(t *testing.T) {
 
 func TestBuildTraceEmitter_JSONLWithoutPath(t *testing.T) {
 	must := require.New(t)
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl"}, platform.Exporters{}, observability.ResourceOptions{}, false)
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl"}, nil, platform.Exporters{}, observability.ResourceOptions{}, false)
 	must.NoError(err)
 	must.IsType((*trace.JSONLTraceEmitter)(nil), te)
 }
@@ -873,7 +873,7 @@ func TestBuildTraceEmitter_JSONLWithoutPath(t *testing.T) {
 func TestBuildTraceEmitter_JSONLWithPath(t *testing.T) {
 	must := require.New(t)
 	path := filepath.Join(t.TempDir(), "trace.jsonl")
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl", FilePath: path}, platform.Exporters{}, observability.ResourceOptions{}, false)
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "jsonl", FilePath: path}, nil, platform.Exporters{}, observability.ResourceOptions{}, false)
 	must.NoError(err)
 	must.IsType((*trace.JSONLTraceEmitter)(nil), te)
 	_, err = os.Stat(path)
@@ -882,14 +882,14 @@ func TestBuildTraceEmitter_JSONLWithPath(t *testing.T) {
 
 func TestBuildTraceEmitter_EmptyTypeDefaultsToJSONL(t *testing.T) {
 	must := require.New(t)
-	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{}, platform.Exporters{}, observability.ResourceOptions{}, false)
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{}, nil, platform.Exporters{}, observability.ResourceOptions{}, false)
 	must.NoError(err)
 	must.IsType((*trace.JSONLTraceEmitter)(nil), te)
 }
 
 func TestBuildTraceEmitter_UnsupportedType(t *testing.T) {
 	must := require.New(t)
-	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "datadog"}, platform.Exporters{}, observability.ResourceOptions{}, false)
+	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{Type: "datadog"}, nil, platform.Exporters{}, observability.ResourceOptions{}, false)
 	must.ErrorContains(err, "unsupported trace emitter type")
 }
 
@@ -1054,8 +1054,30 @@ func TestBuildTraceEmitter_JSONLBadPath(t *testing.T) {
 	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{
 		Type:     "jsonl",
 		FilePath: "/nonexistent/deeply/nested/dir/trace.jsonl",
-	}, platform.Exporters{}, observability.ResourceOptions{}, false)
+	}, nil, platform.Exporters{}, observability.ResourceOptions{}, false)
 	must.Error(err)
+}
+
+func TestBuildTraceEmitter_HTTPSPutBuildsAnObjectEmitterWithTheRunSecretStore(t *testing.T) {
+	must := require.New(t)
+	t.Setenv("TEST_FACTORY_TRACE_URL", "https://uploads.example/trace.jsonl?X-Amz-Signature=deadbeefcafe")
+	te, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{
+		Type:     "https-put",
+		HTTPSPut: &types.HTTPSPutConfig{URLRef: "secret://TEST_FACTORY_TRACE_URL"},
+	}, security.NewEnvSecretStore(), platform.Exporters{}, observability.ResourceOptions{}, false)
+	must.NoError(err)
+	emitter, ok := te.(*trace.ObjectTraceEmitter)
+	must.True(ok, "got %T", te)
+	must.NoError(emitter.Probe(context.Background()))
+}
+
+func TestBuildTraceEmitter_HTTPSPutWithoutASecretStoreIsRejected(t *testing.T) {
+	must := require.New(t)
+	_, err := buildTraceEmitter(context.Background(), types.TraceEmitterConfig{
+		Type:     "https-put",
+		HTTPSPut: &types.HTTPSPutConfig{URLRef: "secret://TEST_FACTORY_TRACE_URL"},
+	}, nil, platform.Exporters{}, observability.ResourceOptions{}, false)
+	must.ErrorContains(err, "secret store is required")
 }
 
 func TestBuildExecutor_Local(t *testing.T) {

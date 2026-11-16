@@ -745,6 +745,8 @@ func traceHint(t string) string {
 		return "check traceEmitter.endpoint and protocol point at a reachable OTLP collector"
 	case "gcs":
 		return "check traceEmitter.bucket exists and the credential can access it"
+	case "https-put":
+		return "check traceEmitter.httpsPut.urlRef resolves in the harness environment to an https:// URL"
 	case "jsonl", "":
 		return "check traceEmitter.filePath is in a writable directory"
 	default:

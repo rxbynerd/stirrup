@@ -6404,6 +6404,13 @@ type TraceEmitterConfig struct {
 	//	          "run" span with child spans for turns, tool calls, provider
 	//	          streaming, context compaction, verification, permission checks,
 	//	          and git operations. The wire protocol is selected by `protocol`.
+	//	"gcs"   — upload the run's JSONL trace line to
+	//	          gs://{bucket}/{object_prefix}{runId}.jsonl. Requires bucket.
+	//	"https-put" — upload the run's JSONL trace line with one HTTP PUT
+	//	          to the URL https_put.url_ref resolves to. Requires
+	//	          https_put. The destination names one object, so every
+	//	          run of a session uploads to the URL its reference
+	//	          resolves to then.
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// For "jsonl": filesystem path to the output trace file.
 	FilePath string `protobuf:"bytes,2,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`
@@ -6493,7 +6500,11 @@ type TraceEmitterConfig struct {
 	// the trace and other emitters keep a local archive whose path is
 	// reported as the RunResult's commandOutputArchive. See
 	// docs/configuration.md#command-output-capture.
-	Archive       *TraceArchiveConfig `protobuf:"bytes,14,opt,name=archive,proto3" json:"archive,omitempty"`
+	Archive *TraceArchiveConfig `protobuf:"bytes,14,opt,name=archive,proto3" json:"archive,omitempty"`
+	// For "https-put": the destination the JSONL trace line is uploaded
+	// to. Required when type == "https-put"; rejected by validation for
+	// every other type.
+	HttpsPut      *HttpsPutConfig `protobuf:"bytes,15,opt,name=https_put,json=httpsPut,proto3" json:"https_put,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -6622,6 +6633,13 @@ func (x *TraceEmitterConfig) GetObjectPrefix() string {
 func (x *TraceEmitterConfig) GetArchive() *TraceArchiveConfig {
 	if x != nil {
 		return x.Archive
+	}
+	return nil
+}
+
+func (x *TraceEmitterConfig) GetHttpsPut() *HttpsPutConfig {
+	if x != nil {
+		return x.HttpsPut
 	}
 	return nil
 }
@@ -7836,7 +7854,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"policyFile\x12\x1a\n" +
 	"\bfallback\x18\x04 \x01(\tR\bfallback\"'\n" +
 	"\x11GitStrategyConfig\x12\x12\n" +
-	"\x04type\x18\x01 \x01(\tR\x04type\"\x8f\x06\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\"\xd0\x06\n" +
 	"\x12TraceEmitterConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1b\n" +
 	"\tfile_path\x18\x02 \x01(\tR\bfilePath\x12\x1a\n" +
@@ -7852,7 +7870,8 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\bplatform\x18\f \x01(\tR\bplatform\x12f\n" +
 	"\x10platform_options\x18\r \x03(\v2;.stirrup.harness.v1.TraceEmitterConfig.PlatformOptionsEntryR\x0fplatformOptions\x12#\n" +
 	"\robject_prefix\x18\b \x01(\tR\fobjectPrefix\x12@\n" +
-	"\aarchive\x18\x0e \x01(\v2&.stirrup.harness.v1.TraceArchiveConfigR\aarchive\x1a:\n" +
+	"\aarchive\x18\x0e \x01(\v2&.stirrup.harness.v1.TraceArchiveConfigR\aarchive\x12?\n" +
+	"\thttps_put\x18\x0f \x01(\v2\".stirrup.harness.v1.HttpsPutConfigR\bhttpsPut\x1a:\n" +
 	"\fHeadersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1aB\n" +
@@ -8076,21 +8095,22 @@ var file_harness_v1_harness_proto_depIdxs = []int32{
 	69, // 72: stirrup.harness.v1.TraceEmitterConfig.headers:type_name -> stirrup.harness.v1.TraceEmitterConfig.HeadersEntry
 	70, // 73: stirrup.harness.v1.TraceEmitterConfig.platform_options:type_name -> stirrup.harness.v1.TraceEmitterConfig.PlatformOptionsEntry
 	52, // 74: stirrup.harness.v1.TraceEmitterConfig.archive:type_name -> stirrup.harness.v1.TraceArchiveConfig
-	58, // 75: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
-	57, // 76: stirrup.harness.v1.ToolsConfig.control_plane:type_name -> stirrup.harness.v1.ControlPlaneToolConfig
-	55, // 77: stirrup.harness.v1.ToolsConfig.command_output:type_name -> stirrup.harness.v1.CommandOutputConfig
-	56, // 78: stirrup.harness.v1.ToolsConfig.post_edit:type_name -> stirrup.harness.v1.PostEditCheck
-	54, // 79: stirrup.harness.v1.ToolsConfig.lazy_loading:type_name -> stirrup.harness.v1.LazyToolLoadingConfig
-	71, // 80: stirrup.harness.v1.ControlPlaneToolConfig.input_schema:type_name -> google.protobuf.Struct
-	8,  // 81: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
-	31, // 82: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
-	0,  // 83: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
-	4,  // 84: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
-	84, // [84:85] is the sub-list for method output_type
-	83, // [83:84] is the sub-list for method input_type
-	83, // [83:83] is the sub-list for extension type_name
-	83, // [83:83] is the sub-list for extension extendee
-	0,  // [0:83] is the sub-list for field type_name
+	41, // 75: stirrup.harness.v1.TraceEmitterConfig.https_put:type_name -> stirrup.harness.v1.HttpsPutConfig
+	58, // 76: stirrup.harness.v1.ToolsConfig.mcp_servers:type_name -> stirrup.harness.v1.MCPServerConfig
+	57, // 77: stirrup.harness.v1.ToolsConfig.control_plane:type_name -> stirrup.harness.v1.ControlPlaneToolConfig
+	55, // 78: stirrup.harness.v1.ToolsConfig.command_output:type_name -> stirrup.harness.v1.CommandOutputConfig
+	56, // 79: stirrup.harness.v1.ToolsConfig.post_edit:type_name -> stirrup.harness.v1.PostEditCheck
+	54, // 80: stirrup.harness.v1.ToolsConfig.lazy_loading:type_name -> stirrup.harness.v1.LazyToolLoadingConfig
+	71, // 81: stirrup.harness.v1.ControlPlaneToolConfig.input_schema:type_name -> google.protobuf.Struct
+	8,  // 82: stirrup.harness.v1.RunConfig.DynamicContextEntry.value:type_name -> stirrup.harness.v1.DynamicContextValue
+	31, // 83: stirrup.harness.v1.RunConfig.ProvidersEntry.value:type_name -> stirrup.harness.v1.ProviderConfig
+	0,  // 84: stirrup.harness.v1.HarnessService.RunTask:input_type -> stirrup.harness.v1.HarnessEvent
+	4,  // 85: stirrup.harness.v1.HarnessService.RunTask:output_type -> stirrup.harness.v1.ControlEvent
+	85, // [85:86] is the sub-list for method output_type
+	84, // [84:85] is the sub-list for method input_type
+	84, // [84:84] is the sub-list for extension type_name
+	84, // [84:84] is the sub-list for extension extendee
+	0,  // [0:84] is the sub-list for field type_name
 }
 
 func init() { file_harness_v1_harness_proto_init() }

@@ -527,6 +527,7 @@ func (e *encoder) traceEmitterConfig(c *types.TraceEmitterConfig) *pb.TraceEmitt
 		CaptureContentMaxBytes: e.int32("traceEmitter.captureContentMaxBytes", c.CaptureContentMaxBytes),
 		Platform:               c.Platform,
 		PlatformOptions:        maps.Clone(c.PlatformOptions),
+		HttpsPut:               httpsPutConfigToProto(c.HTTPSPut),
 	}
 	if a := c.Archive; a != nil {
 		if a.Credential != nil {

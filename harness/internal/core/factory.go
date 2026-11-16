@@ -2455,7 +2455,7 @@ func otelEmitterOptions(cfg types.TraceEmitterConfig, exporters platform.Exporte
 // for every emitter type — so a release binary builds every emitter with
 // redaction on regardless of what a caller passes in. See
 // docs/security.md#debug-builds.
-func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, exporters platform.Exporters, resourceOpts observability.ResourceOptions, debugRedactionDisabled bool) (trace.TraceEmitter, error) {
+func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, secrets security.SecretStore, exporters platform.Exporters, resourceOpts observability.ResourceOptions, debugRedactionDisabled bool) (trace.TraceEmitter, error) {
 	effectiveRedactionDisabled := debugRedactionDisabled && debugbuild.DebugBuildEnabled()
 	switch cfg.Type {
 	case "otel":
@@ -2472,6 +2472,12 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, export
 			CredentialSource:  credSrc,
 			RedactionDisabled: effectiveRedactionDisabled,
 		})
+	case "https-put":
+		return trace.NewHTTPSPutTraceEmitter(trace.HTTPSPutTraceEmitterOptions{
+			Target:            cfg.HTTPSPut,
+			Secrets:           secrets,
+			RedactionDisabled: effectiveRedactionDisabled,
+		})
 	case "jsonl", "":
 		var w io.Writer
 		if cfg.FilePath != "" {
@@ -2486,7 +2492,7 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, export
 		}
 		return trace.NewJSONLTraceEmitter(w, effectiveRedactionDisabled), nil
 	default:
-		return nil, fmt.Errorf("unsupported trace emitter type: %q (supported: jsonl, otel, gcs)", cfg.Type)
+		return nil, fmt.Errorf("unsupported trace emitter type: %q (supported: jsonl, otel, gcs, https-put)", cfg.Type)
 	}
 }
 

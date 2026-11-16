@@ -50,7 +50,8 @@ const objectUploadTimeout = 60 * time.Second
 // the final JSONL trace line as one object at Finish. Unlike
 // JSONLTraceEmitter, no file handle is held. Where the object goes is
 // the constructor's choice: NewGCSTraceEmitter writes
-// gs://{bucket}/{objectPrefix}/{runID}.jsonl through the GCS JSON API.
+// gs://{bucket}/{objectPrefix}/{runID}.jsonl through the GCS JSON API,
+// and NewHTTPSPutTraceEmitter PUTs it to an HTTPS destination.
 // Streaming or resumable uploads are not needed: a JSONL run trace is
 // one line on the wire.
 type ObjectTraceEmitter struct {

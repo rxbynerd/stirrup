@@ -159,6 +159,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			CaptureContentMaxBytes: int(pc.TraceEmitter.CaptureContentMaxBytes),
 			Platform:               pc.TraceEmitter.Platform,
 			PlatformOptions:        maps.Clone(pc.TraceEmitter.PlatformOptions),
+			HTTPSPut:               httpsPutConfigFromProto(pc.TraceEmitter.GetHttpsPut()),
 		}
 		if archive := pc.TraceEmitter.GetArchive(); archive != nil {
 			rc.TraceEmitter.Archive = &types.TraceArchiveConfig{

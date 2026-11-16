@@ -245,6 +245,16 @@ func TestNeedsSSM_DetectsSSMReferences(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "SSM in the HTTPS PUT trace emitter URL",
+			config: &types.RunConfig{
+				TraceEmitter: types.TraceEmitterConfig{
+					Type:     "https-put",
+					HTTPSPut: &types.HTTPSPutConfig{URLRef: "secret://ssm:///runs/trace-url"},
+				},
+			},
+			want: true,
+		},
+		{
 			name: "SSM in VCS backend",
 			config: &types.RunConfig{
 				Executor: types.ExecutorConfig{
