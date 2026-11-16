@@ -425,20 +425,10 @@ jobs:
       - name: Check whether the commit tag is already published
         id: commit-tag
         env:
-          IMAGE: ghcr.io/rxbynerd/stirrup
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="sha-${GITHUB_SHA::7}"
-          rc=0
-          digest=$(scripts/release/registry.sh digest "${IMAGE}:${tag}") || rc=$?
-          case "$rc" in
-            0)
-              echo "publish=false" >> "$GITHUB_OUTPUT"
-              echo "::notice::${IMAGE}:${tag} already points at ${digest}; this build moves :main and :latest only."
-              ;;
-            3) echo "publish=true" >> "$GITHUB_OUTPUT" ;;
-            *) exit "$rc" ;;
-          esac
+          scripts/release/commit-tag.sh check ghcr.io/rxbynerd/stirrup "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
       # Pinned for the same reason as login-action: runs inside the
       # credentialled publish job and constructs the tag list that
@@ -472,18 +462,17 @@ jobs:
             VERSION=${{ steps.ver.outputs.label }}
             COMMIT=${{ steps.ver.outputs.sha }}
 
+      # An existing tag without a record (its first build pushed it, then
+      # failed to write the status) is recorded from the registry now.
       - name: Record the commit tag's digest
-        if: steps.commit-tag.outputs.publish == 'true'
+        if: steps.commit-tag.outputs.publish == 'true' || steps.commit-tag.outputs.unrecorded != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          DIGEST: ${{ steps.docker-push.outputs.digest }}
+          PUSHED: ${{ steps.docker-push.outputs.digest }}
+          UNRECORDED: ${{ steps.commit-tag.outputs.unrecorded }}
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            -f state=success \
-            -f context=image-digest/stirrup \
-            -f description="$DIGEST" \
-            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > /dev/null
+          scripts/release/commit-tag.sh record ghcr.io/rxbynerd/stirrup "$GITHUB_SHA" "${UNRECORDED:-$PUSHED}"
 
   publish-sandbox-container:
     name: Publish Sandbox Container
@@ -530,20 +519,10 @@ jobs:
       - name: Check whether the commit tag is already published
         id: commit-tag
         env:
-          IMAGE: ghcr.io/rxbynerd/stirrup-sandbox
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tag="sha-${GITHUB_SHA::7}"
-          rc=0
-          digest=$(scripts/release/registry.sh digest "${IMAGE}:${tag}") || rc=$?
-          case "$rc" in
-            0)
-              echo "publish=false" >> "$GITHUB_OUTPUT"
-              echo "::notice::${IMAGE}:${tag} already points at ${digest}; this build moves :main and :latest only."
-              ;;
-            3) echo "publish=true" >> "$GITHUB_OUTPUT" ;;
-            *) exit "$rc" ;;
-          esac
+          scripts/release/commit-tag.sh check ghcr.io/rxbynerd/stirrup-sandbox "$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Generate image metadata
         id: meta
@@ -568,14 +547,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
 
       - name: Record the commit tag's digest
-        if: steps.commit-tag.outputs.publish == 'true'
+        if: steps.commit-tag.outputs.publish == 'true' || steps.commit-tag.outputs.unrecorded != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          DIGEST: ${{ steps.docker-push.outputs.digest }}
+          PUSHED: ${{ steps.docker-push.outputs.digest }}
+          UNRECORDED: ${{ steps.commit-tag.outputs.unrecorded }}
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-            -f state=success \
-            -f context=image-digest/stirrup-sandbox \
-            -f description="$DIGEST" \
-            -f target_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > /dev/null
+          scripts/release/commit-tag.sh record ghcr.io/rxbynerd/stirrup-sandbox "$GITHUB_SHA" "${UNRECORDED:-$PUSHED}"
