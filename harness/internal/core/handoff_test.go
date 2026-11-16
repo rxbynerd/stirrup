@@ -488,6 +488,7 @@ func TestRunErrorText_ForOutcome(t *testing.T) {
 
 	check.Empty(loop.runErrorText(config, "success"), "a successful run has no error text")
 	check.Equal(`run ended with outcome "refusal"`, loop.runErrorText(config, "refusal"), "an outcome without a description")
+	check.Equal("the sandbox stopped before the run completed", loop.runErrorText(config, "sandbox_lost"), "a lost sandbox with no recorded state")
 
 	loop.noteFailure("verification_error", "verifier: boom")
 	check.Equal("cancelled before the run completed", loop.runErrorText(config, "cancelled"), "a cancellation after a recorded failure")
