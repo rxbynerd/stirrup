@@ -23,12 +23,15 @@ many sandbox Pods share.
 ## Enforcement caveat — read this first
 
 NetworkPolicy is only enforced by a CNI that implements it. **kindnet — the
-default CNI for `kind` clusters — accepts NetworkPolicy objects but does not
-enforce them.** On a stock kind cluster the deny/allowlist policies (both the
-one in `network-policy.yaml` and the per-Pod policy the executor installs at
-runtime) are inert, and a sandbox Pod retains cluster-default egress. The
-allowlist is genuinely enforced only on a NetworkPolicy-enforcing CNI such as
+default CNI for `kind` clusters — enforces NetworkPolicy but is a development
+CNI configured to fail open**: if its policy controller cannot start, it skips
+network policies, and if the controller stops, packets are no longer dropped.
+A kind run is therefore not evidence of an egress guarantee for the deny and
+allowlist policies (both the one in `network-policy.yaml` and the per-Pod
+policy the executor installs at runtime). The allowlist is meant to be relied
+on only with a production NetworkPolicy-enforcing CNI such as
 [Cilium](https://cilium.io/) or [Calico](https://www.tigera.io/project-calico/).
+See the [enforcement caveat](../../../docs/executors/k8s.md#enforcement-caveat--networkpolicy-may-be-accepted-but-not-enforced).
 
 Treat a kind-based smoke test as proof of manifest shape — the objects are
 created with the right selectors, ports, and env — not as proof that egress is

@@ -162,11 +162,11 @@ const (
 //	  under ctx cancellation and a per-call timeout.
 //
 //	"done"
-//	  - stop_reason: why the run ended ("end_turn", "max_turns", "timeout",
-//	                 "stalled", "tool_failures", "cancelled", "budget_exceeded",
-//	                 "error", "setup_failed", "hook_failed",
-//	                 "context_exhausted", or a provider stop reason such as
-//	                 "refusal" passed through verbatim).
+//	  - stop_reason: the run outcome, the same value as RunTrace.outcome
+//	                 ("success" on a clean finish, otherwise a failure
+//	                 outcome such as "max_turns" or "timeout", or a provider
+//	                 stop reason such as "refusal" passed through verbatim).
+//	                 See RunTrace.outcome for the full vocabulary.
 //	  - trace:       RunTrace with execution metrics. Absent when the run
 //	                 failed before the loop was built (a rejected RunConfig),
 //	                 since no trace was ever started.
@@ -2531,10 +2531,13 @@ func (x *RuleOfTwoConfig) GetRuntime() *RuleOfTwoRuntimeConfig {
 // capabilities computable at config time; sensitivity is a content
 // property only knowable at runtime.
 //
-// NOTE: Only the configuration surface ships in this message. The
-// detector, latch, and enforcement gate land in follow-up changes.
-// Fields are validated but have no runtime effect until that change
-// lands.
+// With this message absent, or with classifier "", the harness arms the
+// pattern classifier itself whenever the run holds untrusted input and
+// external communication, and the default on_detect is "block-external".
+// classifier "none" disables runtime classification. Whether the run
+// enforces the action or only observes depends on the static
+// Rule-of-Two state; see "When the classifier arms" in
+// docs/safety-rings.md.
 type RuleOfTwoRuntimeConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// The detector implementation.
