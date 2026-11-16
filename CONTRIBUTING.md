@@ -304,9 +304,9 @@ while it is idle. End the session with
 states everything the `container`, `k8s` and `k8s-sandbox` executors need
 from the sandbox image, under a contract version. When a change makes an
 executor, a tool or a git operation start needing something new from the
-image (a command, a flag a command must accept, a path, or a different
-image metadata behaviour), update the document and bump the contract
-version in the same PR. A change that stops needing something edits the
+image, update the document and bump the contract version in the same PR.
+The new requirement can be a command, a flag a command must accept, a
+path, or a different image metadata behaviour. A change that stops needing something edits the
 document without a bump.
 
 Two tests enforce this. `harness/internal/executor/imagecontract_test.go`

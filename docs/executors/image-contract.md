@@ -42,10 +42,11 @@ at that release's tag.
 `harness/internal/executor/imagecontract_test.go` compares the commands
 the executors' scripts run with the commands this document lists, and
 `harness/internal/invariants/imagecontract_test.go` pins the places that
-run commands in the sandbox. Adding a command or a new place fails them
-until the command is listed here. The version bump itself is a
-convention ([`CONTRIBUTING.md`](../../CONTRIBUTING.md#the-sandbox-image-contract)),
-and the tests recognise command names, not flags, so a new flag on an
+run commands in the sandbox. A command the document does not list, or a
+new place that runs commands, fails them until the command is listed here
+or the place is pinned in the invariants test. The version bump itself is a
+convention ([`CONTRIBUTING.md`](../../CONTRIBUTING.md#the-sandbox-image-contract)).
+The tests recognise command names, not flags, so a new flag on an
 existing command is a bump the author has to notice.
 
 ## What the executors set
@@ -79,8 +80,8 @@ anything the image places at them is hidden.
 
 Every executor runs commands as `65532:65532`. The executors do not need
 a `passwd` or `group` entry for that identity; the reference image
-declares one for tools that look the user up. The user must be able to
-execute the image's tools. See
+declares one for tools that look the user up. The sandbox user must be able
+to execute the image's tools. See
 [Sandbox identity and scratch](../security.md#sandbox-identity-and-scratch)
 for what `/scratch`, `HOME` and `TMPDIR` hold.
 
@@ -91,8 +92,8 @@ scripts and are resolved through the shell's `PATH`. The executors exec
 these directly instead: `sleep` on `container` (resolved by the container
 runtime), `sh` on all three, `ls` on all three, `mkdir` (the scratch
 setup) on all three, and `tar` (file writes) on `k8s` and `k8s-sandbox`.
-They are resolved through the image's `PATH`, except `/bin/sh` on `k8s`
-and `k8s-sandbox`.
+The directly exec'd commands are resolved through the image's `PATH`,
+except `/bin/sh` on `k8s` and `k8s-sandbox`.
 
 | Requirement | Used for |
 |---|---|
@@ -100,11 +101,11 @@ and `k8s-sandbox`.
 | Shell builtins `kill` (with `-s`, `-0` and `-- -<pgid>`), `read -r`, `command -v`, `printf`, `echo`, `[`, `exec`, `set --`, `shift`, `exit`, and the POSIX shell language the scripts use: functions, `case`, `$(...)`, pipelines, arithmetic and parameter expansion (including `${v:-x}`). | The process-group and file-guard scripts. |
 | `sleep`, accepting `infinity`, a whole number of seconds and a fraction (`0.1`). | The keep-alive command: `infinity` (`k8s`, and `container` without a lifetime) or seconds (`container` with a lifetime). The grace period of the timeout kill uses `0.1`; where `sleep` rejects a fraction the grace period collapses and the kill follows at once. |
 | `rm`, accepting `-f`. | Removing the per-command process-group file. Without it, pid files accumulate in `/tmp`. |
-| A writable `/tmp`. | The per-command process-group file `/tmp/.stirrup-exec-<id>.pid`. `container` mounts `/tmp`. On `k8s` and `k8s-sandbox` the image's own `/tmp` must be writable by `65532`. When it is not, a command still runs and every command's standard error carries the shell's redirection error, and a timed-out command is not killed: the kill exits `3` and the executor logs a warning. |
+| A writable `/tmp`. | The per-command process-group file `/tmp/.stirrup-exec-<id>.pid`. `container` mounts `/tmp`. On `k8s` and `k8s-sandbox` the image's own `/tmp` must be writable by `65532`. When it is not, a command still runs and every command's standard error carries the shell's redirection error. A timed-out command is not killed: the kill exits `3` and the executor logs a warning. |
 | `tar`, accepting `-C`, `-c`, `-x`, `-f -` and `--`. | Reading a file (`tar -C / -cf - -- <path>`). On `k8s` and `k8s-sandbox`, also writing a file (`tar -C <dir> -xf -`); `container` writes through the engine's archive API and does not use `-x`, but the contract lists it for all three. Without `tar`, reads and writes fail. |
 | `readlink`, accepting `-f` and `--`. | Resolving the real path of a read or write target so a symlink in the workspace cannot reach outside it. An image without it fails closed: the first read or write returns an error naming it. |
 | `mkdir`, accepting `-p` and `--`. | Creating the parent directories of a write. |
-| `ls`, accepting `-1`, `-A`, `-p` and `--`. | Listing a directory (`list_directory`, and the prompt's workspace listing). |
+| `ls`, accepting `-1`, `-A`, `-p` and `--`. | Listing a directory (`list_directory` and the prompt's workspace listing). |
 | `mkdir`, accepting `-m` and two operands. | The scratch setup: `mkdir -m 0700 /scratch/home /scratch/tmp`, run once as the sandbox user before the sandbox is handed to the run. It fails when either directory exists. |
 
 An image without `sh` or `sleep` does not start: on `container` the
