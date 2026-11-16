@@ -49,6 +49,24 @@ func TestBuildLoop_InvalidConfigIsConfigInvalid(t *testing.T) {
 	requireBuildFailure(t, err, types.BuildFailureConfigInvalid, "")
 }
 
+func TestBuildLoop_RefusedImageIsSandboxImage(t *testing.T) {
+	config := buildTestConfig()
+	config.Executor = types.ExecutorConfig{Type: "container", Image: "docker.io/someuser/app", Workspace: t.TempDir()}
+
+	_, err := BuildLoop(context.Background(), config, WithImageAdmission(mustImagePolicy(t, "ghcr.io/acme/")))
+
+	requireBuildFailure(t, err, types.BuildFailureSandboxImage, "")
+}
+
+func TestBuildLoop_MalformedImageIsConfigInvalid(t *testing.T) {
+	config := buildTestConfig()
+	config.Executor = types.ExecutorConfig{Type: "container", Image: "ghcr.io/acme/", Workspace: t.TempDir()}
+
+	_, err := BuildLoop(context.Background(), config)
+
+	requireBuildFailure(t, err, types.BuildFailureConfigInvalid, "")
+}
+
 func TestBuildLoop_UnresolvedAPIKeyIsCredential(t *testing.T) {
 	config := buildTestConfig()
 	t.Setenv("TEST", "")

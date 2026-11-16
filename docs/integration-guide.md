@@ -286,7 +286,7 @@ contract.
 | `sandbox_platform` | The cluster or container engine refused or could not serve a sandbox request: RBAC, a missing namespace or RuntimeClass, a quota, an unreachable engine. | Treat the cluster as misconfigured; retrying elsewhere may succeed. |
 | `admission_mismatch` | Admission changed the sandbox Pod in a way the executor's runtime does not accept. | Fix the cluster's admission policy. |
 | `runtime_diagnostic_failed` | The sandbox's runtime diagnostics found it was not isolated as its runtime requires. | Treat the node pool as misconfigured; do not retry on it. |
-| `sandbox_image` | The sandbox image could not be pulled or was not allowed, or its container exited on its own before it was ready. | Fix the image reference, its registry credentials or the image itself. |
+| `sandbox_image` | The sandbox image could not be pulled or was not allowed, or its container exited on its own before it was ready. | Fix the image reference, its registry credentials or the image itself, or admit it in the deployment's [image admission policy](security.md#image-admission-policy). |
 | `sandbox_not_ready` | The sandbox did not become ready or reachable for commands, for example within the readiness timeout, or the runtime diagnostics could not run. | Usually capacity or a slow node; retrying may succeed. |
 | `control_stream_lost` | The control stream ended during construction. Sent best-effort on a stream already found lost. | `done.stop_reason` (`control_stream_lost`) is authoritative. |
 | `interrupted` | A shutdown signal (SIGTERM or SIGINT) cut construction short, whatever was running. | The Pod was being stopped; nothing in the task is implicated. |

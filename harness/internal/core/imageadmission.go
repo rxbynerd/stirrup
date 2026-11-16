@@ -61,19 +61,20 @@ func judgeExecutorImage(cfg types.ExecutorConfig, policy executor.ImageAdmission
 }
 
 // admitExecutorImage applies the deployment's image admission policy to
-// executor.image and records the verdict in the security log.
+// executor.image, records the verdict in the security log, and classifies a
+// refusal for the control plane: a refused image is a sandbox_image failure
+// and a malformed reference is config_invalid.
 func admitExecutorImage(cfg types.ExecutorConfig, policy executor.ImageAdmissionPolicy, sec *security.SecurityLogger) error {
 	verdict, err := judgeExecutorImage(cfg, policy)
 	switch verdict {
 	case imageDenied:
 		sec.ImageAdmissionDenied(cfg.Type, cfg.Image, policy.Patterns())
+		return markBuildFailure(types.BuildFailureSandboxImage, fmt.Errorf("executor.image: %w", err))
 	case imageMalformed:
 		sec.ConfigValidationFailed([]string{err.Error()})
+		return markBuildFailure(types.BuildFailureConfigInvalid, fmt.Errorf("executor.image: %w", err))
 	case imageUnpinnedUnconfigured:
 		sec.ImageUnpinnedWithoutAdmissionPolicy(cfg.Type, cfg.Image)
-	}
-	if err != nil {
-		return fmt.Errorf("executor.image: %w", err)
 	}
 	return nil
 }
