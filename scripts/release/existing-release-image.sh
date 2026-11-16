@@ -23,7 +23,7 @@ set -euo pipefail
   exit 1
 }
 ghcr=$1 mirror=$2 tag=$3 commit=$4
-readonly REPO=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must be <owner>/<repo>}
+: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must be <owner>/<repo>}"
 registry=$(cd "$(dirname "$0")" && pwd)/registry.sh
 
 ghcr_rc=0
@@ -46,12 +46,7 @@ if [ "$ghcr_digest" != "$mirror_digest" ]; then
   exit 1
 fi
 
-if ! gh attestation verify "oci://${ghcr}@${ghcr_digest}" \
-  --repo "$REPO" \
-  --cert-identity "https://github.com/${REPO}/.github/workflows/_sign-release.yml@refs/tags/${tag}" \
-  --source-ref "refs/tags/${tag}" \
-  --source-digest "$commit" \
-  --deny-self-hosted-runners >/dev/null; then
+if ! "$(dirname "$registry")/verify-image-attestation.sh" "$ghcr" "$ghcr_digest" "$tag" "$commit"; then
   echo "::error::${ghcr}:${tag} (${ghcr_digest}) has no provenance attestation from this release at ${commit}, so it is not reused. If the verification above failed on an API error, re-run this job. Otherwise the tag was not written by the release workflow, which tags only signed digests: investigate it, and cut a new version." >&2
   exit 1
 fi

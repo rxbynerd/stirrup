@@ -93,11 +93,7 @@ check_release() {
         continue
       fi
       compare_digest "$ref" "$want"
-      gh attestation verify "oci://${image}@${want}" \
-        --repo "$REPO" \
-        --cert-identity "https://github.com/${REPO}/.github/workflows/_sign-release.yml@refs/tags/${tag}" \
-        --source-ref "refs/tags/${tag}" \
-        --deny-self-hosted-runners >/dev/null ||
+      "$(dirname "$registry")/verify-image-attestation.sh" "$image" "$want" "$tag" ||
         fail "release ${tag}: no verifiable provenance attestation for ${image}@${want}"
     done 3<"$dir/IMAGE_DIGESTS"
     [ "$found" = true ] || fail "release ${tag}: IMAGE_DIGESTS has no entry for ${image}:${tag}"
