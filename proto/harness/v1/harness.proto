@@ -2745,7 +2745,9 @@ message ToolsConfig {
   // structured-output classification. Satisfies the read-only modes'
   // requirement for an explicit tool choice. Rejected together with a
   // non-empty built_in. mcp_servers and control_plane tools still
-  // register when set. Mirrors RunConfig `tools.noBuiltIn`.
+  // register when set. A harness that predates this field drops it, so
+  // check for "tools.noBuiltIn" in ready.config_fields before relying on
+  // it. Mirrors RunConfig `tools.noBuiltIn`.
   bool no_built_in = 13;
 
   // Optional. MCP (Model Context Protocol) server connections for remote

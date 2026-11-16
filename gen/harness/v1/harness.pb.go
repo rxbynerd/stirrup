@@ -6424,7 +6424,9 @@ type ToolsConfig struct {
 	// structured-output classification. Satisfies the read-only modes'
 	// requirement for an explicit tool choice. Rejected together with a
 	// non-empty built_in. mcp_servers and control_plane tools still
-	// register when set. Mirrors RunConfig `tools.noBuiltIn`.
+	// register when set. A harness that predates this field drops it, so
+	// check for "tools.noBuiltIn" in ready.config_fields before relying on
+	// it. Mirrors RunConfig `tools.noBuiltIn`.
 	NoBuiltIn bool `protobuf:"varint,13,opt,name=no_built_in,json=noBuiltIn,proto3" json:"no_built_in,omitempty"`
 	// Optional. MCP (Model Context Protocol) server connections for remote
 	// tool discovery. Tools from MCP servers are prefixed as
