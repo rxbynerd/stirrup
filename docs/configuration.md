@@ -2566,7 +2566,8 @@ Closed-set enum completion is sourced from the same maps the validator
 consults, so a value added to `types/runconfig.go` extends the
 completion surface automatically. `--container-runtime` completes the
 runtime set of the `--executor` already on the command line: the
-Kubernetes set for `k8s` and `k8s-sandbox`, the container set otherwise.
+Kubernetes set for `k8s`, `gvisor` for `k8s-sandbox`, the container set
+otherwise.
 
 ### Installation
 

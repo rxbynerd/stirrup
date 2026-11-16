@@ -848,8 +848,8 @@ namespace of values: the closed set for `k8s` is
 `nitro-isolated` is named for the technology and maps to AWS's
 `isolated-sandbox` class, so `isolated-sandbox` itself is rejected with a
 pointer to `nitro-isolated`. Shell completion offers the `k8s` set when
-`--executor k8s` or `--executor k8s-sandbox` is already on the command line,
-and the container set otherwise.
+`--executor k8s` is already on the command line, `gvisor` for
+`--executor k8s-sandbox`, and the container set otherwise.
 
 ### Validation rules
 
