@@ -517,6 +517,7 @@ func newTestHarnessCommand() *cobra.Command {
 	f.Bool("debug", false, "")
 	f.Bool("trace-wire", false, "")
 	addTransportTLSFlags(f)
+	addImageAdmissionFlag(f)
 	return cmd
 }
 
