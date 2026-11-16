@@ -46,6 +46,7 @@ those files.
   - [Cleaning up retained objects](#cleaning-up-retained-objects)
 - [Configuration reference](#configuration-reference)
 - [Deployment recipes](#deployment-recipes)
+  - [gVisor runtime diagnostics](#gvisor-runtime-diagnostics)
   - [EKS with Nitro Sandboxes](#eks-with-nitro-sandboxes)
     - [Status](#status)
     - [Tested recipe](#tested-recipe)
@@ -197,8 +198,10 @@ A normal run goes like this. Construction installs the egress policy,
 creates the Pod, compares what admission returned with what was
 submitted, waits up to 5 minutes for the Pod to become Ready and up to
 a minute more for `exec` to reach it, and, for a
-runtime with [runtime diagnostics](#runtime-diagnostics)
-(`nitro-isolated`), checks the guest before the run starts.
+runtime with runtime diagnostics
+([`gvisor`](#gvisor-runtime-diagnostics) and
+[`nitro-isolated`](#runtime-diagnostics)), checks the guest before the
+run starts.
 `Close` deletes the Pod with a 1-second grace period, reads the Pod
 until it is gone, and then deletes the policy; measured on kind 1.31
 this takes about 5 seconds. When `Close` returns no error, nothing is
@@ -291,8 +294,9 @@ unable to upgrade connection: error dialing backend: remote error: tls: internal
 
 A cancellation or run deadline during the wait fails construction with
 `pod <ns>/<pod> exec reachability wait interrupted: <context error>`. The wait applies
-to every runtime of the `k8s` executor; for `nitro-isolated` it runs before the
-[runtime diagnostics](#runtime-diagnostics).
+to every runtime of the `k8s` executor; for `gvisor` and `nitro-isolated` it
+runs before the runtime diagnostics
+([gVisor](#gvisor-runtime-diagnostics), [Nitro](#runtime-diagnostics)).
 
 The [`k8s-sandbox`](k8s-agent-sandbox.md) executor shares only the
 5-minute ceiling and the immediate failure on `Forbidden` or
@@ -1056,16 +1060,115 @@ empty then prefers the in-cluster config.
 
 #### 6 — Verify gVisor is in force
 
-A trivial exec confirms the sandbox actually runs under gVisor rather
-than silently falling back to the host runtime: `uname -r` reports a
-synthetic kernel version (observed `4.4.0`) and `dmesg` shows a `Starting
-gVisor...` banner — both distinct from the host kernel.
+With `executor.runtime: gvisor` the executor runs the
+[gVisor runtime diagnostics](#gvisor-runtime-diagnostics) before the
+run starts. They have not been run on GKE Sandbox. A manual exec gives
+a second look: `uname -r` reports a synthetic kernel version (observed
+`4.4.0` on GKE Sandbox in June 2026; gVisor releases from late April
+2026 report `4.19.0-gvisor`) and `dmesg` shows a `Starting gVisor...`
+banner, both distinct from the host kernel.
 
 ```sh
 POD=$(kubectl -n stirrup-sandbox get pod -l stirrup-sandbox=true \
   -o jsonpath='{.items[0].metadata.name}')
 kubectl -n stirrup-sandbox exec "$POD" -- sh -c 'uname -r; dmesg | grep -i gvisor'
 ```
+
+### gVisor runtime diagnostics
+
+A RuntimeClass is matched by name only. A class named `gvisor` whose
+handler is `runc`, or a node whose `runsc` handler is wired to another
+runtime, runs the sandbox on the host kernel. With
+`executor.runtime: gvisor` the `k8s` executor therefore checks from
+inside the guest that the gVisor kernel (the *sentry*) answers. After
+the Pod is Ready and reachable for `exec`, and before the executor is
+returned to the run, it reads two files in one `exec`, bounded by the
+60-second file I/O timeout, with the same shell builtins as the
+[Nitro diagnostics](#runtime-diagnostics) (`read`, `printf`, `[`):
+
+1. `/proc/version` must be one line that starts with `Linux version `
+   and ends in `#1 SMP Sun Jan 10 15:06:54 PST 2016`. That build stamp
+   is a constant in gVisor's source
+   (`pkg/sentry/kernel/version/version.go`). The release before it is
+   not checked because it varies: gVisor printed `4.4.0` until a
+   2026-04-27 change, prints `4.19.0-gvisor` now, and prints
+   `5.15.0-gvisor` when RDMA support is on.
+2. `/proc/sentry-meminfo` must exist. gVisor registers it
+   unconditionally (since September 2022) and the Linux kernel has no such
+   file. Its content, the sentry's heap statistics, is not read.
+
+A missing or unreadable file, malformed output or a failed `exec` fails
+the same way as a failed check. Any failure deletes the Pod and fails
+the run, and there is no opt-out. `/proc/mounts` is not used: under
+gVisor the sandbox identity-token directory shows as `9p`, served by
+gVisor's file proxy, although it is a `tmpfs` on the node.
+
+*Measured* on the `kind` dev cluster (gVisor `release-20260504.0`,
+arm64 node, image `busybox:latest`, uid 65532):
+
+| RuntimeClass (handler) | `/proc/version` | `/proc/sentry-meminfo` | Result |
+|---|---|---|---|
+| `gvisor` (`runsc`) | `Linux version 4.19.0-gvisor #1 SMP Sun Jan 10 15:06:54 PST 2016` | present | passed |
+| `runc` (`runc`) | the node's kernel (`Linux version 7.1.3-200.fc44.aarch64 ...`) | absent | `kernel_version` failed |
+| a class with handler `runc` used as `gvisor` | the node's kernel, as for `runc` | absent | `kernel_version` failed; the Pod and its NetworkPolicy were removed |
+
+Other signals compared there were rejected. `/proc/self/status`,
+`/proc/cpuinfo` and `/proc/meminfo` differ between the runtimes in
+which fields and CPU features they list, but name no runtime. `/sys` and `/sys/class/dmi/id/product_name` look the same
+under both runtimes. The kernel log is unreadable: `/dev/kmsg` is
+absent under both, and `/proc/kmsg` is absent under gVisor and denied
+under `runc`. The `dmesg` banner needs a `dmesg` binary, which the
+image contract does not include.
+
+What the diagnostics do not prove:
+
+- They are a configuration check, not attestation. The image supplies
+  the shell that reads the files, so a hostile image can print
+  whatever passes.
+- They are a single sample taken after readiness.
+- They identify gVisor, not its version, platform (`systrap`, `kvm`)
+  or flags: a sandbox started with weakening flags such as
+  `--network=host` passes.
+
+**GKE Sandbox was not tested** (no paid cloud run). What may differ
+there:
+
+- The release string. GKE Sandbox reported `4.4.0` in June 2026, and a
+  gVisor issue filed in September 2026 against GKE 1.36
+  ([google/gvisor#14699](https://github.com/google/gvisor/issues/14699))
+  reports `4.19.0-gvisor`. The check accepts any release before the
+  build stamp.
+- `/proc/sentry-meminfo`. Nothing in GKE's documentation says whether
+  its gVisor exposes the file. A gVisor build older than September 2022 lacks
+  it and fails `sentry_meminfo`. The `runsc` flag `--override-procs`
+  replaces named `/proc` files with empty stubs; reading gVisor's source
+  suggests `sentry-meminfo` stays present and passes, but this was not
+  run. A stubbed `version` is empty and fails `kernel_version`.
+- Node architecture. Only an arm64 node was measured.
+
+A failure on GKE Sandbox that names `sentry_meminfo` while
+`kernelVersion` ends in the build stamp points at one of these
+differences, not at a missing sandbox.
+
+The events and their scrubbing are those of the
+[Nitro diagnostics](#runtime-diagnostics), with the gVisor checks:
+
+- `sandbox_runtime_diagnostic_passed` — `observed` holds
+  `kernelVersion` (the `/proc/version` line) and `sentryMeminfo`
+  (`present`).
+- `sandbox_runtime_diagnostic_failed` — `check` is `kernel_version`,
+  `sentry_meminfo`, `diagnostic_exec` or `diagnostic_output` (also for
+  a `/proc/version` of more than one non-empty line). Both content
+  checks run before the first failure is reported, so `observed` holds
+  every value that was read (`sentryMeminfo` is `absent` when the file
+  is missing). A multi-line `/proc/version` leaves `kernelVersion` out,
+  and after an `exec` or framing failure `observed` is empty.
+
+The run error reads `runtime diagnostics for executor.runtime "gvisor"
+failed: <check>: <reason>`, and an interruption by the run's own
+context reads `... interrupted: <context error>` with no event, as for
+Nitro. The [`k8s-sandbox`](k8s-agent-sandbox.md) executor, also
+gVisor-only, does not run these diagnostics.
 
 ### Kata Containers (kata-qemu / kata-fc / kata-clh)
 
@@ -2201,6 +2304,7 @@ it, the probe uses the same kubeconfig resolution as a run:
 | `tear down pod <ns>/<pod> (run ID "<id>"): <cause>; retained egress NetworkPolicy <ns>/<pod>-egress` (also in the warning `sandbox teardown incomplete; retaining the egress NetworkPolicy (fail closed)`), or the same beginning `tear down sandbox` for `k8s-sandbox` | Pod termination was not confirmed within the teardown bound, the delete or the post-create lookup failed, the Pod under the name was not the run's or a replacement still carried the policy's selector label, a create with an unknown outcome found no Pod, the policy delete failed, or (for `k8s-sandbox`) the backing Pod was still present after the Sandbox was gone. The cause names which. | Follow [Cleaning up retained objects](#cleaning-up-retained-objects). |
 | Exec/file I/O fails with API errors | The orchestrator lacks `pods/exec` create. | Apply [`rbac.yaml`](../../examples/k8s/rbac.yaml) (or grant the verb). |
 | Egress not actually confined on `kind` or EKS Auto Mode | kindnet does not enforce NetworkPolicy; Auto Mode does not until its network policy controller is enabled, and with the controller enabled and a `DefaultAllow` NodeClass startup traffic escaped a policy once. | Use a NetworkPolicy-enforcing CNI (Cilium, Calico); on Auto Mode enable enforcement with a `DefaultDeny` NodeClass (measured once; see the [Enforcement caveat](#enforcement-caveat--networkpolicy-may-be-accepted-but-not-enforced)), or use a runtime that removes the guest network, such as [`nitro-isolated`](#network-mode-none-on-this-runtime). |
+| `runtime diagnostics for executor.runtime "gvisor" failed: kernel_version: kernel version "..." does not end in gVisor's build stamp ...` or `... failed: sentry_meminfo: ...` | The `gvisor` RuntimeClass, or the node's runtime entry for its handler, does not run gVisor (for example a handler that is `runc`); or the gVisor build differs from the measured ones. | `kubectl get runtimeclass gvisor -o jsonpath='{.handler}'` prints `runsc` for a self-managed install (`gvisor` on GKE Sandbox, whose managed class is not to be replaced); check that the node's containerd entry for that handler runs `runsc`. See [gVisor runtime diagnostics](#gvisor-runtime-diagnostics) for what may differ on GKE Sandbox. |
 | Validation errors naming `executor.runtime="nitro-isolated"` | The run sets a network mode, resources, `sandboxIdentity` or `gitProxy` the runtime does not accept. | See [What the runtime accepts](#what-the-runtime-accepts); Nitro-specific run failures are under [Troubleshooting on Nitro](#troubleshooting-on-nitro). |
 
 ## Testing the executor against a real cluster
@@ -2208,9 +2312,10 @@ it, the probe uses the same kubeconfig resolution as a run:
 The executor's own unit tests run with `just test`. A separate
 **integration suite** in
 [`harness/internal/executor/k8s_test.go`](../../harness/internal/executor/k8s_test.go),
-[`k8s_nitro_integration_test.go`](../../harness/internal/executor/k8s_nitro_integration_test.go)
+[`k8s_nitro_integration_test.go`](../../harness/internal/executor/k8s_nitro_integration_test.go),
+[`k8s_runtimeprofile_integration_test.go`](../../harness/internal/executor/k8s_runtimeprofile_integration_test.go)
 and
-[`k8s_runtimeprofile_integration_test.go`](../../harness/internal/executor/k8s_runtimeprofile_integration_test.go),
+[`k8s_runtimediagnostics_gvisor_integration_test.go`](../../harness/internal/executor/k8s_runtimediagnostics_gvisor_integration_test.go),
 gated by the `integration_k8s` build tag and `STIRRUP_TEST_KUBECONFIG`,
 exercises the create→exec→file-I/O→delete lifecycle against a *live*
 cluster. A stock `kind` cluster proves manifest shape only; a real
@@ -2227,6 +2332,8 @@ defaulting to the kind-friendly values when a variable is unset:
 | `STIRRUP_TEST_NAMESPACE` | `default` | Sandbox namespace (use `stirrup-sandbox` for the restricted-PSS path). |
 | `STIRRUP_TEST_RUNTIME_CLASS` | *(empty)* | `executor.runtime` value for the generic tests (`gvisor` on GKE Sandbox — a no-RuntimeClass Pod is unschedulable on a fully tainted cluster). Runtime values equal RuntimeClass names except `nitro-isolated`, which the generic tests do not support; use `STIRRUP_TEST_NITRO_ISOLATED`. |
 | `STIRRUP_TEST_RUNTIME_CLASSES` | `,runc,gvisor` | Comma-separated `executor.runtime` values for `TestK8sRuntimeClass_Admitted` (e.g. `gvisor` alone on GKE). |
+| `STIRRUP_TEST_MISWIRED_GVISOR_CLASS` | *(unset → skip)* | Name of a RuntimeClass whose handler is `runc`. `TestK8sRuntimeDiagnostics_GVisorRejectsMiswiredClass` runs `executor.runtime: gvisor` on it and requires the [gVisor runtime diagnostics](#gvisor-runtime-diagnostics) to fail and the Pod and NetworkPolicy to be removed. Create the class under its own name rather than editing a shared `gvisor` class. With `STIRRUP_TEST_RUNTIME_CLASS=gvisor`, `TestK8sRuntimeDiagnostics_GVisorPassesOnGVisorPod` requires the diagnostics to pass. |
+| `STIRRUP_TEST_NON_GVISOR_RUNTIME` | *(unset → skip)* | `executor.runtime` value whose RuntimeClass handler is not `runsc` (for example `runc`). `TestK8sRuntimeDiagnostics_GVisorFailsOnNonGVisorPod` runs the gVisor runtime diagnostics on a Pod of that runtime and requires them to fail. The test never infers that a runtime is not gVisor from its name. |
 | `STIRRUP_TEST_NITRO_ISOLATED` | *(unset → skip)* | Set to run the Nitro group on an EKS cluster with Nitro Sandboxes, pinned by `STIRRUP_TEST_NITRO_INSTANCE_TYPE` and `STIRRUP_TEST_NITRO_ARCH`. In `TestK8sNitroIsolated_EndToEnd` the Pod passes the whole-Pod admission check and the runtime diagnostics, then the group runs the generic exec, timeout, process-tree kill, output-cap, file round-trip, writable-workspace and teardown checks, probes for a guest network with `wget` (an image without `wget` fails the probe), and logs the workspace capacity. Once the Pod is constructed, the subtests share a fresh context sized from the sum of their timeouts (including `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT`), and the Pod's lifetime is the readiness ceiling plus the one-minute exec-reachability bound plus that sum; the group logs the budget when it starts. With the defaults its bounds add up to about 20 minutes, so run it with `-timeout 30m` as in the example below. `TestK8sNitroIsolated_DiskMbBoundsTheGuestDisk` declares `diskMb: 1024` and checks that the workspace is no larger than that and more than three quarters of it, that a write beyond it fails with `No space left on device`, and that the sandbox stays usable afterwards. Both skip everywhere else; both passed on the 2026-11-13 EKS run (see [Status](#status)). |
 | `STIRRUP_TEST_NITRO_INSTANCE_TYPE` | `m5d.xlarge` | `node.kubernetes.io/instance-type` node selector for the Nitro group; pick a type from the [tested recipe](#tested-recipe). |
 | `STIRRUP_TEST_NITRO_ARCH` | `amd64` | `kubernetes.io/arch` node selector for the Nitro group. On `arm64` `TestK8sNitroIsolated_EndToEnd` fails its runtime diagnostics by design. |

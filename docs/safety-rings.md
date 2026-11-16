@@ -1271,7 +1271,7 @@ registered `RuntimeClass` for `k8s`. The closed `k8s` set is:
 |---|---|---|
 | `""` (default) | cluster-default RuntimeClass — often plain `runc`, **no** sandbox isolation (the executor logs a warning) | none |
 | `runc` | vanilla runc — process isolation only | none |
-| `gvisor` | [gVisor](https://gvisor.dev) user-space kernel (handler `runsc`) | install gVisor on the nodes; register a `gvisor` RuntimeClass |
+| `gvisor` | [gVisor](https://gvisor.dev) user-space kernel (handler `runsc`); on `k8s` the executor checks from inside the guest that gVisor answers ([gVisor runtime diagnostics](executors/k8s.md#gvisor-runtime-diagnostics)) | install gVisor on the nodes; register a `gvisor` RuntimeClass |
 | `kata-qemu` | [Kata](https://katacontainers.io) Containers, QEMU VM | install Kata; KVM on the nodes |
 | `kata-fc` | Kata, Firecracker VM | install Kata + a devmapper snapshotter; KVM |
 | `kata-clh` | Kata, Cloud Hypervisor VM | install Kata for Cloud Hypervisor; KVM |

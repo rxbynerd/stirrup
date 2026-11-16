@@ -256,7 +256,10 @@ checks only the Pod the controller creates, the Sandbox is created but
 never becomes Ready, and every `k8s-sandbox` run fails at the 5-minute
 readiness ceiling with a generic not-ready error. A policy that rewrote
 the field instead would go unnoticed, because this executor has no
-admission check.
+admission check. Nor does it run the
+[gVisor runtime diagnostics](k8s.md#gvisor-runtime-diagnostics) of the
+`k8s` executor, so a Sandbox whose `gvisor` RuntimeClass does not run
+gVisor also goes unnoticed.
 
 When the Sandbox delete fails, the Sandbox or its backing Pod is not
 confirmed gone within the bound, or the policy delete fails, `Close`

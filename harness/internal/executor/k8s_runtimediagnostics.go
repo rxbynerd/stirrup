@@ -54,10 +54,17 @@ const (
 	nitroDMIProductNamePath = "/sys/class/dmi/id/product_name"
 	procNetDevPath          = "/proc/net/dev"
 	procNetRoutePath        = "/proc/net/route"
+	procVersionPath         = "/proc/version"
+	gvisorSentryMeminfoPath = "/proc/sentry-meminfo"
 
 	// nitroGuestDMISuffix ends the DMI product name a Nitro Sandbox guest
 	// reports (for example "m5d.enclave").
 	nitroGuestDMISuffix = ".enclave"
+
+	// gvisorKernelBuildStamp ends /proc/version under gVisor. The release
+	// before it varies with the gVisor version and configuration; the
+	// build stamp is a constant of the sentry.
+	gvisorKernelBuildStamp = " #1 SMP Sun Jan 10 15:06:54 PST 2016"
 
 	diagnosticCheckAdmission  = "admitted_pod"
 	diagnosticCheckExec       = "diagnostic_exec"
@@ -65,6 +72,8 @@ const (
 	diagnosticCheckDMI        = "dmi_product_name"
 	diagnosticCheckInterfaces = "network_interfaces"
 	diagnosticCheckRoutes     = "route_table"
+	diagnosticCheckKernel     = "kernel_version"
+	diagnosticCheckSentry     = "sentry_meminfo"
 
 	// guestFileDumpOutputLimit bounds the diagnostic exec's stdout and
 	// stderr; the files read are a few hundred bytes on a sandbox guest.
@@ -201,42 +210,58 @@ func diagnoseNitroIsolatedGuest(ctx context.Context, core *podExecCore) (map[str
 		return nil, err
 	}
 	observed := map[string]string{}
-	var failures []*k8sRuntimeDiagnosticError
-
-	if failure := checkNitroDMIProductName(files[nitroDMIProductNamePath], observed); failure != nil {
-		failures = append(failures, failure)
-	}
-	if failure := checkIsolatedInterfaces(files[procNetDevPath], observed); failure != nil {
-		failures = append(failures, failure)
-	}
-	if failure := checkEmptyRouteTable(files[procNetRoutePath], observed); failure != nil {
-		failures = append(failures, failure)
-	}
-	if len(failures) > 0 {
-		return observed, failures[0]
-	}
-	return observed, nil
+	return observed, firstDiagnosticFailure(
+		checkNitroDMIProductName(files[nitroDMIProductNamePath], observed),
+		checkIsolatedInterfaces(files[procNetDevPath], observed),
+		checkEmptyRouteTable(files[procNetRoutePath], observed),
+	)
 }
 
-// checkNitroDMIProductName requires the product name, the file's first line
-// trimmed, to end in nitroGuestDMISuffix. The kernel prints one line, so a
-// second non-empty line fails as unexpected output.
-func checkNitroDMIProductName(file guestFile, observed map[string]string) *k8sRuntimeDiagnosticError {
-	if !file.present {
-		return &k8sRuntimeDiagnosticError{check: diagnosticCheckDMI, reason: nitroDMIProductNamePath + " is absent, unreadable or not a regular file"}
-	}
-	nonEmpty := 0
-	for _, line := range file.lines {
-		if strings.TrimSpace(line) != "" {
-			nonEmpty++
+// firstDiagnosticFailure returns the first non-nil failure, or nil. Callers
+// evaluate every check before calling it so observed is complete.
+func firstDiagnosticFailure(failures ...*k8sRuntimeDiagnosticError) error {
+	for _, failure := range failures {
+		if failure != nil {
+			return failure
 		}
 	}
-	if nonEmpty > 1 {
-		return &k8sRuntimeDiagnosticError{check: diagnosticCheckOutput, reason: fmt.Sprintf("%s has %d non-empty lines; the kernel prints one", nitroDMIProductNamePath, nonEmpty)}
+	return nil
+}
+
+// absentFileFailure is the failure for a guest file the dump reported as
+// missing.
+func absentFileFailure(check, path string) *k8sRuntimeDiagnosticError {
+	return &k8sRuntimeDiagnosticError{check: check, reason: path + " is absent, unreadable or not a regular file"}
+}
+
+// singleLineFileValue returns the trimmed first non-empty line of a file the
+// kernel prints as one line. A second non-empty line fails as unexpected
+// output; an absent file fails as check.
+func singleLineFileValue(file guestFile, check, path string) (string, *k8sRuntimeDiagnosticError) {
+	if !file.present {
+		return "", absentFileFailure(check, path)
 	}
-	name := ""
-	if len(file.lines) > 0 {
-		name = strings.TrimSpace(file.lines[0])
+	var values []string
+	for _, line := range file.lines {
+		if value := strings.TrimSpace(line); value != "" {
+			values = append(values, value)
+		}
+	}
+	if len(values) > 1 {
+		return "", &k8sRuntimeDiagnosticError{check: diagnosticCheckOutput, reason: fmt.Sprintf("%s has %d non-empty lines; the kernel prints one", path, len(values))}
+	}
+	if len(values) == 0 {
+		return "", nil
+	}
+	return values[0], nil
+}
+
+// checkNitroDMIProductName requires the product name to end in
+// nitroGuestDMISuffix.
+func checkNitroDMIProductName(file guestFile, observed map[string]string) *k8sRuntimeDiagnosticError {
+	name, failure := singleLineFileValue(file, diagnosticCheckDMI, nitroDMIProductNamePath)
+	if failure != nil {
+		return failure
 	}
 	observed["dmiProductName"] = clusterText(name)
 	if !strings.HasSuffix(name, nitroGuestDMISuffix) {
@@ -250,7 +275,7 @@ func checkNitroDMIProductName(file guestFile, observed map[string]string) *k8sRu
 
 func checkIsolatedInterfaces(file guestFile, observed map[string]string) *k8sRuntimeDiagnosticError {
 	if !file.present {
-		return &k8sRuntimeDiagnosticError{check: diagnosticCheckInterfaces, reason: procNetDevPath + " is absent, unreadable or not a regular file"}
+		return absentFileFailure(diagnosticCheckInterfaces, procNetDevPath)
 	}
 	names, err := parseProcNetDevInterfaces(file.lines)
 	if err != nil {
@@ -275,7 +300,7 @@ func checkIsolatedInterfaces(file guestFile, observed map[string]string) *k8sRun
 
 func checkEmptyRouteTable(file guestFile, observed map[string]string) *k8sRuntimeDiagnosticError {
 	if !file.present {
-		return &k8sRuntimeDiagnosticError{check: diagnosticCheckRoutes, reason: procNetRoutePath + " is absent, unreadable or not a regular file"}
+		return absentFileFailure(diagnosticCheckRoutes, procNetRoutePath)
 	}
 	routes, err := parseProcNetRouteEntries(file.lines)
 	if err != nil {
@@ -288,6 +313,56 @@ func checkEmptyRouteTable(file guestFile, observed map[string]string) *k8sRuntim
 			reason: fmt.Sprintf("the guest has %d IPv4 route entries (first: %s)", len(routes), clusterText(routes[0])),
 		}
 	}
+	return nil
+}
+
+// diagnoseGVisorGuest checks, from inside the guest, that the Pod runs on
+// the gVisor sentry rather than the host kernel: /proc/version ends in
+// gVisor's build stamp, and /proc/sentry-meminfo, which no Linux kernel
+// provides, is present. The image supplies the shell, so this is a
+// configuration diagnostic, not attestation. Both checks are evaluated so
+// observed is complete; the first failure is returned.
+func diagnoseGVisorGuest(ctx context.Context, core *podExecCore) (map[string]string, error) {
+	files, err := readGuestFiles(ctx, core, procVersionPath, gvisorSentryMeminfoPath)
+	if err != nil {
+		return nil, err
+	}
+	observed := map[string]string{}
+	return observed, firstDiagnosticFailure(
+		checkGVisorKernelVersion(files[procVersionPath], observed),
+		checkGVisorSentryMeminfo(files[gvisorSentryMeminfoPath], observed),
+	)
+}
+
+// checkGVisorKernelVersion requires /proc/version to start with
+// "Linux version " and end in gvisorKernelBuildStamp.
+func checkGVisorKernelVersion(file guestFile, observed map[string]string) *k8sRuntimeDiagnosticError {
+	version, failure := singleLineFileValue(file, diagnosticCheckKernel, procVersionPath)
+	if failure != nil {
+		return failure
+	}
+	observed["kernelVersion"] = clusterText(version)
+	if !strings.HasPrefix(version, "Linux version ") || !strings.HasSuffix(version, gvisorKernelBuildStamp) {
+		return &k8sRuntimeDiagnosticError{
+			check: diagnosticCheckKernel,
+			reason: fmt.Sprintf("kernel version %q does not end in gVisor's build stamp %q, so the Pod is not running under gVisor",
+				clusterText(version), strings.TrimSpace(gvisorKernelBuildStamp)),
+		}
+	}
+	return nil
+}
+
+// checkGVisorSentryMeminfo requires /proc/sentry-meminfo to exist; its
+// content, the sentry's heap statistics, is not read.
+func checkGVisorSentryMeminfo(file guestFile, observed map[string]string) *k8sRuntimeDiagnosticError {
+	if !file.present {
+		observed["sentryMeminfo"] = "absent"
+		return &k8sRuntimeDiagnosticError{
+			check:  diagnosticCheckSentry,
+			reason: gvisorSentryMeminfoPath + " is absent, unreadable or not a regular file, so the Pod is not running under gVisor",
+		}
+	}
+	observed["sentryMeminfo"] = "present"
 	return nil
 }
 
