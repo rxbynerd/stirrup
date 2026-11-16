@@ -70,6 +70,10 @@ spec:
       # not reach the Kubernetes API; the token is never mounted regardless of
       # the ServiceAccount named.
       automountServiceAccountToken: false
+      # ALWAYS false (buildSandboxPodSpec). Service links would inject a
+      # <SERVICE>_SERVICE_HOST and _SERVICE_PORT variable for every Service in
+      # the namespace, exposing the namespace's service topology to the agent.
+      enableServiceLinks: false
       # runtimeClassName: gvisor is FORCED by applyAgentSandboxAdmissionDeltas —
       # the Agent Sandbox path is gVisor-only and overrides any caller runtime.
       # Required by GKE secure-sandbox-policy

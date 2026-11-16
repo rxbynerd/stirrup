@@ -56,7 +56,7 @@ spec:
   # Kubernetes API, so the token is never mounted. Do not rely on the
   # orchestrator's RBAC leaking in.
   automountServiceAccountToken: false
-  # ALWAYS false (buildSandboxPod). Service links would inject a
+  # ALWAYS false (buildSandboxPodSpec). Service links would inject a
   # <SERVICE>_SERVICE_HOST and _SERVICE_PORT variable for every Service in the
   # namespace, exposing the namespace's service topology to the agent.
   enableServiceLinks: false
