@@ -369,6 +369,11 @@ jobs:
     # still dual-publish, and free continuous CVE re-evaluation
     # against loaded SBOMs continues for everything already in GAR.
     if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && github.repository == 'rxbynerd/stirrup'
+    # One build per commit at a time, so the sha- tag lookup and push
+    # cannot race.
+    concurrency:
+      group: publish-container-${{ github.sha }}
+      cancel-in-progress: false
     # statuses: write records each sha-<commit> tag's digest as a commit
     # status, which image-pins.yml compares against the registry.
     permissions:
@@ -504,6 +509,9 @@ jobs:
     # executors run agent workloads in — it contains no Go build, so
     # there is no VERSION/COMMIT build-arg step to mirror.
     if: (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' && github.repository == 'rxbynerd/stirrup'
+    concurrency:
+      group: publish-sandbox-container-${{ github.sha }}
+      cancel-in-progress: false
     # statuses: write records each sha-<commit> tag's digest as a commit
     # status, which image-pins.yml compares against the registry.
     permissions:

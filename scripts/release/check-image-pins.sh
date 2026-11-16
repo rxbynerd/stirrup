@@ -6,8 +6,10 @@
 # asset, after verifying that asset against the release's signed
 # SHA256SUMS and the image against its provenance attestation.
 # sha-<commit> tags are checked against the commit status ci.yml writes
-# on the commit when it first pushes the tag; tags without a status are
-# counted and reported, not failed.
+# on the commit when it first pushes the tag: the oldest such status is
+# the record, and a context holding more than one digest, or a status not
+# written by GitHub Actions, fails. Tags without a status are counted and
+# reported, not failed.
 #
 # Needs gh (authenticated through GH_TOKEN), jq, curl and cosign, and
 # GITHUB_REPOSITORY set to <owner>/<repo>.
@@ -19,6 +21,7 @@ readonly OIDC_ISSUER=https://token.actions.githubusercontent.com
 readonly SEMVER_TAG='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
 readonly DIGEST='^sha256:[0-9a-f]{64}$'
 readonly BATCH=50
+readonly STATUS_WRITER='github-actions[bot]'
 
 registry=$(cd "$(dirname "$0")" && pwd)/registry.sh
 workdir=$(mktemp -d)
@@ -67,7 +70,7 @@ check_release() {
 
   if ! cosign verify-blob \
     --bundle "$dir/SHA256SUMS.sigstore.json" \
-    --certificate-identity "https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/${tag}" \
+    --certificate-identity "https://github.com/${REPO}/.github/workflows/_sign-release.yml@refs/tags/${tag}" \
     --certificate-oidc-issuer "$OIDC_ISSUER" \
     "$dir/SHA256SUMS"; then
     fail "release ${tag}: the SHA256SUMS signature does not verify"
@@ -92,7 +95,7 @@ check_release() {
       compare_digest "$ref" "$want"
       gh attestation verify "oci://${image}@${want}" \
         --repo "$REPO" \
-        --signer-workflow "${REPO}/.github/workflows/release.yml" \
+        --cert-identity "https://github.com/${REPO}/.github/workflows/_sign-release.yml@refs/tags/${tag}" \
         --source-ref "refs/tags/${tag}" \
         --deny-self-hosted-runners >/dev/null ||
         fail "release ${tag}: no verifiable provenance attestation for ${image}@${want}"
@@ -101,10 +104,28 @@ check_release() {
   done
 }
 
+# recorded_digest <commit> <context> prints the digest the oldest status
+# in <context> records, after checking every status in that context
+# names the same digest and was written by GitHub Actions.
+recorded_digest() {
+  local commit=$1 context=$2 statuses
+  statuses=$(gh api --paginate "repos/${REPO}/commits/${commit}/statuses" |
+    jq -sc --arg c "$context" '[.[][] | select(.context == $c) | {d: .description, w: .creator.login}]') || return 1
+  if [ "$(jq -r '[.[].d] | unique | length' <<<"$statuses")" != 1 ]; then
+    echo "${context} on ${commit} records more than one digest: $(jq -c '[.[].d] | unique' <<<"$statuses")" >&2
+    return 1
+  fi
+  if [ "$(jq -r --arg w "$STATUS_WRITER" '[.[] | select(.w != $w)] | length' <<<"$statuses")" != 0 ]; then
+    echo "${context} on ${commit} has a status not written by ${STATUS_WRITER}" >&2
+    return 1
+  fi
+  jq -r '.[-1].d' <<<"$statuses"
+}
+
 # check_commit_tags <image> compares every sha-<commit> tag with the
 # digest recorded in the image-digest/<image name> commit status.
 check_commit_tags() {
-  local image=$1 context="image-digest/${1##*/}" list="$workdir/tags" tags=() batch query i j short want
+  local image=$1 context="image-digest/${1##*/}" list="$workdir/tags" tags=() batch query i j short want latest commit
   "$registry" tags "$image" >"$list" || {
     fail "could not list the tags of ${image}"
     return
@@ -119,7 +140,7 @@ check_commit_tags() {
     query='query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {'
     for j in "${!batch[@]}"; do
       short=${batch[j]#sha-}
-      query+=" c${j}: object(expression: \"${short}\") { ... on Commit { status { context(name: \"${context}\") { description } } } }"
+      query+=" c${j}: object(expression: \"${short}\") { ... on Commit { oid status { context(name: \"${context}\") { description } } } }"
     done
     query+=' } }'
     if ! gh api graphql -f query="$query" -f owner="${REPO%/*}" -f name="${REPO#*/}" >"$workdir/statuses.json"; then
@@ -127,9 +148,14 @@ check_commit_tags() {
       return
     fi
     for j in "${!batch[@]}"; do
-      want=$(jq -r --arg k "c${j}" '.data.repository[$k].status.context.description // empty' "$workdir/statuses.json")
-      if [ -z "$want" ]; then
+      latest=$(jq -r --arg k "c${j}" '.data.repository[$k].status.context.description // empty' "$workdir/statuses.json")
+      if [ -z "$latest" ]; then
         unrecorded=$((unrecorded + 1))
+        continue
+      fi
+      commit=$(jq -r --arg k "c${j}" '.data.repository[$k].oid' "$workdir/statuses.json")
+      if ! want=$(recorded_digest "$commit" "$context"); then
+        fail "${image}:${batch[j]}: the recorded digest is not trustworthy (see above)"
       elif [[ "$want" =~ $DIGEST ]]; then
         compare_digest "${image}:${batch[j]}" "$want"
       else
