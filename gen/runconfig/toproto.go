@@ -536,6 +536,7 @@ func (e *encoder) traceEmitterConfig(c *types.TraceEmitterConfig) *pb.TraceEmitt
 func (e *encoder) toolsConfig(c *types.ToolsConfig) *pb.ToolsConfig {
 	pc := &pb.ToolsConfig{
 		BuiltIn:               slices.Clone(c.BuiltIn),
+		NoBuiltIn:             c.NoBuiltIn,
 		MaxResultBytes:        e.int32("tools.maxResultBytes", c.MaxResultBytes),
 		Profile:               c.Profile,
 		ProtectedWriteTargets: slices.Clone(c.ProtectedWriteTargets),

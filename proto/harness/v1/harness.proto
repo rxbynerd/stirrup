@@ -2737,7 +2737,16 @@ message ToolsConfig {
   //   "git_changed_files"   — changed paths with their name-status letter.
   //   "git_diff"            — unified diff of the working tree or index.
   //   "git_show"            — a git revision, or a file at that revision.
+  //
+  // An empty list cannot express "no built-in tools"; set no_built_in.
   repeated string built_in = 1;
+
+  // Optional. Registers no built-in tool, for a tool-less run such as a
+  // structured-output classification. Satisfies the read-only modes'
+  // requirement for an explicit tool choice. Rejected together with a
+  // non-empty built_in. mcp_servers and control_plane tools still
+  // register when set. Mirrors RunConfig `tools.noBuiltIn`.
+  bool no_built_in = 13;
 
   // Optional. MCP (Model Context Protocol) server connections for remote
   // tool discovery. Tools from MCP servers are prefixed as

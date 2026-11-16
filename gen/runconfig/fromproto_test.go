@@ -1473,6 +1473,33 @@ func TestRunConfigFromProto_LazyLoadingPreserved(t *testing.T) {
 	})
 }
 
+func TestRunConfigFromProto_NoBuiltInPreserved(t *testing.T) {
+	t.Run("marker survives the wire", func(t *testing.T) {
+		must := require.New(t)
+		raw, err := proto.Marshal(&pb.RunConfig{Tools: &pb.ToolsConfig{NoBuiltIn: true}})
+		must.NoError(err, "marshal")
+		var decoded pb.RunConfig
+		must.NoError(proto.Unmarshal(raw, &decoded), "unmarshal")
+
+		rc := runConfigFromProto(&decoded)
+		must.True(rc.Tools.NoBuiltIn)
+		must.Empty(rc.Tools.BuiltIn)
+		must.False(rc.Tools.BuiltInEnabled("web_fetch"))
+	})
+
+	t.Run("an empty built_in list decodes as absent", func(t *testing.T) {
+		must := require.New(t)
+		raw, err := proto.Marshal(&pb.RunConfig{Tools: &pb.ToolsConfig{BuiltIn: []string{}}})
+		must.NoError(err, "marshal")
+		var decoded pb.RunConfig
+		must.NoError(proto.Unmarshal(raw, &decoded), "unmarshal")
+
+		rc := runConfigFromProto(&decoded)
+		must.False(rc.Tools.NoBuiltIn)
+		must.True(rc.Tools.BuiltInEnabled("web_fetch"), "an empty list selects every built-in, so it cannot mean none")
+	})
+}
+
 func TestRunConfigFromProto_TraceArchivePreserved(t *testing.T) {
 	t.Run("every field", func(t *testing.T) {
 		must := require.New(t)

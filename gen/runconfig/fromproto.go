@@ -600,6 +600,7 @@ func dynamicContextFromProto(pc map[string]*pb.DynamicContextValue) map[string]t
 func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 	tc := types.ToolsConfig{
 		BuiltIn:        slices.Clone(pc.BuiltIn),
+		NoBuiltIn:      pc.GetNoBuiltIn(),
 		MaxResultBytes: int(pc.MaxResultBytes),
 		Profile:        pc.GetProfile(),
 	}
