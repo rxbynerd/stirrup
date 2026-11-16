@@ -1123,21 +1123,36 @@ type ResourceLimits struct {
 	DiskMB   int     `json:"diskMb"`
 	PIDs     int     `json:"pids"`
 	// ScratchMB caps the sandbox's scratch directory, which holds HOME and
-	// TMPDIR; zero selects DefaultScratchMB.
+	// TMPDIR; zero selects the default EffectiveScratchMB describes.
 	ScratchMB int `json:"scratchMb,omitempty"`
 }
 
 // DefaultScratchMB is the scratch size a sandbox gets when
-// executor.resources.scratchMb is unset.
+// executor.resources.scratchMb is unset and the limit its executor charges
+// scratch against (see ScratchLimitErrors) is unset or larger.
 const DefaultScratchMB = 1024
 
-// EffectiveScratchMB is ScratchMB, or DefaultScratchMB when r is nil or
-// ScratchMB is not positive.
-func (r *ResourceLimits) EffectiveScratchMB() int {
-	if r == nil || r.ScratchMB <= 0 {
+// EffectiveScratchMB is the scratch size for executorType: ScratchMB when
+// positive, otherwise DefaultScratchMB capped at memoryMb on "container"
+// and at diskMb on "k8s" and "k8s-sandbox" when that limit is set.
+func (r *ResourceLimits) EffectiveScratchMB(executorType string) int {
+	if r == nil {
 		return DefaultScratchMB
 	}
-	return r.ScratchMB
+	if r.ScratchMB > 0 {
+		return r.ScratchMB
+	}
+	charged := 0
+	switch {
+	case executorType == "container":
+		charged = r.MemoryMB
+	case IsK8sFamily(executorType):
+		charged = r.DiskMB
+	}
+	if charged > 0 {
+		return min(DefaultScratchMB, charged)
+	}
+	return DefaultScratchMB
 }
 
 // DefaultSandboxIdentityEnvVar is the variable a sandbox identity token is
@@ -6424,6 +6439,17 @@ var sandboxIdentityCapableExecutors = map[string]bool{
 // charset check rather than a semantic denylist.
 var posixEnvVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// validateSandboxEnvVarNotReserved rejects a token variable named after one
+// the sandboxing executors set themselves: their HOME and TMPDIR come last
+// in the sandbox environment, so a token under either name would never be
+// delivered.
+func validateSandboxEnvVarNotReserved(field, name string, errs *[]string) {
+	if name == "HOME" || name == "TMPDIR" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s %q is reserved: the sandboxing executors set it to a directory under /scratch", field, name))
+	}
+}
+
 // validateSandboxIdentity enforces the cross-field invariants on
 // ExecutorConfig.SandboxIdentity and .GitProxy. Every rule below is gated
 // on their presence, so a config with neither set validates cleanly
@@ -6459,6 +6485,7 @@ func validateSandboxIdentity(config *RunConfig, errs *[]string) {
 			*errs = append(*errs, fmt.Sprintf(
 				"executor.sandboxIdentity.envVar %q must be a valid POSIX environment variable name", si.EnvVar))
 		}
+		validateSandboxEnvVarNotReserved("executor.sandboxIdentity.envVar", si.EnvVar, errs)
 	}
 
 	if gp != nil {
@@ -6479,6 +6506,7 @@ func validateSandboxIdentity(config *RunConfig, errs *[]string) {
 			*errs = append(*errs, fmt.Sprintf(
 				"executor.gitProxy.tokenEnvVar %q must be a valid POSIX environment variable name", gp.TokenEnvVar))
 		}
+		validateSandboxEnvVarNotReserved("executor.gitProxy.tokenEnvVar", gp.TokenEnvVar, errs)
 
 		if si == nil {
 			// v1's only token source is control-plane issuance via
@@ -6584,19 +6612,28 @@ func ResourceLimitErrors(r *ResourceLimits) []string {
 	case r.CPUs < 0:
 		errs = append(errs, fmt.Sprintf("executor.resources.cpus must not be negative (got %v)", r.CPUs))
 	}
-	if r.MemoryMB < 0 {
-		errs = append(errs, fmt.Sprintf("executor.resources.memoryMb must not be negative (got %d)", r.MemoryMB))
-	}
-	if r.DiskMB < 0 {
-		errs = append(errs, fmt.Sprintf("executor.resources.diskMb must not be negative (got %d)", r.DiskMB))
-	}
+	errs = append(errs, sizeLimitErrors("memoryMb", r.MemoryMB)...)
+	errs = append(errs, sizeLimitErrors("diskMb", r.DiskMB)...)
 	if r.PIDs < 0 {
 		errs = append(errs, fmt.Sprintf("executor.resources.pids must not be negative (got %d)", r.PIDs))
 	}
-	if r.ScratchMB < 0 {
-		errs = append(errs, fmt.Sprintf("executor.resources.scratchMb must not be negative (got %d)", r.ScratchMB))
-	}
+	errs = append(errs, sizeLimitErrors("scratchMb", r.ScratchMB)...)
 	return errs
+}
+
+// MaxResourceMB bounds every MiB-valued resource limit (1 TiB). The
+// executors convert a limit to bytes, and a larger value would overflow
+// into a negative or zero size, which the engines read as no limit.
+const MaxResourceMB = 1 << 20
+
+func sizeLimitErrors(field string, mb int) []string {
+	switch {
+	case mb < 0:
+		return []string{fmt.Sprintf("executor.resources.%s must not be negative (got %d)", field, mb)}
+	case mb > MaxResourceMB:
+		return []string{fmt.Sprintf("executor.resources.%s must not exceed %d (got %d)", field, MaxResourceMB, mb)}
+	}
+	return nil
 }
 
 // ScratchLimitErrors returns a message when an explicit scratchMb exceeds

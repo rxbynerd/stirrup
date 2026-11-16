@@ -28,6 +28,7 @@ func TestBuildSandboxPodSpec_MountsSizedScratchAndRunsAsOneUserAndGroup(t *testi
 	}{
 		{name: "default size", resources: nil, wantSize: "1Gi"},
 		{name: "explicit size", resources: &types.ResourceLimits{ScratchMB: 3072}, wantSize: "3Gi"},
+		{name: "default capped at the disk limit", resources: &types.ResourceLimits{DiskMB: 512}, wantSize: "512Mi"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

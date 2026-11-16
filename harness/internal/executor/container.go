@@ -200,7 +200,7 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 			"/tmp":     fmt.Sprintf("%s,size=%d", tmpfsMountOpts, tmpfsTmpSize),
 			"/dev/shm": fmt.Sprintf("%s,size=%d", tmpfsMountOpts, shmSize),
 			sandboxScratchDir: fmt.Sprintf("%s,size=%d", scratchMountOpts,
-				int64(cfg.Resources.EffectiveScratchMB())*1024*1024),
+				int64(cfg.Resources.EffectiveScratchMB("container"))*1024*1024),
 		},
 	}
 	if cfg.SandboxIdentityToken {

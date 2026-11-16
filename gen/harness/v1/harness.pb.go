@@ -5886,9 +5886,10 @@ type ResourceLimits struct {
 	// Maximum number of processes/threads.
 	Pids int32 `protobuf:"varint,4,opt,name=pids,proto3" json:"pids,omitempty"`
 	// Size cap in megabytes of the sandbox's /scratch directory, which holds
-	// HOME and TMPDIR. 0 selects the default (1024). A tmpfs on "container",
-	// counted against memory_mb; a disk-backed emptyDir on "k8s" and
-	// "k8s-sandbox", counted against disk_mb and enforced by eviction.
+	// HOME and TMPDIR: a tmpfs on "container", counted against memory_mb,
+	// and a disk-backed emptyDir on "k8s" and "k8s-sandbox", counted against
+	// disk_mb and enforced by eviction. 0 selects 1024 or the limit it is
+	// counted against, whichever is smaller.
 	ScratchMb     int32 `protobuf:"varint,5,opt,name=scratch_mb,json=scratchMb,proto3" json:"scratch_mb,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

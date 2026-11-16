@@ -2558,9 +2558,10 @@ message ResourceLimits {
   int32 pids = 4;
 
   // Size cap in megabytes of the sandbox's /scratch directory, which holds
-  // HOME and TMPDIR. 0 selects the default (1024). A tmpfs on "container",
-  // counted against memory_mb; a disk-backed emptyDir on "k8s" and
-  // "k8s-sandbox", counted against disk_mb and enforced by eviction.
+  // HOME and TMPDIR: a tmpfs on "container", counted against memory_mb,
+  // and a disk-backed emptyDir on "k8s" and "k8s-sandbox", counted against
+  // disk_mb and enforced by eviction. 0 selects 1024 or the limit it is
+  // counted against, whichever is smaller.
   int32 scratch_mb = 5;
 }
 

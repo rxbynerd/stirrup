@@ -2699,13 +2699,38 @@ func TestScratchLimitErrors_ChecksTheLimitEachExecutorChargesScratchTo(t *testin
 	}
 }
 
-func TestResourceLimits_EffectiveScratchMBDefaultsWhenUnset(t *testing.T) {
+func TestResourceLimits_EffectiveScratchMB_DefaultCappedAtTheChargedLimit(t *testing.T) {
+	cases := []struct {
+		name     string
+		execType string
+		r        *ResourceLimits
+		want     int
+	}{
+		{name: "nil resources", execType: "container", r: nil, want: DefaultScratchMB},
+		{name: "unset", execType: "container", r: &ResourceLimits{}, want: DefaultScratchMB},
+		{name: "negative", execType: "container", r: &ResourceLimits{ScratchMB: -1}, want: DefaultScratchMB},
+		{name: "explicit", execType: "container", r: &ResourceLimits{ScratchMB: 4096}, want: 4096},
+		{name: "container default capped at memory", execType: "container", r: &ResourceLimits{MemoryMB: 256}, want: 256},
+		{name: "container default ignores disk", execType: "container", r: &ResourceLimits{DiskMB: 256}, want: DefaultScratchMB},
+		{name: "k8s default capped at disk", execType: "k8s", r: &ResourceLimits{DiskMB: 512}, want: 512},
+		{name: "k8s-sandbox default ignores memory", execType: "k8s-sandbox", r: &ResourceLimits{MemoryMB: 256}, want: DefaultScratchMB},
+		{name: "large limit keeps the default", execType: "k8s", r: &ResourceLimits{DiskMB: 8192}, want: DefaultScratchMB},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			check := assert.New(t)
+			check.Equal(tc.want, tc.r.EffectiveScratchMB(tc.execType))
+		})
+	}
+}
+
+func TestResourceLimitErrors_RejectsSizesAboveTheBound(t *testing.T) {
 	check := assert.New(t)
-	var nilLimits *ResourceLimits
-	check.Equal(DefaultScratchMB, nilLimits.EffectiveScratchMB())
-	check.Equal(DefaultScratchMB, (&ResourceLimits{}).EffectiveScratchMB())
-	check.Equal(DefaultScratchMB, (&ResourceLimits{ScratchMB: -1}).EffectiveScratchMB())
-	check.Equal(4096, (&ResourceLimits{ScratchMB: 4096}).EffectiveScratchMB())
+	errs := ResourceLimitErrors(&ResourceLimits{MemoryMB: MaxResourceMB + 1, DiskMB: MaxResourceMB, ScratchMB: 1 << 44})
+	check.Equal([]string{
+		"executor.resources.memoryMb must not exceed 1048576 (got 1048577)",
+		"executor.resources.scratchMb must not exceed 1048576 (got 17592186044416)",
+	}, errs)
 }
 
 func TestValidateRunConfig_APIKeyHeader_Rejected(t *testing.T) {
@@ -8322,6 +8347,27 @@ func TestValidateRunConfig_GitProxyURLValidation(t *testing.T) {
 				return
 			}
 			must.ErrorContains(err, tc.wantErr)
+		})
+	}
+}
+
+func TestValidateRunConfig_SandboxIdentityEnvVarRejectsScratchVariables(t *testing.T) {
+	for _, name := range []string{"HOME", "TMPDIR"} {
+		t.Run("sandboxIdentity "+name, func(t *testing.T) {
+			must := require.New(t)
+			c := sandboxIdentityValidConfig()
+			c.Executor.GitProxy = nil
+			c.Executor.SandboxIdentity.EnvVar = name
+
+			must.ErrorContains(ValidateRunConfig(c), fmt.Sprintf("executor.sandboxIdentity.envVar %q is reserved", name))
+		})
+		t.Run("gitProxy "+name, func(t *testing.T) {
+			must := require.New(t)
+			c := sandboxIdentityValidConfig()
+			c.Executor.SandboxIdentity.EnvVar = name
+			c.Executor.GitProxy.TokenEnvVar = name
+
+			must.ErrorContains(ValidateRunConfig(c), fmt.Sprintf("executor.gitProxy.tokenEnvVar %q is reserved", name))
 		})
 	}
 }

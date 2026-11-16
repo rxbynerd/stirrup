@@ -407,7 +407,7 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraE
 			// ephemeral storage.
 			Name: k8sScratchVolume,
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
-				SizeLimit: ptr.To(resource.MustParse(fmt.Sprintf("%dMi", cfg.Resources.EffectiveScratchMB()))),
+				SizeLimit: ptr.To(resource.MustParse(fmt.Sprintf("%dMi", cfg.Resources.EffectiveScratchMB("k8s")))),
 			}},
 		},
 	}
