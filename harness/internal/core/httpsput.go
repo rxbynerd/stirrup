@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/rxbynerd/stirrup/harness/internal/httpsput"
@@ -16,8 +17,20 @@ import (
 func checkHTTPSPutDestinations(ctx context.Context, config *types.RunConfig, secrets security.SecretStore) error {
 	if target := config.Executor.WorkspaceExportHTTPSPut; target != nil {
 		if _, err := httpsput.Resolve(ctx, secrets, target); err != nil {
-			return fmt.Errorf("executor.workspaceExportHttpsPut: %w", err)
+			return httpsPutDestinationError("executor.workspaceExportHttpsPut", err)
 		}
 	}
 	return nil
+}
+
+// httpsPutDestinationError prefixes a destination's resolve failure with
+// field. The failure of a file-backed reference is a HostFileError, so a
+// control plane cannot use the reference to learn whether a host file
+// exists, is readable, or holds a URL.
+func httpsPutDestinationError(field string, err error) error {
+	var refErr *httpsput.RefError
+	if errors.As(err, &refErr) && security.IsFileSecretRef(refErr.Ref) {
+		return &HostFileError{Field: field + "." + refErr.Field, Err: err}
+	}
+	return fmt.Errorf("%s: %w", field, err)
 }

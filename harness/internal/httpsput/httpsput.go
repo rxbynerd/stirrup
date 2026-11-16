@@ -66,31 +66,55 @@ func Resolve(ctx context.Context, secrets security.SecretStore, cfg *types.HTTPS
 	}
 	raw, err := secrets.Resolve(ctx, cfg.URLRef)
 	if err != nil {
-		return Target{}, fmt.Errorf("resolve urlRef: %w", err)
+		return Target{}, &RefError{Field: "urlRef", Ref: cfg.URLRef, Err: fmt.Errorf("resolve urlRef: %w", err)}
 	}
 	u, err := parseDestination(raw)
 	if err != nil {
-		return Target{}, fmt.Errorf("urlRef resolved to an unusable URL: %w", err)
+		return Target{}, &RefError{Field: "urlRef", Ref: cfg.URLRef, Err: fmt.Errorf("urlRef resolved to an unusable URL: %w", err)}
 	}
 
 	headers := http.Header{}
 	for name, value := range cfg.Headers {
+		ref := ""
 		if strings.HasPrefix(value, "secret://") {
-			resolved, err := secrets.Resolve(ctx, value)
+			ref = value
+			resolved, err := secrets.Resolve(ctx, ref)
 			if err != nil {
-				return Target{}, fmt.Errorf("resolve header %q: %w", name, err)
+				return Target{}, headerRefError(name, ref, fmt.Errorf("resolve header %q: %w", name, err))
 			}
 			value = strings.TrimSpace(resolved)
 		}
 		switch {
 		case value == "" || !types.ValidHTTPSPutHeaderValue(value):
-			return Target{}, fmt.Errorf("header %q resolved to an empty value or one with a control character", name)
+			return Target{}, headerRefError(name, ref, fmt.Errorf("header %q resolved to an empty value or one with a control character", name))
 		case len(value) > types.MaxHTTPSPutHeaderValueBytes:
-			return Target{}, fmt.Errorf("header %q resolved to more than %d bytes", name, types.MaxHTTPSPutHeaderValueBytes)
+			return Target{}, headerRefError(name, ref, fmt.Errorf("header %q resolved to more than %d bytes", name, types.MaxHTTPSPutHeaderValueBytes))
 		}
 		headers.Set(name, value)
 	}
 	return Target{dest: &destination{url: u, headers: headers}}, nil
+}
+
+// RefError is Resolve's error when a secret reference did not resolve to
+// a usable value. Field names the reference within the HTTPSPutConfig:
+// "urlRef" or "headers[Name]".
+type RefError struct {
+	Field string
+	Ref   string
+	Err   error
+}
+
+func (e *RefError) Error() string { return e.Err.Error() }
+
+func (e *RefError) Unwrap() error { return e.Err }
+
+// headerRefError attributes err to the header's reference, or returns err
+// alone for an inline value.
+func headerRefError(name, ref string, err error) error {
+	if ref == "" {
+		return err
+	}
+	return &RefError{Field: fmt.Sprintf("headers[%s]", name), Ref: ref, Err: err}
 }
 
 // parseDestination parses a resolved URL. Its errors describe the fault

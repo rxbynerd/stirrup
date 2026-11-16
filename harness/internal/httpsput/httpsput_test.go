@@ -266,6 +266,43 @@ func TestResolve_ReportsUnresolvedReferencesByName(t *testing.T) {
 	must.ErrorContains(err, `resolve header "Authorization"`)
 }
 
+func TestResolve_AttributesReferenceFailuresToTheirField(t *testing.T) {
+	cases := []struct {
+		name      string
+		secrets   mapSecrets
+		cfg       types.HTTPSPutConfig
+		wantField string
+		wantRef   string
+	}{
+		{name: "unresolved url", secrets: mapSecrets{}, cfg: types.HTTPSPutConfig{URLRef: "secret://URL"}, wantField: "urlRef", wantRef: "secret://URL"},
+		{name: "unusable url", secrets: mapSecrets{"secret://URL": "ftp://uploads.example/key"}, cfg: types.HTTPSPutConfig{URLRef: "secret://URL"}, wantField: "urlRef", wantRef: "secret://URL"},
+		{
+			name:      "unresolved header",
+			secrets:   mapSecrets{"secret://URL": "https://uploads.example/key"},
+			cfg:       types.HTTPSPutConfig{URLRef: "secret://URL", Headers: map[string]string{"Authorization": "secret://AUTH"}},
+			wantField: "headers[Authorization]",
+			wantRef:   "secret://AUTH",
+		},
+		{
+			name:      "unusable header value",
+			secrets:   mapSecrets{"secret://URL": "https://uploads.example/key", "secret://AUTH": "a\x00b"},
+			cfg:       types.HTTPSPutConfig{URLRef: "secret://URL", Headers: map[string]string{"Authorization": "secret://AUTH"}},
+			wantField: "headers[Authorization]",
+			wantRef:   "secret://AUTH",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			_, err := Resolve(context.Background(), tc.secrets, &tc.cfg)
+			var refErr *RefError
+			must.ErrorAs(err, &refErr)
+			must.Equal(tc.wantField, refErr.Field)
+			must.Equal(tc.wantRef, refErr.Ref)
+		})
+	}
+}
+
 func TestResolve_RejectsAResolvedHeaderValueThatWouldSplitTheHeader(t *testing.T) {
 	must := require.New(t)
 	_, err := Resolve(context.Background(),
