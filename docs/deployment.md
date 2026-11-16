@@ -417,10 +417,12 @@ removing the sandbox of a live session ends it.
   `activeDeadlineSeconds` backstop, and the `NetworkPolicy` has no owner
   reference, so the labelled delete below is the only way to remove it.
   Selecting on `stirrup-sandbox=true` also matches the resources of live
-  runs, so it is for inspection rather than deletion. When the executor
-  reported retained objects, delete only as
+  runs, so it is for inspection rather than deletion. The delete should
+  run only after the harness process for that run is gone, because
+  removing the sandbox of a live session ends it. When the executor
+  reported retained objects, follow
   [Cleaning up retained objects](executors/k8s.md#cleaning-up-retained-objects)
-  allows: a retained policy stays until its Pod is confirmed gone.
+  instead: a retained policy stays until its Pod is confirmed gone.
 
   ```sh
   kubectl delete pod,networkpolicy -n <namespace> -l 'stirrup.dev/run-id=<run-id, truncated to 63 characters>'

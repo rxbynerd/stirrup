@@ -285,7 +285,7 @@ hours. The TTL fires *only* if `Close()` never runs. A normal run is
 expected to be torn down in seconds, provided GKE accepts the one-second
 grace period above.
 
-The lifetime bound that the [`k8s` executor](k8s.md#teardown-and-orphaned-sandboxes)
+The lifetime bound that the [`k8s` executor](k8s.md#teardown-edge-cases)
 derives from the run `timeout` and `STIRRUP_SESSION_DEADLINE` does not
 apply here. The backing Pod gets no `activeDeadlineSeconds`, and neither
 the Sandbox nor the Pod gets an owner reference to the harness Pod, so
