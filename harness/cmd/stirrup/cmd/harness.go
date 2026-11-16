@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -1203,6 +1204,42 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 			selector[k] = v
 		}
 		cfg.Executor.K8sNodeSelector = selector
+	}
+	if changed("image") {
+		cfg.Executor.Image, _ = f.GetString("image")
+	}
+	if changed("cpus") || changed("memory-mb") || changed("disk-mb") {
+		// Copy so a limit this invocation leaves unset (including pids,
+		// which has no flag) keeps the base document's value.
+		resources := types.ResourceLimits{}
+		if cfg.Executor.Resources != nil {
+			resources = *cfg.Executor.Resources
+		}
+		if changed("cpus") {
+			resources.CPUs, _ = f.GetFloat64("cpus")
+		}
+		if changed("memory-mb") {
+			resources.MemoryMB, _ = f.GetInt("memory-mb")
+		}
+		if changed("disk-mb") {
+			resources.DiskMB, _ = f.GetInt("disk-mb")
+		}
+		cfg.Executor.Resources = &resources
+	}
+	if changed("network-mode") {
+		mode, _ := f.GetString("network-mode")
+		if !slices.Contains(types.ValidExecutorNetworkModeValues(), mode) {
+			return fmt.Errorf("--network-mode: invalid value %q (expected one of: %s)",
+				mode, strings.Join(types.ValidExecutorNetworkModeValues(), ", "))
+		}
+		// Replacing only the mode keeps allowlist entries from the base
+		// document.
+		network := types.NetworkConfig{}
+		if cfg.Executor.Network != nil {
+			network = *cfg.Executor.Network
+		}
+		network.Mode = mode
+		cfg.Executor.Network = &network
 	}
 	if changed("output-schema") {
 		path, _ := f.GetString("output-schema")

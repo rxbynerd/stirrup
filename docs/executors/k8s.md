@@ -831,8 +831,11 @@ flag and field below is verified against
 | `--k8s-service-account` | `executor.k8sServiceAccount` | no | ServiceAccount name for the Pod. Empty uses the namespace `default`. The token is never automounted regardless. |
 | `--k8s-egress-proxy-url` | `executor.k8sEgressProxyUrl` | conditional | Egress proxy URL the Pod's `HTTP_PROXY`/`HTTPS_PROXY` point at. Required when `network.mode` is `allowlist`; rejected otherwise. |
 | `--container-runtime` | `executor.runtime` | no | Runtime mapped to the Pod `RuntimeClassName`. Closed set: `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh`, `nitro-isolated`. Each value except `nitro-isolated` is also its RuntimeClass name; `nitro-isolated` selects `isolated-sandbox` (see [EKS with Nitro Sandboxes](#eks-with-nitro-sandboxes)). Empty selects the cluster-default RuntimeClass (and logs an isolation warning). |
-| *(RunConfig only)* | `executor.network` | yes for `k8s` | Mode `none` or `allowlist`. A nil network is rejected at config load (fail closed). `nitro-isolated` accepts only `none`. |
-| *(RunConfig only)* | `executor.resources` | no (yes for `nitro-isolated`) | CPU/memory/disk mapped onto the Pod container. See [Resource mapping](#resource-mapping). |
+| `--network-mode` | `executor.network.mode` | yes for `k8s` | `none` or `allowlist`. A nil network is rejected at config load (fail closed). `nitro-isolated` accepts only `none`. Keeps the `executor.network.allowlist` entries of a `--config` file. |
+| `--cpus` | `executor.resources.cpus` | no (yes for `nitro-isolated`) | CPU cores, fractions allowed. See [Resource mapping](#resource-mapping). |
+| `--memory-mb` | `executor.resources.memoryMb` | no (yes for `nitro-isolated`) | Memory in MiB. |
+| `--disk-mb` | `executor.resources.diskMb` | no | Ephemeral storage in MiB. |
+| *(RunConfig only)* | `executor.network.allowlist`, `executor.resources.pids`, `executor.resources.scratchMb` | no | The run's declared allowlist entries (the proxy enforces its own startup list; see [Mode `allowlist`](#mode-allowlist--proxy--dns)), the PID limit, which is logged and ignored, and the `/scratch` size (see [Resource mapping](#resource-mapping)). |
 | `--image-allowlist` / `STIRRUP_IMAGE_ALLOWLIST` | *(deployment, not RunConfig)* | no | The deployment's sandbox image admission policy. When set, `executor.image` must match one of its patterns or the run fails before the Pod or NetworkPolicy is created. `stirrup job` reads only the environment variable. See [Image admission policy](../security.md#image-admission-policy). |
 
 `--container-runtime` is shared with the `container` executor, where it
@@ -844,8 +847,9 @@ namespace of values: the closed set for `k8s` is
 `nitro-isolated` is passed through as the RuntimeClass name;
 `nitro-isolated` is named for the technology and maps to AWS's
 `isolated-sandbox` class, so `isolated-sandbox` itself is rejected with a
-pointer to `nitro-isolated`. Shell completions list the container set
-only, so the `k8s` values are valid but not offered by completion.
+pointer to `nitro-isolated`. Shell completion offers the `k8s` set when
+`--executor k8s` is already on the command line, `gvisor` for
+`--executor k8s-sandbox`, and the container set otherwise.
 
 ### Validation rules
 
@@ -935,9 +939,9 @@ stirrup harness \
   --executor k8s \
   --image ghcr.io/rxbynerd/stirrup-sandbox:latest \
   --k8s-namespace stirrup-sandbox \
+  --network-mode none \
   --mode execution \
   --prompt "..."
-# network.mode comes from a RunConfig; use "none" for the smoke test.
 ```
 
 ### kind + gVisor (sandboxed runtime, egress not guaranteed)
@@ -956,6 +960,7 @@ stirrup harness \
   --executor k8s \
   --image ghcr.io/rxbynerd/stirrup-sandbox:latest \
   --k8s-namespace stirrup-sandbox \
+  --network-mode none \
   --container-runtime gvisor \
   --mode execution \
   --prompt "..."
@@ -1061,10 +1066,10 @@ step entirely for `network.mode: none`.
 
 #### 5 — Run
 
-`network.mode` has no CLI flag; it lives in a `--config` RunConfig.
 [`examples/runconfig/k8s-gvisor.json`](../../examples/runconfig/k8s-gvisor.json)
-is a ready starting point (`executor.network.mode: none`); for allowlist
-mode set `network.mode: "allowlist"` and `executor.k8sEgressProxyUrl`.
+is a ready starting point (`executor.network.mode: none`); `--network-mode`
+overrides the mode, and `allowlist` also needs `--k8s-egress-proxy-url`
+(`executor.k8sEgressProxyUrl`) and the allowlist entries in the RunConfig.
 
 ```sh
 stirrup harness \
@@ -1112,17 +1117,20 @@ Then select the matching runtime per run:
 # kata-qemu — broadest compatibility, needs KVM (bare metal or nested virt)
 stirrup harness --executor k8s --container-runtime kata-qemu \
   --image ghcr.io/rxbynerd/stirrup-sandbox:latest \
-  --k8s-namespace stirrup-sandbox --mode execution --prompt "..."
+  --k8s-namespace stirrup-sandbox --network-mode none \
+  --mode execution --prompt "..."
 
 # kata-fc — Firecracker, fast boot, needs a devmapper snapshotter + KVM
 stirrup harness --executor k8s --container-runtime kata-fc \
   --image ghcr.io/rxbynerd/stirrup-sandbox:latest \
-  --k8s-namespace stirrup-sandbox --mode execution --prompt "..."
+  --k8s-namespace stirrup-sandbox --network-mode none \
+  --mode execution --prompt "..."
 
 # kata-clh — Cloud Hypervisor, needs KVM
 stirrup harness --executor k8s --container-runtime kata-clh \
   --image ghcr.io/rxbynerd/stirrup-sandbox:latest \
-  --k8s-namespace stirrup-sandbox --mode execution --prompt "..."
+  --k8s-namespace stirrup-sandbox --network-mode none \
+  --mode execution --prompt "..."
 ```
 
 Kata prerequisites are documented inline in

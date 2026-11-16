@@ -370,7 +370,7 @@ needs `runc` or a Kata backend must use the `k8s` executor.
 stirrup harness --executor k8s-sandbox \
   --image ghcr.io/rxbynerd/stirrup-sandbox:latest \
   --k8s-namespace stirrup-sandbox \
-  --network none \
+  --network-mode none \
   --mode execution --prompt "..."
 ```
 

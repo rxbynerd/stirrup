@@ -156,11 +156,18 @@ type contextStrategySpec struct {
 }
 
 type executorSpec struct {
-	Type       string              `hcl:"type"`
-	Workspace  string              `hcl:"workspace,optional"`
-	Image      string              `hcl:"image,optional"`
-	Proxy      string              `hcl:"proxy,optional"`
-	Runtime    string              `hcl:"runtime,optional"`
+	Type      string `hcl:"type"`
+	Workspace string `hcl:"workspace,optional"`
+	Image     string `hcl:"image,optional"`
+	Proxy     string `hcl:"proxy,optional"`
+	Runtime   string `hcl:"runtime,optional"`
+
+	K8sNamespace      string            `hcl:"k8s_namespace,optional"`
+	K8sKubeconfig     string            `hcl:"k8s_kubeconfig,optional"`
+	K8sNodeSelector   map[string]string `hcl:"k8s_node_selector,optional"`
+	K8sServiceAccount string            `hcl:"k8s_service_account,optional"`
+	K8sEgressProxyURL string            `hcl:"k8s_egress_proxy_url,optional"`
+
 	VcsBackend *vcsBackendSpec     `hcl:"vcs_backend,block"`
 	Network    *networkSpec        `hcl:"network,block"`
 	Resources  *resourceLimitsSpec `hcl:"resources,block"`
@@ -703,6 +710,12 @@ func executorSpecToType(s *executorSpec) types.ExecutorConfig {
 		Image:     s.Image,
 		Proxy:     s.Proxy,
 		Runtime:   s.Runtime,
+
+		K8sNamespace:      s.K8sNamespace,
+		K8sKubeconfig:     s.K8sKubeconfig,
+		K8sNodeSelector:   s.K8sNodeSelector,
+		K8sServiceAccount: s.K8sServiceAccount,
+		K8sEgressProxyURL: s.K8sEgressProxyURL,
 	}
 	if s.VcsBackend != nil {
 		out.VcsBackend = &types.VcsBackendConfig{

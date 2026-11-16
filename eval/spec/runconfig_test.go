@@ -1323,3 +1323,53 @@ suite "s" {
 	must.NotNil(got.RunConfig)
 	must.Equal(types.ToolsConfig{NoBuiltIn: true}, got.RunConfig.Tools)
 }
+
+func TestLoadSuiteHCL_RunConfigExecutorKubernetesFields(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	src := `
+suite "s" {
+  run_config {
+    executor {
+      type                 = "k8s"
+      image                = "registry.example/sandbox:1"
+      runtime              = "gvisor"
+      k8s_namespace        = "stirrup-sandbox"
+      k8s_kubeconfig       = "/etc/stirrup/kubeconfig"
+      k8s_node_selector    = { disktype = "ssd" }
+      k8s_service_account  = "stirrup-runner"
+      k8s_egress_proxy_url = "http://proxy.stirrup-sandbox.svc:8080"
+
+      network {
+        mode      = "allowlist"
+        allowlist = ["api.example.com:443"]
+      }
+    }
+  }
+
+  task "t1" {
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "runcfg-k8s.hcl", src)
+	got, err := LoadSuiteHCL(path)
+	must.NoError(err)
+	must.NotNil(got.RunConfig)
+
+	check.Equal(types.ExecutorConfig{
+		Type:              "k8s",
+		Image:             "registry.example/sandbox:1",
+		Runtime:           "gvisor",
+		K8sNamespace:      "stirrup-sandbox",
+		K8sKubeconfig:     "/etc/stirrup/kubeconfig",
+		K8sNodeSelector:   map[string]string{"disktype": "ssd"},
+		K8sServiceAccount: "stirrup-runner",
+		K8sEgressProxyURL: "http://proxy.stirrup-sandbox.svc:8080",
+		Network:           &types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com:443"}},
+	}, got.RunConfig.Executor)
+}

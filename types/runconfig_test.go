@@ -3151,7 +3151,7 @@ func ruleOfTwoConfig(untrusted, sensitive, external bool, policy string) *RunCon
 		c.SensitiveData = boolRef(true)
 	}
 	if external {
-		c.Executor = ExecutorConfig{Network: &NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}}}
+		c.Executor = ExecutorConfig{Type: "container", Image: "ghcr.io/rxbynerd/base:latest", Network: &NetworkConfig{Mode: "allowlist", Allowlist: []string{"api.example.com"}}}
 	}
 	return c
 }
@@ -7951,6 +7951,57 @@ func TestValidateRunConfig_NoneExecutorRejectsExecutionOnlyFields(t *testing.T) 
 			must.Error(err)
 			want := fmt.Sprintf("executor.%s is not valid for executor.type=\"none\"", tc.field)
 			must.Equal(1, strings.Count(err.Error(), want), "error: %v", err)
+		})
+	}
+}
+
+// TestValidateRunConfig_UnsandboxedExecutorRejectsSandboxFields pins that
+// the executors that run no sandbox reject image, network and resources,
+// naming the executor and the field, so a setting that would be ignored
+// at runtime cannot read as isolation.
+func TestValidateRunConfig_UnsandboxedExecutorRejectsSandboxFields(t *testing.T) {
+	vcs := &VcsBackendConfig{Type: "github", Repo: "owner/repo"}
+	cases := []struct {
+		name     string
+		exec     ExecutorConfig
+		field    string
+		wantType string
+	}{
+		{name: "local image", exec: ExecutorConfig{Type: "local", Image: "img"}, field: "image", wantType: "local"},
+		{name: "local network", exec: ExecutorConfig{Type: "local", Network: &NetworkConfig{Mode: "none"}}, field: "network", wantType: "local"},
+		{name: "local resources", exec: ExecutorConfig{Type: "local", Resources: &ResourceLimits{MemoryMB: 512}}, field: "resources", wantType: "local"},
+		{name: "default executor network", exec: ExecutorConfig{Network: &NetworkConfig{Mode: "none"}}, field: "network", wantType: "local"},
+		{name: "api image", exec: ExecutorConfig{Type: "api", VcsBackend: vcs, Image: "img"}, field: "image", wantType: "api"},
+		{name: "api network", exec: ExecutorConfig{Type: "api", VcsBackend: vcs, Network: &NetworkConfig{Mode: "none"}}, field: "network", wantType: "api"},
+		{name: "api resources", exec: ExecutorConfig{Type: "api", VcsBackend: vcs, Resources: &ResourceLimits{CPUs: 1}}, field: "resources", wantType: "api"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.Executor = tc.exec
+			err := ValidateRunConfig(c)
+			must.Error(err)
+			want := fmt.Sprintf("executor.%s is not valid for executor.type=%q", tc.field, tc.wantType)
+			must.Equal(1, strings.Count(err.Error(), want), "error: %v", err)
+		})
+	}
+}
+
+// TestValidateRunConfig_SandboxExecutorsAcceptSandboxFields pins that the
+// check on the unsandboxed executors does not reach the executors that
+// honour image, network and resources.
+func TestValidateRunConfig_SandboxExecutorsAcceptSandboxFields(t *testing.T) {
+	for _, exec := range []ExecutorConfig{
+		{Type: "container", Image: "img", Network: &NetworkConfig{Mode: "none"}, Resources: &ResourceLimits{CPUs: 1, MemoryMB: 512}},
+		{Type: "k8s", Image: "img", K8sNamespace: "ns", Network: &NetworkConfig{Mode: "none"}, Resources: &ResourceLimits{CPUs: 1, MemoryMB: 512}},
+		{Type: "k8s-sandbox", Image: "img", K8sNamespace: "ns", Network: &NetworkConfig{Mode: "none"}, Resources: &ResourceLimits{CPUs: 1, MemoryMB: 512}},
+	} {
+		t.Run(exec.Type, func(t *testing.T) {
+			must := require.New(t)
+			c := validConfig()
+			c.Executor = exec
+			must.NoError(ValidateRunConfig(c))
 		})
 	}
 }

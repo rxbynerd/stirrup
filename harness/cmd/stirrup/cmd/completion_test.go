@@ -102,6 +102,7 @@ func TestFlagCompletion_EnumValues(t *testing.T) {
 		{flag: "trace-emitter", want: types.ValidTraceEmitterTypeValues()},
 		{flag: "otel-protocol", want: types.ValidTraceEmitterProtocolValues()},
 		{flag: "container-runtime", want: types.ValidExecutorRuntimeValues()},
+		{flag: "network-mode", want: types.ValidExecutorNetworkModeValues()},
 		{flag: "code-scanner", want: types.ValidCodeScannerTypeValues()},
 		{flag: "guardrail", want: types.ValidGuardRailTypeValues()},
 		{flag: "lazy-tools-strategy", want: types.ValidLazyToolStrategyValues()},
