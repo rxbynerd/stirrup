@@ -109,7 +109,13 @@ The provisioning sequence
    they rest on the controller and the GKE admission policy.
 4. **Resolve the backing Pod and bind.** The Pod name is read from the
    Sandbox status; on the cold-create path it equals the Sandbox name.
-   Command execution and file I/O then ride the shared `pods/exec` core.
+   Command execution and file I/O then ride the shared `pods/exec` core,
+   including its check for a Pod that ends mid-run (see
+   [Sandbox loss during a run](k8s.md#sandbox-loss-during-a-run)). The
+   check reads the backing Pod by name and does not compare its UID, so
+   if the controller replaced a deleted Pod under the same name, the
+   replacement is not reported as lost, although its workspace starts
+   empty.
 5. **Wait for `exec` and prepare scratch.** The executor runs the `k8s`
    executor's one-minute wait for `exec` to reach the Pod (see
    [Readiness](k8s.md#readiness)), then creates `HOME` and `TMPDIR`

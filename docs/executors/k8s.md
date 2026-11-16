@@ -41,6 +41,7 @@ those files.
   - [Readiness](#readiness)
   - [Admission check](#admission-check)
   - [Diagnosing a slow or failed start](#diagnosing-a-slow-or-failed-start)
+  - [Sandbox loss during a run](#sandbox-loss-during-a-run)
   - [Teardown](#teardown)
   - [Teardown edge cases](#teardown-edge-cases)
   - [Cleaning up retained objects](#cleaning-up-retained-objects)
@@ -513,6 +514,44 @@ Two costs of the wait need planning:
   exchanged before the sandbox is created. See
   [Sandbox identity token exposure](#sandbox-identity-token-exposure)
   for what the harness does when the token nears expiry during startup.
+
+### Sandbox loss during a run
+
+A sandbox Pod can stop for good after it became Ready: a command
+exhausts its memory and the `agent` container is `OOMKilled`,
+`activeDeadlineSeconds` expires (`DeadlineExceeded`), the node evicts
+the Pod (`Evicted`), or someone deletes it. The command running at that
+moment usually returns exit code `137` as an ordinary result; the next
+`exec` then fails with an error such as `unable to upgrade connection:
+container not found ("agent")`.
+
+When an `exec` fails without an exit status, and not because its own
+deadline or the run's context ended, the executor reads the Pod once,
+within 10 seconds. It treats the sandbox as lost when the read finds:
+
+- phase `Failed` or `Succeeded`;
+- the Pod being deleted, or no Pod under its name;
+- the `agent` container terminated under a restart policy that does
+  not restart it (`Never`, or `OnFailure` after exit code `0`).
+
+The failed operation then returns an error naming that state, for
+example:
+
+```
+sandbox lost: sandbox pod stirrup/stirrup-0123456789ab has failed: container agent was OOMKilled (exit code 137) (unable to upgrade connection: container not found ("agent"))
+```
+
+A Pod-level reason and message (`DeadlineExceeded`, `Evicted`) are
+included when the Pod has them. The container's termination message is
+not, because the sandboxed workload writes it. Every later command and
+file operation returns the same error without contacting the cluster,
+and the run ends after the current turn with the outcome `sandbox_lost`
+and this text as its error (see
+[Terminal semantics](../integration-guide.md#terminal-semantics)). A
+Pod that is still running, a container that will restart, and a failed
+Pod read all leave the original `exec` error unchanged, so a transient
+failure stays a tool error the model can retry. The read uses the
+`get pods` permission the readiness wait already needs.
 
 ### Teardown
 
@@ -1363,7 +1402,7 @@ not the Pod.
 | `... failed: diagnostic_exec: guest file read exited <n>: ...` or `guest file read failed: ...`; `... failed: diagnostic_output: unexpected line ...` | The runtime diagnostics `exec` failed, or the image's `/bin/sh` does not run the script (it uses `read -r`, `printf` and `[`; a shell without a `printf` builtin or command exits 127). | Use an image whose `/bin/sh` is a POSIX shell with those commands. |
 | `runtime diagnostics for executor.runtime "nitro-isolated" interrupted: ...` | The run's own deadline or a cancellation ended construction during the diagnostics. | In `stirrup job` raise `timeout`, which also covers sandbox startup. |
 | `pod <ns>/<pod> not ready within 5m0s: phase Pending; ...`, with `FailedCreatePodSandBox` Events naming a `sandbox.amazonaws.com/...` annotation | A mutating policy set a throttle annotation to a value the platform refuses. *Measured:* `log-bandwidth: "0"` left the Pod Pending (`resolves to 0 bytes/sec`). The admission check allows throttle keys to be retuned, so the run fails only at the readiness timeout. | Fix the policy's value. |
-| A command exits 137, and later commands fail with `container not found ("agent")` | The command exhausted the guest's memory. *Measured* in a 1 GiB guest: the container was `OOMKilled` and the Pod went `Failed`, so the sandbox is gone for the rest of the run. An ordinary Pod is killed the same way. | Raise `executor.resources.memoryMb`, which sizes the guest. |
+| A command exits 137, and the next fails with `sandbox lost: sandbox pod <ns>/<pod> has failed: container agent was OOMKilled (exit code 137)`; the run ends `sandbox_lost` | The command exhausted the guest's memory. *Measured* in a 1 GiB guest: the container was `OOMKilled` and the Pod went `Failed`, so the sandbox is gone for the rest of the run. An ordinary Pod is killed the same way; see [Sandbox loss during a run](#sandbox-loss-during-a-run). | Raise `executor.resources.memoryMb`, which sizes the guest. |
 | A command fails with `No space left on device` | The guest's disk is full; the workspace and the container's writable layer share it (see [Limits](#limits)). | Set or raise `executor.resources.diskMb`. |
 | A command returns `command timed out after <timeout>: context deadline exceeded` where `output exceeded 10 MB cap` was expected | Output is throttled harder than the `20M` the executor submits: an admission policy retuned `log-bandwidth` lower, or the annotation was removed after readiness and the platform default `2M` applies (at `2M` an 11 MiB output took 44 s). | Remove the policy that lowers `log-bandwidth`, or give commands with large output a longer timeout; see [Pod shape](#pod-shape) for the measured rates. |
 | `tear down pod <ns>/<pod> (run ID "<id>"): ...; retained egress NetworkPolicy <ns>/<pod>-egress` | Pod termination was not confirmed within the teardown bound. | Follow [Cleaning up retained objects](#cleaning-up-retained-objects). |
