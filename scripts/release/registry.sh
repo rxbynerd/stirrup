@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # Reads manifest digests and tag lists from an OCI registry over the
 # distribution API, telling an absent tag apart from a failed lookup so
-# callers can fail closed.
+# callers can fail closed, and points tags at stored manifests.
 #
 #   registry.sh digest <registry>/<repository>:<tag>
 #       Prints the tag's manifest digest (sha256:<hex>).
 #       Exits 3 when the registry reports the tag as unknown.
 #   registry.sh tags <registry>/<repository>
 #       Prints every tag in the repository, one per line.
+#   registry.sh tag <registry>/<repository>@<digest> <tag>
+#       Points <tag> at the manifest stored under <digest> by uploading
+#       its exact bytes, then checks <tag> resolves to <digest>. It does
+#       not look at what <tag> named before; callers decide that.
 #
 # Any other failure exits 1. Token requests are anonymous unless
 # REGISTRY_USERNAME and REGISTRY_PASSWORD are set, in which case they are
@@ -15,7 +19,11 @@
 set -euo pipefail
 
 readonly EXIT_ABSENT=3
-readonly MANIFEST_ACCEPT='application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json'
+readonly MANIFEST_TYPES=(application/vnd.oci.image.index.v1+json application/vnd.docker.distribution.manifest.list.v2+json application/vnd.oci.image.manifest.v1+json application/vnd.docker.distribution.manifest.v2+json)
+MANIFEST_ACCEPT=$(IFS=,; printf '%s' "${MANIFEST_TYPES[*]}")
+readonly MANIFEST_ACCEPT
+readonly TAG_PATTERN='^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'
+readonly DIGEST_PATTERN='^sha256:[0-9a-f]{64}$'
 readonly CURL_OPTS=(--silent --show-error --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 2 --proto '=https' --max-filesize 4194304)
 readonly MAX_PAGES=100
 
@@ -65,11 +73,11 @@ credentials_config() {
   fi
 }
 
-# auth_header <registry> <repository> prints an Authorization header
-# for a pull of the repository, or nothing when the registry does not
-# challenge anonymous requests.
+# auth_header <registry> <repository> [<actions>] prints an Authorization
+# header for the repository and actions (default pull), or nothing when
+# the registry does not challenge anonymous requests.
 auth_header() {
-  local registry=$1 repository=$2 headers challenge realm service token
+  local registry=$1 repository=$2 actions=${3:-pull} headers challenge realm service token
   headers=$(mktemp)
   curl "${CURL_OPTS[@]}" -o /dev/null -D "$headers" "https://${registry}/v2/" ||
     die "cannot reach https://${registry}/v2/"
@@ -87,9 +95,10 @@ auth_header() {
     https://*) ;;
     *) die "refusing non-HTTPS token realm '${realm}'" ;;
   esac
+  # Artifact Registry's challenge carries no service parameter.
   token=$(credentials_config | curl "${CURL_OPTS[@]}" --config - --fail -G "$realm" \
-    --data-urlencode "service=${service}" \
-    --data-urlencode "scope=repository:${repository}:pull" | jq -r '.token // .access_token // empty') ||
+    ${service:+--data-urlencode "service=${service}"} \
+    --data-urlencode "scope=repository:${repository}:${actions}" | jq -r '.token // .access_token // empty') ||
     die "token request to ${realm} failed"
   [ -n "$token" ] || die "token response from ${realm} carried no token"
   printf 'Authorization: Bearer %s' "$token"
@@ -111,7 +120,7 @@ cmd_digest() {
   [[ "$ref" == *:* && "${ref##*/}" == *:* ]] || die "reference '${ref}' has no tag"
   name=${ref%:*}
   tag=${ref##*:}
-  [[ "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || die "invalid tag '${tag}'"
+  [[ "$tag" =~ $TAG_PATTERN ]] || die "invalid tag '${tag}'"
   split_name "$name"
   auth=$(auth_header "$REGISTRY" "$REPOSITORY")
 
@@ -160,6 +169,45 @@ cmd_tags() {
   done
 }
 
+cmd_tag() {
+  local src=$1 tag=$2 name digest auth workdir status content_type got
+  [[ "$src" == *@* ]] || die "reference '${src}' has no digest"
+  name=${src%@*}
+  digest=${src##*@}
+  [[ "$digest" =~ $DIGEST_PATTERN ]] || die "invalid digest '${digest}'"
+  [[ "$tag" =~ $TAG_PATTERN ]] || die "invalid tag '${tag}'"
+  split_name "$name"
+  auth=$(auth_header "$REGISTRY" "$REPOSITORY" pull,push)
+
+  workdir=$(mktemp -d)
+  trap 'rm -rf "$workdir"' RETURN
+  status=$(curl "${CURL_OPTS[@]}" -o "$workdir/manifest" -D "$workdir/headers" -w '%{http_code}' \
+    -H "Accept: ${MANIFEST_ACCEPT}" ${auth:+-H "$auth"} \
+    "https://${REGISTRY}/v2/${REPOSITORY}/manifests/${digest}") ||
+    die "manifest request for ${src} failed"
+  [ "$status" = 200 ] || die "manifest request for ${src} returned HTTP ${status}: $(head -c 300 "$workdir/manifest")"
+  got="sha256:$(sha256_hex "$workdir/manifest")"
+  [ "$got" = "$digest" ] || die "${src}: the registry served a manifest hashing to ${got}"
+  content_type=$(header_value "$workdir/headers" content-type)
+  content_type=${content_type%%;*}
+  [[ " ${MANIFEST_TYPES[*]} " == *" ${content_type} "* ]] ||
+    die "${src}: unsupported manifest media type '${content_type}'"
+
+  status=$(curl "${CURL_OPTS[@]}" -o "$workdir/body" -D "$workdir/headers" -w '%{http_code}' \
+    -X PUT -H "Content-Type: ${content_type}" ${auth:+-H "$auth"} \
+    --data-binary "@$workdir/manifest" \
+    "https://${REGISTRY}/v2/${REPOSITORY}/manifests/${tag}") ||
+    die "tagging ${name}:${tag} failed"
+  case "$status" in
+    200 | 201) ;;
+    *) die "tagging ${name}:${tag} returned HTTP ${status}: $(head -c 300 "$workdir/body")" ;;
+  esac
+
+  got=$(cmd_digest "${name}:${tag}") || die "cannot read back ${name}:${tag}"
+  [ "$got" = "$digest" ] || die "${name}:${tag} resolves to ${got} after tagging, not ${digest}"
+  echo "${name}:${tag} -> ${digest}" >&2
+}
+
 case "${1:-}" in
   digest)
     [ $# -eq 2 ] || die "usage: registry.sh digest <registry>/<repository>:<tag>"
@@ -169,7 +217,11 @@ case "${1:-}" in
     [ $# -eq 2 ] || die "usage: registry.sh tags <registry>/<repository>"
     cmd_tags "$2"
     ;;
+  tag)
+    [ $# -eq 3 ] || die "usage: registry.sh tag <registry>/<repository>@<digest> <tag>"
+    cmd_tag "$2" "$3"
+    ;;
   *)
-    die "usage: registry.sh {digest <ref> | tags <name>}"
+    die "usage: registry.sh {digest <ref> | tags <name> | tag <name>@<digest> <tag>}"
     ;;
 esac
