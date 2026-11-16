@@ -14,7 +14,7 @@ import "errors"
 //	   gate supplied without --dry-run)
 //	5  run outcome (the run completed and reported an outcome other than
 //	   success, e.g. max_turns, verification_failed or cancelled; the
-//	   harness itself did not malfunction)
+//	   harness itself did not malfunction; control_stream_lost stays on 1)
 //
 // Code 0 is never carried by an exitError; the constants below are the
 // non-zero classes only.

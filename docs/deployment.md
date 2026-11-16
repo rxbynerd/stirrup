@@ -287,9 +287,11 @@ ended at `max_turns` or was cancelled by the operator also produces a
 Alerts and reconciliation loops that act on a failed Job distinguish the
 two by exit code. A Job whose pod template sets `restartPolicy: Never`
 (as [`examples/k8s/harness-job.yaml`](../examples/k8s/harness-job.yaml)
-does) can also add a `podFailurePolicy` rule with `onExitCodes` that
-matches `5`, so an ordinary run outcome does not spend `backoffLimit` on
-a retry.
+does) can also add a `podFailurePolicy` rule with `action: FailJob` and
+`onExitCodes` matching `5`, so a Job with a non-zero `backoffLimit` retries
+a harness that failed to start or finish but not a run that already
+reported its outcome. An `Ignore` action on that rule would instead
+re-run completed runs without limit.
 
 ### Health probes
 
