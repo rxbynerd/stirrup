@@ -278,3 +278,4 @@ Exceptions where external deps are accepted:
 - `golang.org/x/oauth2` for GCP ADC, GCP service-account JWT flow, and WIF token refresh
 - `github.com/cedar-policy/cedar-go` for the Cedar policy engine (`policy-engine` PermissionPolicy)
 - `github.com/hashicorp/hcl/v2` for eval suite HCL parsing (eval module only)
+- `mvdan.cc/sh/v3` for parsing the executors' sandbox scripts in the image contract test (test-only; not linked into the binary)

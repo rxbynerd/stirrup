@@ -957,6 +957,7 @@ trees. The accepted exceptions and their justifications:
 | `golang.org/x/oauth2` | GCP ADC, GCP service-account JWT flow, WIF token refresh |
 | `github.com/cedar-policy/cedar-go` | Cedar policy engine |
 | `github.com/hashicorp/hcl/v2` | Eval suite parsing (eval module only; harness binary unaffected) |
+| `mvdan.cc/sh/v3` | POSIX shell parser used only by the sandbox image contract test, to find the commands the executors' scripts run. Imported from `_test.go` files, so it is not linked into the binary |
 
 ## Embedding API
 
