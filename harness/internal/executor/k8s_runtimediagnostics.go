@@ -211,42 +211,58 @@ func diagnoseNitroIsolatedGuest(ctx context.Context, core *podExecCore) (map[str
 		return nil, err
 	}
 	observed := map[string]string{}
-	var failures []*k8sRuntimeDiagnosticError
-
-	if failure := checkNitroDMIProductName(files[nitroDMIProductNamePath], observed); failure != nil {
-		failures = append(failures, failure)
-	}
-	if failure := checkIsolatedInterfaces(files[procNetDevPath], observed); failure != nil {
-		failures = append(failures, failure)
-	}
-	if failure := checkEmptyRouteTable(files[procNetRoutePath], observed); failure != nil {
-		failures = append(failures, failure)
-	}
-	if len(failures) > 0 {
-		return observed, failures[0]
-	}
-	return observed, nil
+	return observed, firstDiagnosticFailure(
+		checkNitroDMIProductName(files[nitroDMIProductNamePath], observed),
+		checkIsolatedInterfaces(files[procNetDevPath], observed),
+		checkEmptyRouteTable(files[procNetRoutePath], observed),
+	)
 }
 
-// checkNitroDMIProductName requires the product name, the file's first line
-// trimmed, to end in nitroGuestDMISuffix. The kernel prints one line, so a
-// second non-empty line fails as unexpected output.
-func checkNitroDMIProductName(file guestFile, observed map[string]string) *k8sRuntimeDiagnosticError {
-	if !file.present {
-		return &k8sRuntimeDiagnosticError{check: diagnosticCheckDMI, reason: nitroDMIProductNamePath + " is absent, unreadable or not a regular file"}
-	}
-	nonEmpty := 0
-	for _, line := range file.lines {
-		if strings.TrimSpace(line) != "" {
-			nonEmpty++
+// firstDiagnosticFailure returns the first non-nil failure, or nil. Callers
+// evaluate every check before calling it so observed is complete.
+func firstDiagnosticFailure(failures ...*k8sRuntimeDiagnosticError) error {
+	for _, failure := range failures {
+		if failure != nil {
+			return failure
 		}
 	}
-	if nonEmpty > 1 {
-		return &k8sRuntimeDiagnosticError{check: diagnosticCheckOutput, reason: fmt.Sprintf("%s has %d non-empty lines; the kernel prints one", nitroDMIProductNamePath, nonEmpty)}
+	return nil
+}
+
+// absentFileFailure is the failure for a guest file the dump reported as
+// missing.
+func absentFileFailure(check, path string) *k8sRuntimeDiagnosticError {
+	return &k8sRuntimeDiagnosticError{check: check, reason: path + " is absent, unreadable or not a regular file"}
+}
+
+// singleLineFileValue returns the trimmed first non-empty line of a file the
+// kernel prints as one line. A second non-empty line fails as unexpected
+// output; an absent file fails as check.
+func singleLineFileValue(file guestFile, check, path string) (string, *k8sRuntimeDiagnosticError) {
+	if !file.present {
+		return "", absentFileFailure(check, path)
 	}
-	name := ""
-	if len(file.lines) > 0 {
-		name = strings.TrimSpace(file.lines[0])
+	var values []string
+	for _, line := range file.lines {
+		if value := strings.TrimSpace(line); value != "" {
+			values = append(values, value)
+		}
+	}
+	if len(values) > 1 {
+		return "", &k8sRuntimeDiagnosticError{check: diagnosticCheckOutput, reason: fmt.Sprintf("%s has %d non-empty lines; the kernel prints one", path, len(values))}
+	}
+	if len(values) == 0 {
+		return "", nil
+	}
+	return values[0], nil
+}
+
+// checkNitroDMIProductName requires the product name to end in
+// nitroGuestDMISuffix.
+func checkNitroDMIProductName(file guestFile, observed map[string]string) *k8sRuntimeDiagnosticError {
+	name, failure := singleLineFileValue(file, diagnosticCheckDMI, nitroDMIProductNamePath)
+	if failure != nil {
+		return failure
 	}
 	observed["dmiProductName"] = clusterText(name)
 	if !strings.HasSuffix(name, nitroGuestDMISuffix) {
@@ -260,7 +276,7 @@ func checkNitroDMIProductName(file guestFile, observed map[string]string) *k8sRu
 
 func checkIsolatedInterfaces(file guestFile, observed map[string]string) *k8sRuntimeDiagnosticError {
 	if !file.present {
-		return &k8sRuntimeDiagnosticError{check: diagnosticCheckInterfaces, reason: procNetDevPath + " is absent, unreadable or not a regular file"}
+		return absentFileFailure(diagnosticCheckInterfaces, procNetDevPath)
 	}
 	names, err := parseProcNetDevInterfaces(file.lines)
 	if err != nil {
@@ -285,7 +301,7 @@ func checkIsolatedInterfaces(file guestFile, observed map[string]string) *k8sRun
 
 func checkEmptyRouteTable(file guestFile, observed map[string]string) *k8sRuntimeDiagnosticError {
 	if !file.present {
-		return &k8sRuntimeDiagnosticError{check: diagnosticCheckRoutes, reason: procNetRoutePath + " is absent, unreadable or not a regular file"}
+		return absentFileFailure(diagnosticCheckRoutes, procNetRoutePath)
 	}
 	routes, err := parseProcNetRouteEntries(file.lines)
 	if err != nil {
@@ -313,39 +329,18 @@ func diagnoseGVisorGuest(ctx context.Context, core *podExecCore) (map[string]str
 		return nil, err
 	}
 	observed := map[string]string{}
-	var failures []*k8sRuntimeDiagnosticError
-
-	if failure := checkGVisorKernelVersion(files[procVersionPath], observed); failure != nil {
-		failures = append(failures, failure)
-	}
-	if failure := checkGVisorSentryMeminfo(files[gvisorSentryMeminfoPath], observed); failure != nil {
-		failures = append(failures, failure)
-	}
-	if len(failures) > 0 {
-		return observed, failures[0]
-	}
-	return observed, nil
+	return observed, firstDiagnosticFailure(
+		checkGVisorKernelVersion(files[procVersionPath], observed),
+		checkGVisorSentryMeminfo(files[gvisorSentryMeminfoPath], observed),
+	)
 }
 
-// checkGVisorKernelVersion requires /proc/version to be one line that starts
-// with "Linux version " and ends in gvisorKernelBuildStamp. A second
-// non-empty line fails as unexpected output.
+// checkGVisorKernelVersion requires /proc/version to start with
+// "Linux version " and end in gvisorKernelBuildStamp.
 func checkGVisorKernelVersion(file guestFile, observed map[string]string) *k8sRuntimeDiagnosticError {
-	if !file.present {
-		return &k8sRuntimeDiagnosticError{check: diagnosticCheckKernel, reason: procVersionPath + " is absent, unreadable or not a regular file"}
-	}
-	nonEmpty := 0
-	for _, line := range file.lines {
-		if strings.TrimSpace(line) != "" {
-			nonEmpty++
-		}
-	}
-	if nonEmpty > 1 {
-		return &k8sRuntimeDiagnosticError{check: diagnosticCheckOutput, reason: fmt.Sprintf("%s has %d non-empty lines; the kernel prints one", procVersionPath, nonEmpty)}
-	}
-	version := ""
-	if len(file.lines) > 0 {
-		version = strings.TrimSpace(file.lines[0])
+	version, failure := singleLineFileValue(file, diagnosticCheckKernel, procVersionPath)
+	if failure != nil {
+		return failure
 	}
 	observed["kernelVersion"] = clusterText(version)
 	if !strings.HasPrefix(version, "Linux version ") || !strings.HasSuffix(version, gvisorKernelBuildStamp) {

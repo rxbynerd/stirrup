@@ -79,7 +79,7 @@ func TestRunK8sRuntimeDiagnostics_GVisorFailures(t *testing.T) {
 		wantObserved map[string]string
 	}{
 		{
-			name:         "gvisor class whose handler is runc, captured from kind",
+			name:         "gvisor class whose handler is runc",
 			stdout:       readDiagnosticsFixture(t, "runtime-diagnostics-gvisor-class-on-runc.txt"),
 			wantCheck:    "kernel_version",
 			wantReason:   `does not end in gVisor's build stamp "#1 SMP Sun Jan 10 15:06:54 PST 2016", so the Pod is not running under gVisor`,
@@ -273,4 +273,13 @@ func TestNewK8sExecutor_GVisorDiagnosticsFailureTearsDown(t *testing.T) {
 			must.Equal(tc.wantCheck, recorder.runtimeDiagnostics[0].check)
 		})
 	}
+}
+
+func TestRunK8sRuntimeDiagnostics_GVisorSkipsBlankLinesAroundTheVersion(t *testing.T) {
+	must := require.New(t)
+	core, security, _ := fakeDiagnosticsCore(t, gvisorDump(ptr.To("\n"+gvisorProcVersion+"\n\n"), ptr.To(sentryMeminfo)), nil)
+
+	must.NoError(runK8sRuntimeDiagnostics(context.Background(), "gvisor", k8sRuntimeProfiles["gvisor"], core))
+	must.Len(security.runtimeDiagnostics, 1)
+	must.Equal(map[string]string{"kernelVersion": gvisorProcVersion, "sentryMeminfo": "present"}, security.runtimeDiagnostics[0].observed)
 }
