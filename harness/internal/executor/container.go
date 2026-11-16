@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/rxbynerd/stirrup/harness/internal/executor/egressproxy"
@@ -102,6 +103,8 @@ type ContainerExecutor struct {
 	// sandboxIdentity records whether the token tmpfs was mounted at
 	// creation; WriteSandboxIdentityToken refuses to run without it.
 	sandboxIdentity bool
+	// lost is set once, when an exec finds the container ended.
+	lost atomic.Pointer[SandboxLostError]
 }
 
 // Probe checks the container runtime for a dry-run preflight: it pings
@@ -731,6 +734,9 @@ func (e *ContainerExecutor) execInContainer(ctx context.Context, cmd []string, w
 // how payloads that must never appear in argv (the sandbox identity token)
 // reach the sandbox.
 func (e *ContainerExecutor) execInContainerInput(ctx context.Context, cmd []string, workdir string, stdin io.Reader, timeout time.Duration) (*ExecResult, error) {
+	if lost := e.lost.Load(); lost != nil {
+		return nil, lost
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -747,7 +753,7 @@ func (e *ContainerExecutor) execInContainerInput(ctx context.Context, cmd []stri
 		if ctx.Err() != nil {
 			return nil, classifyExecCtxErr(ctx, timeout)
 		}
-		return nil, fmt.Errorf("create exec: %w", err)
+		return nil, e.sandboxLostAfter(ctx, fmt.Errorf("create exec: %w", err))
 	}
 
 	var (
@@ -801,6 +807,9 @@ func (e *ContainerExecutor) execInContainerInput(ctx context.Context, cmd []stri
 }
 
 func (e *ContainerExecutor) execInContainerStream(ctx context.Context, cmd []string, workdir string, timeout time.Duration, stdout, stderr io.Writer) (*ExecResult, error) {
+	if lost := e.lost.Load(); lost != nil {
+		return nil, lost
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	execID, err := e.api.createExec(ctx, e.containerID, cmd, workdir)
@@ -808,7 +817,7 @@ func (e *ContainerExecutor) execInContainerStream(ctx context.Context, cmd []str
 		if ctx.Err() != nil {
 			return nil, classifyExecCtxErr(ctx, timeout)
 		}
-		return nil, fmt.Errorf("create exec: %w", err)
+		return nil, e.sandboxLostAfter(ctx, fmt.Errorf("create exec: %w", err))
 	}
 	stream, err := e.api.startExec(ctx, execID)
 	if err != nil {
