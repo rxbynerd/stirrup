@@ -35,7 +35,7 @@ func TestAdmitExecutorImage_EveryImageExecutorIsChecked(t *testing.T) {
 
 			err := admitExecutorImage(types.ExecutorConfig{Type: executorType, Image: "docker.io/someuser/app"}, policy, sec)
 			must.ErrorIs(err, executor.ErrImageNotAdmitted)
-			check.ErrorContains(err, "executor.image")
+			must.ErrorContains(err, "executor.image")
 			check.Equal([]string{"image_admission_denied"}, securityEventNames(t, &buf))
 
 			buf.Reset()

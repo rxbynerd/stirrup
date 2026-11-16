@@ -47,7 +47,10 @@ func (p ImageAdmissionPolicy) Patterns() []string {
 }
 
 // Admit returns nil when image is a syntactically valid reference that the
-// policy admits. An unconfigured policy admits every valid reference.
+// policy admits. An unconfigured policy admits every valid reference. A
+// configured policy refuses a reference that does not name its registry:
+// Podman and CRI-O resolve short names through registries.conf, which need
+// not agree with the docker.io default the patterns are matched against.
 func (p ImageAdmissionPolicy) Admit(image string) error {
 	ref, err := imageRefSegments(image)
 	if err != nil {
@@ -55,6 +58,10 @@ func (p ImageAdmissionPolicy) Admit(image string) error {
 	}
 	if !p.Configured() {
 		return nil
+	}
+	if !imageNamesRegistry(image) {
+		return fmt.Errorf("image %q %w: the reference must name its registry, as in %q",
+			image, ErrImageNotAdmitted, strings.Join(ref, "/"))
 	}
 	for _, pattern := range p.patterns {
 		if imagePatternMatches(pattern, ref) {
@@ -134,6 +141,16 @@ func validateImagePattern(pattern string) error {
 // ":" or the literal "localhost"), and also accepts a segment holding a glob.
 func looksLikeRegistryHost(segment string) bool {
 	return segment == "localhost" || strings.ContainsAny(segment, ".:*?[")
+}
+
+// imageNamesRegistry reports whether image's first path segment is a
+// registry host by the rule normaliseImageRef applies.
+func imageNamesRegistry(image string) bool {
+	if at := strings.Index(image, "@"); at >= 0 {
+		image = image[:at]
+	}
+	first, _, found := strings.Cut(image, "/")
+	return found && (first == "localhost" || strings.ContainsAny(first, ".:"))
 }
 
 func foldDockerHubHost(pattern string) string {

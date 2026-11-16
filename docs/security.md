@@ -892,6 +892,14 @@ The parser rejects a pattern that could never match:
 - `**` (use a trailing `/` instead);
 - whitespace inside a pattern.
 
+A configured policy refuses a reference that does not name its registry,
+such as `ubuntu:26.04` or `acme/base`. Podman and CRI-O resolve such
+short names through `registries.conf`, which can name a registry other
+than `docker.io`, so a short name could match a `docker.io` pattern and
+then run from somewhere else. Write the reference in full, for example
+`docker.io/library/ubuntu:26.04`. The refusal message gives the full
+form.
+
 With no policy configured, every syntactically valid reference is
 accepted. A reference with whitespace, a control character, or an
 empty path segment is rejected whether or not a policy is set.

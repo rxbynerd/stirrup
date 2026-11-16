@@ -127,7 +127,7 @@ func TestImageAdmissionPolicy_GlobPatternMatchesOneSegment(t *testing.T) {
 	}{
 		{"ghcr.io/rxbynerd/stirrup-sandbox:latest", true},
 		{"ghcr.io/rxbynerd/team/base", false},
-		{"ubuntu:26.04", true},
+		{"docker.io/library/ubuntu:26.04", true},
 		{"index.docker.io/library/ubuntu", true},
 		{"docker.io/library/alpine", false},
 	}
@@ -142,6 +142,21 @@ func TestImageAdmissionPolicy_GlobPatternMatchesOneSegment(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestImageAdmissionPolicy_ConfiguredPolicyRefusesShortNames(t *testing.T) {
+	policy, err := ParseImageAdmissionPolicy([]string{"docker.io/", "localhost/"})
+	must := require.New(t)
+	must.NoError(err)
+	for _, image := range []string{"ubuntu", "ubuntu:26.04", "acme/base", "acme/base@sha256:" + strings.Repeat("a", 64)} {
+		t.Run(image, func(t *testing.T) {
+			must := require.New(t)
+			err := policy.Admit(image)
+			must.ErrorIs(err, ErrImageNotAdmitted)
+			must.ErrorContains(err, "must name its registry")
+		})
+	}
+	must.NoError(policy.Admit("localhost/dev"), "localhost is a registry host")
 }
 
 func TestImageAdmissionPolicy_CharacterClassNeverMatchesSlash(t *testing.T) {
