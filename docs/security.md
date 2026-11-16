@@ -431,10 +431,8 @@ The most security-relevant invariants:
   `tools.builtIn`, and must not use `permissionPolicy.type=allow-all`.
 - **Bounded budgets:** `maxTurns` ≤ 100, `timeout` ≤ 3600 s,
   `followUpGrace` ≤ 3600 s, `heartbeatSeconds` 0 or 5-600 s,
-  `maxCostBudget` ≤ $100,
-  `maxTokenBudget` ≤ 50 M. These are config-time bounds; of the two
-  budgets only `maxTokenBudget` is enforced at runtime
-  (`maxCostBudget` is validated and warned about, never enforced — see
+  `maxTokenBudget` ≤ 50 M. These are config-time bounds; the harness
+  has no cost budget (see
   [`configuration.md`](configuration.md#limits-and-budgets)).
   `maxTokenBudget` consumes the provider-reported input where the
   provider reports one, so an endpoint that under-reports its input

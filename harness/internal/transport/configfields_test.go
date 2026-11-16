@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
+	"github.com/rxbynerd/stirrup/gen/runconfig"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -62,6 +63,17 @@ func TestTaskAssignmentFieldPaths_OmitsFieldsWithoutProtoMirror(t *testing.T) {
 	check.NotEqual("mutated", TaskAssignmentFieldPaths()[0], "mutating the returned slice must not change later calls")
 }
 
+// TestPopulatedFieldPaths_FullMessageMatchesAdvertisedFields pins that
+// the exported helper a control plane uses for the pre-assignment check
+// walks a message by the same rules as ready.config_fields: a message
+// with every field set yields exactly the advertised list.
+func TestPopulatedFieldPaths_FullMessageMatchesAdvertisedFields(t *testing.T) {
+	must := require.New(t)
+	pc := &pb.RunConfig{}
+	fillProtoMessage(t, pc.ProtoReflect(), map[protoreflect.FullName]int{})
+	must.Equal(TaskAssignmentFieldPaths(), runconfig.PopulatedFieldPaths(pc))
+}
+
 // TestRunConfigFromProto_CopiesEveryAdvertisedField fills every RunConfig
 // proto field with a non-zero value, translates it, drops zero values
 // from the result, and walks what remains with the integration guide's
@@ -71,7 +83,7 @@ func TestRunConfigFromProto_CopiesEveryAdvertisedField(t *testing.T) {
 	check := assert.New(t)
 	pc := &pb.RunConfig{}
 	fillProtoMessage(t, pc.ProtoReflect(), map[protoreflect.FullName]int{})
-	raw, err := json.Marshal(runConfigFromProto(pc))
+	raw, err := json.Marshal(runconfig.FromProto(pc))
 	must.NoError(err)
 	var doc any
 	must.NoError(json.Unmarshal(raw, &doc))

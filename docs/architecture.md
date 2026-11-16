@@ -899,7 +899,6 @@ Full reference: [`eval.md`](eval.md).
 | `FollowUpGrace` | 0 s | 3600 s |
 | `HeartbeatSeconds` | 30 s | 600 s (minimum 5 s) |
 | `MaxTokenBudget` | unset | 50 M |
-| `MaxCostBudget` (validated, not enforced) | unset | $100 |
 | File read/write size | 10 MB | — |
 | `Executor.Exec` output (hooks/verifiers/git helpers) | 1 MB | — |
 | `run_command` inline model output | 32 KiB combined | configurable |

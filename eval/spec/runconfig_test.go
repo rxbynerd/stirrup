@@ -721,6 +721,31 @@ suite "s" {
 	must.ErrorContains(err, "max_turn")
 }
 
+// TestLoadSuiteHCL_RunConfigRejectsMaxCostBudget asserts the removed
+// max_cost_budget attribute fails as an unknown attribute.
+func TestLoadSuiteHCL_RunConfigRejectsMaxCostBudget(t *testing.T) {
+	must := require.New(t)
+	src := `
+suite "s" {
+  run_config {
+    max_cost_budget = 10
+  }
+
+  task "t1" {
+    mode   = "execution"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	path := writeTemp(t, "runcfg-cost.hcl", src)
+	_, err := LoadSuiteHCL(path)
+	must.ErrorContains(err, "max_cost_budget")
+}
+
 // TestLoadSuiteHCL_RunConfigOverridesUnknownAttribute asserts unknown
 // attributes in a task's `run_config_overrides` block are parse errors.
 func TestLoadSuiteHCL_RunConfigOverridesUnknownAttribute(t *testing.T) {

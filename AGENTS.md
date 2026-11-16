@@ -10,7 +10,7 @@ stirrup/
   buf.yaml                   # Buf v2 config for proto linting/breaking
   buf.gen.yaml               # Buf code generation config (protobuf + gRPC)
   proto/harness/v1/          # Protobuf definitions for gRPC transport
-  gen/                       # Generated Go code from proto (separate module)
+  gen/                       # Go module: generated proto code (gen/harness/v1) and the RunConfig translator (gen/runconfig)
   types/                     # Shared type definitions
   harness/                   # The harness binary and components
     cmd/stirrup/             # Unified CLI entrypoint (cobra: harness + job subcommands)
@@ -189,7 +189,7 @@ The `guard` package (`guard/`) provides an LLM-based safety classifier called at
 - **SecretStore**: resolves `secret://` references from env vars, files, and AWS SSM. API keys are not stored in `RunConfig`.
 - **LogScrubber**: regex-based redaction of 19 secret patterns in log/trace output.
 - **Input validation**: JSON Schema Draft 2020-12 validation via `santhosh-tekuri/jsonschema`, with external schema loading disabled and prototype pollution keys stripped.
-- **RunConfig validation**: hard security invariants for read-only modes, bounded max turns/timeout, `FollowUpGrace <= 3600s`, `HeartbeatSeconds` 0 or 5-600, `MaxCostBudget <= $100` (a config-time bound only — the budget itself is never enforced), and `MaxTokenBudget <= 50M`.
+- **RunConfig validation**: hard security invariants for read-only modes, bounded max turns/timeout, `FollowUpGrace <= 3600s`, `HeartbeatSeconds` 0 or 5-600, and `MaxTokenBudget <= 50M`.
 - **HTTP client timeouts**: provider adapters and MCP/web fetch clients use explicit HTTP clients with timeouts.
 - **Environment filtering**: command execution allowlists safe env vars and blocks API keys/cloud credentials.
 - **Untrusted context delimiters**: dynamic context wrapped in `<untrusted_context>` tags.
@@ -208,7 +208,6 @@ The `guard` package (`guard/`) provides an LLM-based safety classifier called at
   hooks — #461)
 - Follow-up grace cap: 3600s
 - Token budget cap: 50M
-- Cost budget cap: $100 (validated, not enforced — no cost is computed)
 - Lifecycle hook timeout: 300s default, 1800s (30min) max per hook;
   32 hooks max per phase
 

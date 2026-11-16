@@ -13,7 +13,8 @@ import "google/protobuf/struct.proto";
 //   2. Harness sends a HarnessEvent with type "ready" (includes harness_version
 //      and capabilities).
 //   3. Control plane sends a ControlEvent with type "task_assignment" containing
-//      a RunConfig in the task field.
+//      a RunConfig in the task field. A RunConfig that sets a field this
+//      harness's schema does not carry is rejected (see ControlEvent.task).
 //   4. Harness sends "run_started", then streams the run's live transcript
 //      (user_message, turn_started, text_delta, thinking_delta, tool_call,
 //      tool_result, turn_committed) interleaved with heartbeat, warning,
@@ -436,8 +437,8 @@ message HarnessEvent {
   // `stirrup job` sends. Below a listed path that has no listed paths
   // under it, such as a Struct field, the value is data and is not
   // checked against the list. Any other RunConfig field the list omits
-  // is unknown to this harness and is dropped from a task_assignment
-  // without notice.
+  // is unknown to this harness; a task_assignment that sets one is
+  // rejected (see ControlEvent.task).
   repeated string config_fields = 28;
 
   // The build version as a Semantic Versioning 2.0.0 string without the
@@ -573,6 +574,14 @@ message ControlEvent {
 
   // The run configuration. Set on "task_assignment" events only. This is the
   // composition root that drives all harness behaviour for the run.
+  //
+  // A harness advertising the "strict_task_assignment" capability rejects a
+  // RunConfig that carries a field its compiled-in schema does not, at any
+  // depth, including inside repeated fields and map values: before building
+  // any component it sends an "error" naming each such field's number and
+  // message path, then "done" with stop_reason "error" and no trace, and
+  // exits non-zero. A harness without the capability drops such fields
+  // without notice.
   RunConfig task = 2;
 
   // Free-text operator input. Set on "user_response" events. Queued and
@@ -755,11 +764,9 @@ message RunConfig {
   // Max: 50,000,000.
   optional int32 max_token_budget = 17;
 
-  // Optional. Accepted and bounded at 100.00, but NOT enforced: the harness
-  // computes no cost, so no run terminates on this budget. Setting it logs a
-  // warning at config validation. Cap spend in the control plane from
-  // provider billing data.
-  optional double max_cost_budget = 18 [deprecated = true];
+  // Cost budgeting belongs to the control plane; the harness computes no cost.
+  reserved 18;
+  reserved "max_cost_budget";
 
   // Required. Wall-clock timeout in seconds for one run. The primary run's
   // budget starts when this RunConfig is accepted (component construction
@@ -1443,9 +1450,9 @@ message RunTrace {
   // Total output tokens consumed across all provider calls.
   int32 output_tokens = 4;
 
-  // Always 0: no cost accounting is implemented. The harness carries no
-  // pricing table and computes no cost.
-  double cost_usd = 5;
+  // Cost accounting belongs to the control plane; the harness computes no cost.
+  reserved 5;
+  reserved "cost_usd";
 
   // Wall-clock duration of the run in milliseconds.
   int64 duration_ms = 6;

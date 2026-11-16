@@ -41,6 +41,7 @@ jobs:
             harness/go.mod
             types/go.mod
             eval/go.mod
+            gen/go.mod
             examples/controlplane/go.mod
 
       - name: Compute version label
@@ -64,6 +65,10 @@ jobs:
 
       - name: Run type module tests
         working-directory: types
+        run: go test ./...
+
+      - name: Run gen module tests
+        working-directory: gen
         run: go test ./...
 
       - name: Run harness module tests

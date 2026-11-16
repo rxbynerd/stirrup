@@ -644,8 +644,6 @@ Allowed without `--allow-config-drift`:
   below is symmetric because budget exhaustion produces a clean
   termination outcome regardless of direction.
 - `MaxTokenBudget`
-- `MaxCostBudget` (trivially, since it is not enforced — see
-  [`configuration.md`](configuration.md#limits-and-budgets))
 - `TraceEmitter.*`
 - `Executor.Workspace`
 - credential binding fields listed by `requiredSecretFields`

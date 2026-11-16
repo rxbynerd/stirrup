@@ -445,12 +445,16 @@ const (
 	CapabilityLazyToolLoading = "lazy_tool_loading"
 	// CapabilityHeartbeatInterval: RunConfig.HeartbeatSeconds is honoured.
 	CapabilityHeartbeatInterval = "heartbeat_interval"
+	// CapabilityStrictTaskAssignment: a task_assignment whose RunConfig
+	// carries a field the harness does not know, at any depth, is
+	// rejected with "error" and "done" before the run is built.
+	CapabilityStrictTaskAssignment = "strict_task_assignment"
 )
 
 // HarnessCapabilities returns the capabilities this harness advertises on
 // "ready", as a new slice on every call.
 func HarnessCapabilities() []string {
-	return []string{CapabilityLiveTranscript, CapabilityReasoningSummary, CapabilityFollowUpHistory, CapabilityTurnAbandoned, CapabilityLazyToolLoading, CapabilityHeartbeatInterval}
+	return []string{CapabilityLiveTranscript, CapabilityReasoningSummary, CapabilityFollowUpHistory, CapabilityTurnAbandoned, CapabilityLazyToolLoading, CapabilityHeartbeatInterval, CapabilityStrictTaskAssignment}
 }
 
 // Values of HarnessEvent.AbandonReason on a "turn_abandoned" event. The
@@ -551,6 +555,13 @@ type ControlEvent struct {
 	// span. It is deliberately outside RunConfig so a replayed
 	// configuration cannot re-parent a new run onto an old trace.
 	TraceContext *TraceContext `json:"traceContext,omitempty"`
+
+	// UnknownTaskFields describes each field of the task_assignment's
+	// RunConfig that the harness's compiled-in protobuf schema does not
+	// carry, with its field number and message path. The gRPC transport
+	// sets it on decode; it is never read from the wire. A task_assignment
+	// with any is rejected before the run is built.
+	UnknownTaskFields []string `json:"-"`
 }
 
 // HarnessLifecycleEvent represents lifecycle signals sent on the transport.

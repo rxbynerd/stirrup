@@ -216,17 +216,36 @@ func TestLoadRunConfig_ParsesAndRejectsBadFiles(t *testing.T) {
 		return path
 	}
 
-	t.Run("drops the transport key", func(t *testing.T) {
+	const valid = `"runId":"r","mode":"planning","prompt":"p","maxTurns":3,"timeout":60,
+		"provider":{"type":"anthropic","apiKeyRef":"secret://ANTHROPIC_API_KEY"},
+		"tools":{"builtIn":["read_file"]}`
+	t.Run("replaces the file's transport", func(t *testing.T) {
 		must := require.New(t)
-		cfg, err := loadRunConfig(write(t, `{"runId":"r","mode":"planning","prompt":"p","transport":{"type":"stdio"},"maxTurns":3}`))
+		cfg, err := loadRunConfig(write(t, `{`+valid+`,"transport":{"type":"stdio"}}`))
 		must.NoError(err)
 		must.Equal("r", cfg.GetRunId())
 		must.EqualValues(3, cfg.GetMaxTurns())
 	})
+	t.Run("sends what validation defaulted", func(t *testing.T) {
+		must := require.New(t)
+		cfg, err := loadRunConfig(write(t, `{`+valid+`}`))
+		must.NoError(err)
+		must.Equal("deny-side-effects", cfg.GetPermissionPolicy().GetType())
+	})
+	t.Run("rejects a config that fails validation", func(t *testing.T) {
+		must := require.New(t)
+		_, err := loadRunConfig(write(t, `{"runId":"r","mode":"planning","prompt":"p","maxTurns":3}`))
+		must.ErrorContains(err, "validate run config")
+	})
+	t.Run("rejects a field the wire cannot carry", func(t *testing.T) {
+		must := require.New(t)
+		_, err := loadRunConfig(write(t, `{`+valid+`,"traceEmitter":{"type":"gcs","bucket":"run-traces","credential":{"type":"gcp-workload-identity"}}}`))
+		must.ErrorContains(err, "traceEmitter.credential")
+	})
 	t.Run("rejects other unknown fields", func(t *testing.T) {
 		must := require.New(t)
-		_, err := loadRunConfig(write(t, `{"runId":"r","promt":"typo"}`))
-		must.Error(err)
+		_, err := loadRunConfig(write(t, `{`+valid+`,"promt":"typo"}`))
+		must.ErrorContains(err, `unknown field "promt"`)
 	})
 	t.Run("rejects malformed JSON", func(t *testing.T) {
 		must := require.New(t)

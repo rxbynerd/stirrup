@@ -22,6 +22,7 @@ import (
 
 // configOnlyFields are RunConfig JSON paths deliberately kept off the gRPC
 // wire, each with the reason. A path listed here covers its sub-fields.
+// notOnWirePaths in gen/runconfig/parity_test.go lists the same paths.
 var configOnlyFields = map[string]string{
 	"transport":                       "a task_assignment arrives over gRPC by construction, so the translator sets transport itself",
 	"traceEmitter.credential":         "the gcs credential override has no proto field; a gcs emitter on the wire uses workload identity",
@@ -240,17 +241,17 @@ func protoReads(f *ast.File, pbName string) map[protoreflect.FullName]bool {
 	return reads
 }
 
-// translateReads returns the proto fields grpc_translate.go reads.
+// translateReads returns the proto fields gen/runconfig/fromproto.go reads.
 func translateReads(t *testing.T) map[protoreflect.FullName]bool {
 	t.Helper()
 	fset := token.NewFileSet()
 	reads := map[protoreflect.FullName]bool{}
-	for _, sf := range parseProductionFiles(t, fset, "harness/internal/transport") {
-		if strings.HasSuffix(sf.path, "/grpc_translate.go") {
+	for _, sf := range parseProductionFiles(t, fset, "gen/runconfig") {
+		if strings.HasSuffix(sf.path, "/fromproto.go") {
 			reads = protoReads(sf.file, importName(sf.file, "github.com/rxbynerd/stirrup/gen/harness/v1"))
 		}
 	}
-	require.New(t).NotEmpty(reads, "no proto field reads found in grpc_translate.go")
+	require.New(t).NotEmpty(reads, "no proto field reads found in gen/runconfig/fromproto.go")
 	return reads
 }
 
@@ -274,11 +275,11 @@ func pbMessageOf(expr ast.Expr, pbName string) string {
 
 // TestRunConfigProtoMirror_EveryFieldIsMirroredAndTranslated pins that
 // every JSON-tagged RunConfig field has a proto field at the same path and
-// that grpc_translate.go reads every proto field reachable from
+// that gen/runconfig/fromproto.go reads every proto field reachable from
 // pb.RunConfig. A field missing from either side is silently dropped for
 // runs started over `stirrup job`. The check proves a field is read, not
-// that it lands in the right Go field; the round-trip tests in the
-// transport package cover that.
+// that it lands in the right Go field; the tests in gen/runconfig cover
+// that.
 func TestRunConfigProtoMirror_EveryFieldIsMirroredAndTranslated(t *testing.T) {
 	protoFields := protoRunConfigFields()
 	t.Run("every RunConfig field has a proto field", func(t *testing.T) {
@@ -288,7 +289,7 @@ func TestRunConfigProtoMirror_EveryFieldIsMirroredAndTranslated(t *testing.T) {
 				continue
 			}
 			_, ok := protoFields[mirrorKey(path)]
-			check.True(ok, "RunConfig field %q has no proto counterpart in proto/harness/v1/harness.proto; add one (and its grpc_translate.go line) or list it in configOnlyFields with the reason", path)
+			check.True(ok, "RunConfig field %q has no proto counterpart in proto/harness/v1/harness.proto; add one (and its gen/runconfig translation) or list it in configOnlyFields with the reason", path)
 		}
 	})
 
@@ -302,7 +303,7 @@ func TestRunConfigProtoMirror_EveryFieldIsMirroredAndTranslated(t *testing.T) {
 		}
 	})
 
-	t.Run("every proto field is read by grpc_translate.go", func(t *testing.T) {
+	t.Run("every proto field is read by gen/runconfig/fromproto.go", func(t *testing.T) {
 		check := assert.New(t)
 		reads := translateReads(t)
 		keys := make([]string, 0, len(protoFields))
@@ -312,7 +313,7 @@ func TestRunConfigProtoMirror_EveryFieldIsMirroredAndTranslated(t *testing.T) {
 		sort.Strings(keys)
 		for _, k := range keys {
 			f := protoFields[k]
-			check.True(reads[f.field.FullName()], "proto field %s (%s) is never read in grpc_translate.go; a control plane setting it is silently ignored", f.path, f.field.FullName())
+			check.True(reads[f.field.FullName()], "proto field %s (%s) is never read in gen/runconfig/fromproto.go; a control plane setting it is silently ignored", f.path, f.field.FullName())
 		}
 	})
 }

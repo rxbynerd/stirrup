@@ -178,10 +178,9 @@ dwarfs any single response. Operators sizing `MaxTokenBudget` for a
 batch run should leave headroom for one whole turn at that ceiling,
 not for the largest response or the run-average turn cost.
 
-`MaxCostBudget` provides no cover here at all: it is accepted and
-bounded but never enforced (see
+The harness has no cost budget (see
 [Limits and budgets](configuration.md#limits-and-budgets)), so a
-batch run's spend is capped only by `Timeout` — the tightest cap,
+batch run's spend is bounded by `Timeout` — the tightest cap,
 validated at ≤ 3600 s and bound to the run context on both
 `stirrup harness` and `stirrup job` — plus `MaxTokenBudget`,
 `MaxTurns`, and whatever the control plane enforces.

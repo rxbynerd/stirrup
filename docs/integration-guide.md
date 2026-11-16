@@ -49,6 +49,12 @@ status.
 
 - Source of truth: [`proto/harness/v1/harness.proto`](../proto/harness/v1/harness.proto).
   Generate stubs with `buf generate` or protoc.
+- Go control planes import the generated stubs from
+  `github.com/rxbynerd/stirrup/gen/harness/v1` and the translator from
+  `github.com/rxbynerd/stirrup/gen/runconfig`; see
+  [Sending a RunConfig from Go](#sending-a-runconfig-from-go). Both
+  live in the `gen` module, which depends on `types`, so the two
+  modules are versioned together.
 - Every CI and release run publishes a compiled
   `google.protobuf.FileDescriptorSet` as the `proto-descriptor-set`
   workflow artifact (`stirrup-<label>.fds.binpb` + `.sha256`) for
@@ -74,6 +80,9 @@ status.
    optional `trace_context` on the assignment makes the run's trace
    a child of the control plane's span; see
    [Joining a control-plane trace](#joining-a-control-plane-trace-trace_context).
+   A `RunConfig` that sets a field the harness does not know is
+   rejected before anything is built; see
+   [Unknown RunConfig fields](#unknown-runconfig-fields).
 4. If the `RunConfig` opts in, loop construction sends a
    `sandbox_token_request` and blocks (fail-closed, 60 s) for the
    `sandbox_token_response` before creating the sandbox. If sandbox
@@ -112,9 +121,9 @@ status.
    structured output, degraded capabilities, and the `trace_reference`
    when the run recorded an OTel span. Some early
    run failures emit a human-readable `error` event first. A task
-   rejected before its run started (an invalid `RunConfig`, a loop
-   build failure) gets a `done` with `stop_reason: "error"` and no
-   `trace`.
+   rejected before its run started (a `RunConfig` with unknown
+   fields, an invalid `RunConfig`, a loop build failure) gets a `done`
+   with `stop_reason: "error"` and no `trace`.
 8. If a follow-up grace window is configured, the stream stays open
    for `user_response` events that trigger fresh runs in the same
    process and workspace, each sending its own `run_started` with a new
@@ -168,7 +177,7 @@ instead.
 
 | `type` | Fields | Semantics |
 |---|---|---|
-| `task_assignment` | `task` (RunConfig), `trace_context` (optional) | First event on the stream. Duplicate assignments are ignored. A valid `trace_context` (`traceparent`, `tracestate`) parents the primary run's span on the control plane's span; see [Joining a control-plane trace](#joining-a-control-plane-trace-trace_context). |
+| `task_assignment` | `task` (RunConfig), `trace_context` (optional) | First event on the stream. Duplicate assignments are ignored. A `task` that sets a field the harness does not know is rejected; see [Unknown RunConfig fields](#unknown-runconfig-fields). A valid `trace_context` (`traceparent`, `tracestate`) parents the primary run's span on the control plane's span; see [Joining a control-plane trace](#joining-a-control-plane-trace-trace_context). |
 | `user_response` | `user_response`, `request_id` (optional) | During an active run: queued (bounded FIFO of 16) and injected as a user message at the run's next turn boundary — after pending tool results, before the next model call — in arrival order; the run continues past `end_turn` while input is queued. During the follow-up grace window: the oldest queued event starts a new run with its text as the prompt (from the previous run's history under `followUpHistory: "continue"`, see [Follow-up turns](#follow-up-turns)), and anything queued behind it joins that run at its first turn boundary. The text is sanitised like `dynamicContext` (XML/HTML tags stripped, capped at 50,000 bytes), each alteration reported by a `warning` echoing `request_id`. Empty text, a full queue, or arrival after `cancel` drops the event with a `warning`; nothing is dropped silently, including input still queued when the session ends. |
 | `permission_response` | `request_id`, `allowed`, `reason` | Decision for a `permission_request`. `reason` on a denial is passed to the model as context. |
 | `tool_result_response` | `request_id`, `content`, `is_error` | Result payload for a `tool_result_request`. `is_error: true` surfaces to the model as a tool failure. |
@@ -199,8 +208,7 @@ without breaking the protocol.
 after the final git checkpoint, the workspace export and the trace
 upload have finished, so the summary includes their results and the
 run's `error`. Obtain verifier details and final assistant text from a
-configured `resultSink`, process stdout, or a trace emitter. `cost_usd`
-is not calculated by the harness.
+configured `resultSink`, process stdout, or a trace emitter.
 A refusal's category and explanation reach operators through the trace
 emitters (the JSONL and GCS `RunTrace`, and the `stop.category`
 attribute on the OTel `provider.stream` span) and the `provider refused
@@ -210,9 +218,10 @@ them.
 
 A `done` is emitted for every failure that happens after the task
 assignment arrives, including a `RunConfig` rejected on arrival: the
-harness emits `error` carrying the cause — config validation, secret
-resolution, policy loading, sandbox-token exchange, or any other
-component-construction failure — then `done{stop_reason:"error"}`,
+harness emits `error` carrying the cause — unknown `RunConfig`
+fields, config validation, secret resolution, policy loading,
+sandbox-token exchange, or any other component-construction failure —
+then `done{stop_reason:"error"}`,
 before exiting non-zero. A pre-loop `done` carries no `trace` (no run
 started) and no `RunResult` reaches the `resultSink`, so a consumer
 that reads `done.trace` unconditionally must tolerate its absence.
@@ -244,7 +253,8 @@ writer until the window expires. Treating stream closure without a
 Validating control-plane-side before dispatch is still worthwhile: it
 turns a pod launch into an immediate API error. Mirror the harness with
 `stirrup run-config --validate`, or call `types.ValidateRunConfig` from
-Go.
+Go and send the result with `runconfig.ToProto`; see
+[Sending a RunConfig from Go](#sending-a-runconfig-from-go).
 
 ### Transport security posture (v0.1)
 
@@ -382,6 +392,86 @@ alternatives (IRSA, GKE Workload Identity,
 Azure/Anthropic/OpenAI WIF) are configured via
 `provider.credential`; see
 [`credential-federation.md`](credential-federation.md).
+
+### Sending a RunConfig from Go
+
+`github.com/rxbynerd/stirrup/gen/runconfig` translates between
+`types.RunConfig` and the wire message, so a Go control plane does not
+maintain its own field-by-field mapping. The harness decodes every
+`task_assignment` with its `FromProto`, and tests pin `ToProto` as the
+exact inverse:
+
+- `runconfig.ToProto(*types.RunConfig) (*harnessv1.RunConfig, error)`
+  builds the `task_assignment` message. It returns an error, rather
+  than dropping the value, for a field the wire cannot carry: a field
+  in [Features not on the wire](#features-not-on-the-wire) (the error
+  wraps `runconfig.ErrNotOnWire`), an integer outside its `int32` wire
+  field, or an output or tool input schema that is not a JSON object.
+  `transport` must be exactly `{"type": "grpc"}`; an unset transport
+  is an error.
+- `runconfig.FromProto(*harnessv1.RunConfig) *types.RunConfig` is the
+  harness's own decoding of a `task_assignment`. It always sets
+  `transport.type` to `grpc`.
+- `runconfig.PopulatedFieldPaths(*harnessv1.RunConfig) []string` lists
+  the fields a message sets, for the check in
+  [Negotiating RunConfig fields](#negotiating-runconfig-fields).
+
+To validate as the harness will, set `transport.type` to `grpc`, call
+`types.ValidateRunConfig`, then `runconfig.ToProto`. The harness
+validates a `task_assignment` with the `grpc` transport, and several
+rules depend on it: `executor.sandboxIdentity` and
+`ruleOfTwo.runtime.onDetect: "ask-upstream"` require it, and
+`provider.batch.harnessSidePolling` is rejected under it. `ToProto`
+refuses an unset transport so that the config validated on the control
+plane is the config the harness validates:
+
+```go
+rc.Transport = types.TransportConfig{Type: "grpc"}
+if err := types.ValidateRunConfig(&rc); err != nil {
+	return err
+}
+task, err := runconfig.ToProto(&rc)
+if err != nil {
+	return err
+}
+```
+
+Validation fills defaults in place, so the message carries them
+explicitly. A harness built from the same `types` version leaves them
+unchanged; a harness with different defaults receives the control
+plane's as explicit values.
+[`examples/controlplane`](../examples/controlplane) loads its task
+this way.
+
+### JSON round trip
+
+A control plane not written in Go can convert file-config JSON to
+protobuf JSON and back, since every mirrored field has the same JSON
+name in both. A test that sets every field and round-trips it pins
+two differences:
+
+- Encoding a `RunConfig` with Go's `encoding/json` always writes a
+  `transport` key, and writes `traceEmitter.credential` and
+  `traceEmitter.archive.credential` when set. Protobuf JSON has no
+  field for any of them, so a strict protobuf JSON parser rejects the
+  document. Remove the keys before parsing. Discarding unknown fields
+  instead also discards a misspelled or newer field without notice.
+- Protobuf JSON writes 64-bit integers as JSON strings. The four
+  `tools.commandOutput` byte limits (`inlineMaxBytes`,
+  `previewBytesPerStream`, `maxBytesPerStream`, `maxBytesPerRun`) are
+  64-bit, and file-config JSON rejects them as strings. Convert them
+  to numbers before decoding protobuf JSON as file-config JSON.
+  Protobuf JSON parsers accept numbers for them.
+
+Apart from these, every field survives in both directions. Use the
+lower-camel-case names exactly: file-config JSON also matches keys
+case-insensitively and protobuf JSON also accepts the snake_case proto
+names, so a key accepted by one parser can be rejected by the other.
+Value ranges also differ: an integer outside the `int32` range of its
+wire field decodes as file-config JSON and is rejected as protobuf
+JSON, and numbers inside `outputSchema` and a tool's `inputSchema` are
+carried as 64-bit floats, so integers above 2^53 lose precision on the
+wire.
 
 ## Cookbook
 
@@ -626,11 +716,9 @@ hard — or different providers per mode.
 - The token budget is enforced between provider calls and terminates
   the run with `outcome: "budget_exceeded"`; wall-clock expiry yields
   `timeout`. Ceilings are 50 M tokens and 3600 s.
-- `maxCostBudget` is accepted and capped at $100, but the harness does
-  not currently calculate cost or enforce that budget; setting it logs a
-  WARN at config validation. `RunTrace.cost_usd` is unpopulated for the
-  same reason. Enforce money limits in the control plane using provider
-  billing/pricing data.
+- The harness has no cost budget; enforce money limits in the control
+  plane using provider billing/pricing data (see
+  [Limits and budgets](configuration.md#limits-and-budgets)).
 - `contextStrategy` bounds the conversation itself:
   `sliding-window` (default), `summarise`, `offload-to-file`, or `clear-tool-results`.
 - Pair `timeout` with an infrastructure-level deadline
@@ -1410,7 +1498,8 @@ see [`guardrails.md`](guardrails.md).
 
 The proto mirrors `RunConfig` field-for-field, with a small set of
 exceptions. These fields exist on the JSON `RunConfig` (file/stdin
-topologies) but **cannot be expressed in a `task_assignment`**. Apart
+topologies) but **cannot be expressed in a `task_assignment`**, and
+`runconfig.ToProto` rejects a config that sets one. Apart
 from `transport`, which is harness-local by design, an integration
 that needs one supplies the config file itself (CLI or Cloud Run
 topology):
@@ -1461,6 +1550,12 @@ around silently".
     honoured. A harness without it keeps the 30 s interval and
     ignores the field, so a control plane that shortens its liveness
     deadline should gate on this capability.
+  - `strict_task_assignment`: a `task_assignment` whose `RunConfig`
+    sets a field the harness does not know is rejected instead of run
+    without it; see [Unknown RunConfig fields](#unknown-runconfig-fields).
+    Only `stirrup job` accepts a `task_assignment`; the `ready` of
+    `stirrup harness --transport grpc` lists the capability too, but
+    that harness takes its configuration from a file.
 - `ready.config_fields` lists every `RunConfig` field a
   `task_assignment` can set on the harness. Check the task against it
   before sending `task_assignment`; see
@@ -1476,14 +1571,17 @@ around silently".
   fleet inventory and reporting; gate features on `capabilities` and
   fields on `config_fields`, not on version comparisons.
 - For mirrored fields, file-config JSON and protobuf JSON use the same
-  lower-camel-case names. The MCP host allowlist spelling is
+  lower-camel-case names; [JSON round trip](#json-round-trip) lists
+  the differences in encoding. The MCP host allowlist spelling is
   `tools.mcpServers[].allowedMcpHosts`; the pre-#554 file spelling
   `allowedMCPHosts` is no longer accepted.
-- File-config JSON rejects unknown fields (`DisallowUnknownFields`).
-  Protobuf binary compatibility is different: an older harness ignores
-  unknown fields. Check a newly added wire field against
-  `ready.config_fields` before relying on it; do not assume it will
-  fail loudly.
+- File-config JSON rejects unknown fields (`DisallowUnknownFields`),
+  and so does `stirrup job` for a `task_assignment` when it advertises
+  `strict_task_assignment`; see
+  [Unknown RunConfig fields](#unknown-runconfig-fields). A harness
+  without that capability ignores unknown protobuf fields, so against
+  it a newly added wire field must be checked against
+  `ready.config_fields` before the control plane relies on it.
 - `tools.profile` and `traceEmitter.archive` reached the wire without a
   capability of their own. A harness built before them ignores both: it
   presents tools under their internal names and writes the
@@ -1500,10 +1598,14 @@ around silently".
 ### Negotiating RunConfig fields
 
 A control plane and a harness built at different times can disagree on
-the `RunConfig` schema. A field the harness does not know is dropped
-without notice when it arrives in a `task_assignment`. The `ready`
-event that `stirrup job` sends carries the harness's schema, so the
-control plane can find such fields before it assigns the task.
+the `RunConfig` schema. A harness advertising `strict_task_assignment`
+rejects a `task_assignment` that sets a field it does not know (see
+[Unknown RunConfig fields](#unknown-runconfig-fields)); an older
+harness drops the field without notice. The `ready` event that
+`stirrup job` sends carries the harness's schema, so the control plane
+can find such fields before it assigns the task, and choose a
+different harness or remove a field it knows is safe to omit instead
+of having the assignment rejected.
 
 `ready.config_fields` lists every `RunConfig` field a
 `task_assignment` can set on this harness: the fields it accepts that
@@ -1530,7 +1632,8 @@ sorted byte-wise:
 Before sending `task_assignment`:
 
 1. Read `config_fields` from `ready` into a set.
-2. Record the path of every field the intended `RunConfig` sets. Either
+2. Record the path of every field the intended `RunConfig` sets. In Go,
+   `runconfig.PopulatedFieldPaths` returns them. Otherwise, either
    walk the message with protobuf reflection, or render it as protobuf
    JSON with the default JSON names (not `UseProtoNames` or
    `preserving_proto_field_name`) and without unpopulated fields, then
@@ -1575,11 +1678,9 @@ to a newer harness unless the field is on the control plane's
 safe-to-omit list.
 
 `config_fields` says the harness parses a field, not that it implements
-a feature: gate features on `capabilities`. A listed field can also be
-accepted without effect, as `maxCostBudget` is (see
-[Limits and budgets](configuration.md#limits-and-budgets)). Accepted
-values are not negotiated either: a new value of a listed field, such
-as a new executor type, is invisible in the list. A `ready` from
+a feature: gate features on `capabilities`. Accepted values are not
+negotiated either: a new value of a listed field, such as a new
+executor type, is invisible in the list. A `ready` from
 `stirrup job` without `config_fields` comes from a harness that
 predates the list, and no negotiation is possible with it; its field
 set has to come from its release notes. The `ready` that
@@ -1602,3 +1703,43 @@ schema evolves under these rules:
   `reasoning_summary`, `follow_up_history` and `lazy_tool_loading`
   capabilities predate `config_fields` and remain the gates for those
   features.
+
+### Unknown RunConfig fields
+
+A `stirrup job` harness that advertises `strict_task_assignment`
+checks every `task_assignment` for `RunConfig` fields its compiled-in
+protobuf schema does not carry, at any depth: in the `RunConfig`
+itself, in nested messages such as `executor`, in each element of a
+repeated field and in each map value, including the
+`google.protobuf.Struct` values of fields such as `outputSchema`.
+Running such a task would drop
+the field, and a dropped field may be one that restricts the run, such
+as a network mode, a protected write target or a tool limit.
+
+When any are present the harness builds nothing: it creates no sandbox,
+resolves no secret and makes no provider call. It sends `error`, then
+`done{stop_reason:"error"}` with no `trace`, and exits non-zero. The
+`error` message names each unknown field by its field number and the
+path of the message that carries it, in the path form of
+`config_fields`, with `*` standing for any map key. The text is for
+people reading logs; its wording is not part of the contract:
+
+```text
+task_assignment rejected: the RunConfig sets fields this harness does not know (field 9001 at the top level, field 98 under executor); send only the fields listed in ready.config_fields
+```
+
+The message names at most 16 fields and ends with `and further
+unknown fields` when there are more. A path longer than 256 bytes,
+as inside a deeply nested `outputSchema`, is cut and ends in `...`.
+A known field number sent with a different wire type is reported as
+`field N with an unexpected wire type` and rejected the same way. A
+field retired from the schema is unknown too: the removed
+`max_cost_budget` (field 18) is rejected like any other.
+
+There is no lenient mode. For a rolling upgrade, the control plane
+reads `ready.config_fields` and either assigns the task to a harness
+that lists every field it sets or removes the fields its own
+safe-to-omit list names, as described in
+[Negotiating RunConfig fields](#negotiating-runconfig-fields).
+Unknown fields in control events other than `task_assignment`, and in
+a `task_assignment` outside its `task`, are ignored.

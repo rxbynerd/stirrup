@@ -35,7 +35,8 @@ const (
 //  2. Harness sends a HarnessEvent with type "ready" (includes harness_version
 //     and capabilities).
 //  3. Control plane sends a ControlEvent with type "task_assignment" containing
-//     a RunConfig in the task field.
+//     a RunConfig in the task field. A RunConfig that sets a field this
+//     harness's schema does not carry is rejected (see ControlEvent.task).
 //  4. Harness sends "run_started", then streams the run's live transcript
 //     (user_message, turn_started, text_delta, thinking_delta, tool_call,
 //     tool_result, turn_committed) interleaved with heartbeat, warning,
@@ -92,7 +93,8 @@ type HarnessService_RunTaskClient = grpc.BidiStreamingClient[HarnessEvent, Contr
 //  2. Harness sends a HarnessEvent with type "ready" (includes harness_version
 //     and capabilities).
 //  3. Control plane sends a ControlEvent with type "task_assignment" containing
-//     a RunConfig in the task field.
+//     a RunConfig in the task field. A RunConfig that sets a field this
+//     harness's schema does not carry is rejected (see ControlEvent.task).
 //  4. Harness sends "run_started", then streams the run's live transcript
 //     (user_message, turn_started, text_delta, thinking_delta, tool_call,
 //     tool_result, turn_committed) interleaved with heartbeat, warning,

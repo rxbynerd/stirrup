@@ -250,9 +250,7 @@ active and Rule of Two is enforced.
   },
 
   // Limits. ValidateRunConfig caps maxTurns at 100, timeout at 3600s,
-  // followUpGrace at 3600s, maxCostBudget at $100, maxTokenBudget at
-  // 50M. maxCostBudget is only bounded, never enforced: setting it
-  // logs a warning and caps nothing.
+  // followUpGrace at 3600s, maxTokenBudget at 50M.
   "maxTurns": 20,
   "timeout": 600,
   "logLevel": "info"
