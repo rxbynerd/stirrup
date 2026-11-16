@@ -198,8 +198,12 @@ service HarnessService {
 //     Always the last event of a run, including the failure paths below.
 //
 //   "error"
-//     - message: human-readable error description. Followed by a "done"
-//                event carrying stop_reason "error".
+//     - message:       human-readable error description. Followed by a
+//                      "done" event carrying stop_reason "error".
+//     - build_failure: why the task could not be built into a run; set by
+//                      a harness advertising the "build_failure"
+//                      capability on the "error" it sends when
+//                      construction fails, before any run started.
 //
 //   "warning"
 //     - message:    human-readable warning (non-fatal).
@@ -208,10 +212,20 @@ service HarnessService {
 //                   ControlEvent's request_id so the sender can retry.
 //
 //   "heartbeat"
-//     - (no additional fields) Sent during execution to signal liveness,
-//       every 30 seconds unless RunConfig.heartbeat_seconds sets another
-//       interval. The control plane should treat absence of heartbeats
-//       as a potential hang.
+//     - session_phase: what the session is doing; set by a harness that
+//                      advertises the "session_liveness" capability.
+//     Sent to signal liveness, every 30 seconds unless
+//     RunConfig.heartbeat_seconds sets another interval. Without
+//     "session_liveness", heartbeats are sent only while a run is in
+//     progress and carry no fields. With it, they are sent from just
+//     after "ready" until the session ends, at most one interval apart:
+//     at 30 seconds until the task_assignment arrives and at the task's
+//     interval from then on. A change of phase or step sends one at once
+//     and restarts the interval. None is sent between a run's "done" and
+//     the session's next phase, so a session without a follow-up window
+//     ends with "done"; with one, "idle_followup" heartbeats follow
+//     "done" while the harness still accepts a user_response. The control
+//     plane should treat absence of heartbeats as a potential hang.
 //
 //   "batch_submission"
 //     - request_id: correlation ID; the control plane must echo this in
@@ -458,6 +472,99 @@ message HarnessEvent {
   // events when harness_version is a semantic version, as release tags
   // are; empty otherwise, as for "dev" and "main" builds.
   string harness_semver = 29;
+
+  // What the session is doing. Set on "heartbeat" events from a harness
+  // that advertises the "session_liveness" capability.
+  SessionPhase session_phase = 30;
+
+  // Why the task could not be built into a run. Set on the "error" event
+  // `stirrup job` sends when construction fails, before any run started;
+  // its "done" follows with stop_reason "error" (or
+  // "control_stream_lost"). Unset on every other "error".
+  BuildFailure build_failure = 31;
+}
+
+// BuildFailure mirrors types.BuildFailure: a task that could not be built
+// into a run.
+message BuildFailure {
+  // The failure's class. Values are only ever added: preserve one that is
+  // not recognised and handle it as "unclassified".
+  //   "config_invalid"            the RunConfig failed validation or sets
+  //                               a field the harness does not know.
+  //   "host_file"                 a file the RunConfig names could not be
+  //                               used from the harness host.
+  //   "credential"                a secret reference or provider
+  //                               credential could not be resolved.
+  //   "token_exchange"            the sandbox identity token exchange was
+  //                               declined, timed out, or returned an
+  //                               unusable token.
+  //   "sandbox_platform"          the cluster or container engine that
+  //                               hosts the sandbox refused or could not
+  //                               serve a request: RBAC, a missing
+  //                               namespace or RuntimeClass, a quota, an
+  //                               unreachable engine.
+  //   "admission_mismatch"        admission changed the sandbox Pod in a
+  //                               way the executor's runtime does not
+  //                               accept.
+  //   "runtime_diagnostic_failed" the sandbox's runtime diagnostics found
+  //                               it was not isolated as its runtime
+  //                               requires.
+  //   "sandbox_image"             the sandbox image could not be pulled or
+  //                               was not allowed, or the sandbox
+  //                               container exited before it was ready.
+  //   "sandbox_not_ready"         the sandbox did not become ready or
+  //                               reachable for commands, for example
+  //                               within the readiness timeout.
+  //   "control_stream_lost"       the control stream ended during
+  //                               construction; sent best-effort, and
+  //                               "done" stop_reason is authoritative.
+  //   "interrupted"               a shutdown signal cut construction
+  //                               short.
+  //   "unclassified"              any other construction failure; the
+  //                               message has the detail.
+  string reason = 1;
+
+  // Where construction stopped: phase "constructing" and the step that
+  // was in progress, as on the session's heartbeats; an empty step is
+  // construction outside the named steps.
+  SessionPhase phase = 2;
+}
+
+// SessionPhase mirrors types.SessionPhase: what a `stirrup job` session is
+// doing when it sends a "heartbeat". Both fields are open vocabularies:
+// consumers must preserve values they do not recognise.
+message SessionPhase {
+  // The session's phase:
+  //   "awaiting_assignment" "ready" is sent and no task_assignment has
+  //                         arrived.
+  //   "constructing"        the task is being built into a run, from the
+  //                         task_assignment to the run's "run_started". A
+  //                         follow-up run's setup is reported here too.
+  //   "running"             from "run_started" until the run's turns and
+  //                         verification end.
+  //   "post_run"            git finalisation, postRun hooks, workspace
+  //                         export, trace upload and result delivery,
+  //                         before the run's "done".
+  //   "idle_followup"       the follow-up grace window is open and no run
+  //                         is active.
+  string phase = 1;
+
+  // The step within the phase; empty for the phase's work outside the
+  // named steps:
+  //   "token_exchange"      waiting for a sandbox_token_response
+  //                         (constructing).
+  //   "sandbox_create"      creating the sandbox (constructing).
+  //   "sandbox_ready"       waiting for a created sandbox to be scheduled,
+  //                         pull its image, start and accept commands
+  //                         (constructing; Kubernetes executors only).
+  //   "runtime_diagnostics" checking the sandbox's isolation runtime from
+  //                         inside it (constructing; Kubernetes executor
+  //                         with a runtime that runs diagnostics only).
+  //   "pre_run_hooks"       the run's preRun hooks (constructing).
+  //   "run_setup"           the run's other setup, such as repository
+  //                         guidance and git setup (constructing).
+  //   "post_run_hooks"      the run's postRun hooks (post_run).
+  string step = 2;
 }
 
 // TraceReference mirrors types.TraceReference: the identity of a run's
@@ -807,7 +914,9 @@ message RunConfig {
   string follow_up_history = 60;
 
   // Optional. Seconds between "heartbeat" events while a run is in
-  // progress. 0 or unset selects the default of 30. Otherwise range: 5-600.
+  // progress and, on a harness advertising "session_liveness", for the rest
+  // of the session once the task is validated. 0 or unset selects the
+  // default of 30. Otherwise range: 5-600.
   int32 heartbeat_seconds = 61;
 
   // Optional. Structured log verbosity for this run.

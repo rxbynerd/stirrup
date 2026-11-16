@@ -172,7 +172,9 @@ type RunConfig struct {
 	FollowUpGrace *int `json:"followUpGrace,omitempty"`
 
 	// HeartbeatSeconds is the interval in seconds between heartbeat events
-	// while a run is in progress. Zero selects DefaultHeartbeatSeconds;
+	// while a run is in progress and, under `stirrup job`, for the rest of
+	// the session once the task is validated. Zero selects
+	// DefaultHeartbeatSeconds;
 	// any other value is bounded to [minHeartbeatSeconds,
 	// maxHeartbeatSeconds] by ValidateRunConfig.
 	HeartbeatSeconds int `json:"heartbeatSeconds,omitempty"`

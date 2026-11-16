@@ -19,6 +19,7 @@ import (
 	"k8s.io/utils/ptr"
 
 	"github.com/rxbynerd/stirrup/harness/internal/security"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // guestExec serves every pods/exec call with stdout and err, counting calls.
@@ -255,4 +256,45 @@ func TestNewK8sExecutor_NitroDiagnosticsRedactSecretShapedGuestValues(t *testing
 	observed, ok := event.Data["observed"].(map[string]any)
 	must.True(ok, "observed is a JSON object: %#v", event.Data["observed"])
 	must.Contains(observed["dmiProductName"], "[REDACTED")
+}
+
+func TestNewK8sExecutor_ReportsStartupStepsAfterPodCreate(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     func() K8sExecutorConfig
+		execOut string
+		want    []string
+	}{
+		{
+			name: "runtime with diagnostics",
+			cfg: func() K8sExecutorConfig {
+				cfg, _ := nitroConstructorCfg()
+				return cfg
+			},
+			execOut: isolatedGuestDump,
+			want:    []string{types.SessionStepSandboxReady, types.SessionStepRuntimeDiagnostics},
+		},
+		{
+			name: "runtime without diagnostics",
+			cfg:  func() K8sExecutorConfig { return constructorCfg("gvisor") },
+			want: []string{types.SessionStepSandboxReady},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cs := fake.NewClientset()
+			admitPods(cs, nil)
+			cfg := tc.cfg()
+			var steps []string
+			cfg.Lifecycle.StartupProgress = func(step string) { steps = append(steps, step) }
+			calls := 0
+
+			exec, err := newFakeK8sExecutorWithExec(context.Background(), cs, cfg, guestExec(tc.execOut, nil, &calls))
+
+			must.NoError(err)
+			must.Equal(tc.want, steps)
+			must.NoError(exec.Close())
+		})
+	}
 }

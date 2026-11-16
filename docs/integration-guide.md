@@ -71,7 +71,9 @@ status.
    [Negotiating RunConfig fields](#negotiating-runconfig-fields).
    When `CONTROL_PLANE_SESSION_ID` is set in the Pod environment,
    the `id` field echoes it so the stream can be correlated to the
-   session that launched the Pod.
+   session that launched the Pod; `CONTROL_PLANE_REQUIRE_SESSION_ID`
+   makes the job refuse to start without one (see
+   [`deployment.md`](deployment.md#optional-environment-variables)).
 3. The control plane sends
    `ControlEvent{type:"task_assignment", task: RunConfig}` — this
    must be the first `ControlEvent`. The harness waits at most
@@ -108,9 +110,11 @@ status.
    model's `text_delta` and `thinking_delta` fragments, each
    `tool_call` and its `tool_result`, and a `user_message` for every
    user-role message the harness appends to the history. Occasional
-   `warning` events and a `heartbeat` (every **30 seconds** by default;
-   see [Detecting a stalled or orphaned run](#detecting-a-stalled-or-orphaned-run))
-   are interleaved. Depending on configuration it may also emit
+   `warning` events and a `heartbeat` (every **30 seconds** by default)
+   are interleaved. A harness advertising `session_liveness` also sends
+   heartbeats before and between runs, from just after `ready`, each
+   naming the session's phase; see
+   [Detecting a stalled or orphaned run](#detecting-a-stalled-or-orphaned-run). Depending on configuration it may also emit
    `permission_request`, `tool_result_request`, `batch_submission`,
    `batch_waiting`, and `batch_cancel_request`. See
    [Watching a run live](#watching-a-run-live) for the ordering and
@@ -157,9 +161,9 @@ the policy lint keeps its lint findings in the message.
 | `turn_abandoned` | `turn`, `abandon_reason` | Informational. The turn left nothing valid in the history; discard what was buffered for it. `abandon_reason` says why; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. Every `turn_started` is followed by exactly one `turn_committed` or `turn_abandoned`. Sent by harnesses advertising the `turn_abandoned` capability. |
 | `permission_request` | `request_id`, `tool_name`, `input` | **Must respond** with `permission_response` echoing `request_id` before the policy timeout (default 60 s) or the call is auto-denied. |
 | `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input`, `trace_context` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. `trace_context` (`traceparent`, `tracestate`), when present, is the W3C context of the call's `execute_tool` span; see [Control-plane-fulfilled tools](#control-plane-fulfilled-tools-tool_result_request). |
-| `heartbeat` | — | Liveness signal every 30 s by default; `RunConfig.heartbeat_seconds` sets 5-600 s. Sent only while a run is in progress. Treat sustained absence during a run as a hang and reap the Pod; see [Detecting a stalled or orphaned run](#detecting-a-stalled-or-orphaned-run) for when none are sent. |
+| `heartbeat` | `session_phase` (`phase`, `step`) | Liveness signal every 30 s by default; `RunConfig.heartbeat_seconds` sets 5-600 s. From a harness advertising `session_liveness`, sent for the whole session and naming its phase; otherwise sent only while a run is in progress, with no fields. Treat sustained absence as a hang and reap the Pod; see [Detecting a stalled or orphaned run](#detecting-a-stalled-or-orphaned-run). |
 | `warning` | `message`, `request_id` (about a `user_response`) | Log; non-fatal. A `warning` carrying `request_id` is about that `user_response`: a message starting `user_response dropped:` means it was not accepted (empty text, the queue of 16 was full, the session was cancelled, or it was still queued when the session ended) — retry after the next turn where that applies; one starting `user_response sanitized:` means it was accepted after tag stripping or truncation to 50,000 bytes. A message starting `result sink:` arrives just before a run's `done` and means the configured `resultSink` could not deliver that run's `RunResult`; the run's outcome is unchanged. |
-| `error` | `message` | Optional diagnostic for some early run failures; when emitted by a built loop, a `done` follows. |
+| `error` | `message`, `build_failure` (`reason`, `phase`) | Optional diagnostic for some early run failures; when emitted by a built loop, a `done` follows. When the task could not be built into a run, `build_failure` classifies why and names the construction step; see [Classifying a construction failure](#classifying-a-construction-failure). |
 | `done` | `stop_reason`, `trace` | Terminal status for that run. `trace` is the run summary, including `trace_reference` when the run recorded an OTel span; it is absent on a `done` for a task rejected before its run started. |
 | `batch_submission` | `request_id`, `input` (BatchSubmission JSON) | Batch mode only — see [Batch mode](#batch-mode-amortised-token-pricing). |
 | `batch_waiting` | `request_id` | Batch keep-alive (roughly every 5 minutes) distinguishing "provider batch still pending" from a stall. |
@@ -262,6 +266,44 @@ turns a pod launch into an immediate API error. Mirror the harness with
 Go and send the result with `runconfig.ToProto`; see
 [Sending a RunConfig from Go](#sending-a-runconfig-from-go).
 
+#### Classifying a construction failure
+
+The `error` that `stirrup job` sends when the task cannot be built into a
+run carries `build_failure`, so a control plane can react to the class
+of failure without matching on the message. A harness that sends it
+advertises the `build_failure` capability on `ready`; a pre-run `error`
+from a harness without it carries none. Reasons are only ever added: a
+control plane preserves a value it does not recognise and handles it as
+`unclassified`. The responses below are advice, not part of the
+contract.
+
+| `reason` | Meaning | Typical response |
+|---|---|---|
+| `config_invalid` | The `RunConfig` failed validation, or sets a field the harness does not know (see [Unknown RunConfig fields](#unknown-runconfig-fields)). | Fix the task; retrying it unchanged fails again. |
+| `host_file` | A file named by `provider.replayFile`, `permissionPolicy.policyFile` or `provider.gcpCredentialsFile` (or the same field of a `providers` entry) could not be used from the harness host. | Fix the task or the harness image; the message names only the field. Other host files a task can name, such as `executor.k8sKubeconfig`, report under their component's class. |
+| `credential` | A secret reference or provider credential could not be resolved. | Fix the secret or the workload identity. |
+| `token_exchange` | The sandbox identity token exchange was declined, timed out, or returned an unusable token. | Check the control plane's own token issuer. |
+| `sandbox_platform` | The cluster or container engine refused or could not serve a sandbox request: RBAC, a missing namespace or RuntimeClass, a quota, an unreachable engine. | Treat the cluster as misconfigured; retrying elsewhere may succeed. |
+| `admission_mismatch` | Admission changed the sandbox Pod in a way the executor's runtime does not accept. | Fix the cluster's admission policy. |
+| `runtime_diagnostic_failed` | The sandbox's runtime diagnostics found it was not isolated as its runtime requires. | Treat the node pool as misconfigured; do not retry on it. |
+| `sandbox_image` | The sandbox image could not be pulled or was not allowed, or its container exited on its own before it was ready. | Fix the image reference, its registry credentials or the image itself. |
+| `sandbox_not_ready` | The sandbox did not become ready or reachable for commands, for example within the readiness timeout, or the runtime diagnostics could not run. | Usually capacity or a slow node; retrying may succeed. |
+| `control_stream_lost` | The control stream ended during construction. Sent best-effort on a stream already found lost. | `done.stop_reason` (`control_stream_lost`) is authoritative. |
+| `interrupted` | A shutdown signal (SIGTERM or SIGINT) cut construction short, whatever was running. | The Pod was being stopped; nothing in the task is implicated. |
+| `unclassified` | Any other construction failure. | Read the message. |
+
+`build_failure.phase` is `constructing` with the step that was in
+progress, the same values the session heartbeats carry (see
+[The session phase](#the-session-phase)); an empty step is construction
+outside the named steps. A sandbox whose image cannot be pulled under
+the `k8s` executor, for example, arrives as reason `sandbox_image` and
+step `sandbox_ready`, since the kubelet pulls the image while the
+harness waits for readiness. The `k8s-sandbox` executor watches the
+Sandbox resource rather than its Pod, so the same failure arrives there
+as `sandbox_not_ready` once the readiness wait ends. `build_failure` is set only on this pre-run
+`error`; a run that fails setup, such as a fatal `preRun` hook, reports
+its outcome through `done.stop_reason` as before.
+
 ### Transport security posture (v0.1)
 
 The gRPC transport is **plaintext and unauthenticated** by default — the
@@ -287,7 +329,9 @@ The smallest correct `RunTask` implementation:
    against `ready.config_fields`; see
    [Negotiating RunConfig fields](#negotiating-runconfig-fields).
 3. Consume events. Log `text_delta` / `tool_call` / `tool_result`;
-   track `heartbeat` arrival times.
+   track `heartbeat` arrival times and, when present, their
+   `session_phase`. Heartbeats can arrive before the assignment is
+   sent.
 4. Answer every `permission_request` (even a blanket deny keeps the
    contract; an unanswered request stalls the tool call until the
    timeout auto-denies it).
@@ -315,33 +359,98 @@ The process writes `/tmp/healthy`, but the published distroless image
 contains no `test` or shell binary, so an exec probe runs
 `stirrup healthcheck --file=/tmp/healthy` instead (see
 [Health probes](deployment.md#health-probes)). The wire heartbeat is the
-control plane's direct run-liveness signal.
+control plane's direct liveness signal for the session.
 
 ### Detecting a stalled or orphaned run
 
-The harness emits a `heartbeat` event every 30 seconds while a run is in
-progress. `RunConfig.heartbeat_seconds` (JSON `heartbeatSeconds`,
-`--heartbeat-seconds` on the CLI) sets another interval: `0` or unset
-keeps 30 s, and any other value must be between 5 and 600. The interval
-applies to the primary run and to every follow-up run in the session.
-A harness whose `ready.capabilities` lacks `heartbeat_interval` ignores
-the field and keeps 30 s (see [Compatibility](#compatibility)).
+A harness whose `ready.capabilities` includes `session_liveness` sends
+`heartbeat` events for the whole session, and each one names what the
+session is doing. A harness without it sends them only while a run is in
+progress, as described under
+[Harnesses without `session_liveness`](#harnesses-without-session_liveness).
+`stirrup job` advertises the capability; the gating is on what the
+harness advertises, not on anything the control plane requests, so a
+control plane that ignores the new field keeps working unchanged.
 
-Heartbeats cover the run itself. They start when the loop begins the
-run, after component construction, and stop when the run's context ends
-(its `timeout` or a `cancel`) or just before `done`, whichever comes
-first. None are sent while the harness waits for the assignment, while
-it builds the loop, between runs (including the follow-up grace window),
-or during `postRun` hooks that outlive the run's deadline (see
+#### Interval
+
+Heartbeats are sent every 30 seconds by default, and because a phase
+change sends one at once, consecutive heartbeats are at most one
+interval apart rather than exactly one apart.
+`RunConfig.heartbeat_seconds` (JSON `heartbeatSeconds`,
+`--heartbeat-seconds` on the CLI) sets another interval: `0` or unset
+keeps 30 s, and any other value must be between 5 and 600. Until the
+`task_assignment` arrives the harness has no `RunConfig`, so it uses
+30 s; the task's interval applies from the moment the task passes
+validation, through construction, the primary run and every follow-up
+run. A harness whose `ready.capabilities` lacks `heartbeat_interval`
+ignores the field and keeps 30 s (see [Compatibility](#compatibility)).
+A deadline for `awaiting_assignment` is therefore sized against 30 s,
+whatever interval the task will set.
+
+#### The session phase
+
+Each heartbeat from a `session_liveness` harness carries
+`session_phase`, with a `phase` and an optional `step`:
+
+| `phase` | From | Until | `step` values |
+|---|---|---|---|
+| `awaiting_assignment` | just after `ready` | the `task_assignment` arrives | — |
+| `constructing` | the `task_assignment` (or, for a follow-up, the `user_response` that starts the run) | the run's `run_started` | `token_exchange` (waiting for a `sandbox_token_response`), `sandbox_create`, `sandbox_ready` (Kubernetes executors: scheduling, image pull, start and the first successful exec), `runtime_diagnostics` (an `executor.runtime` that checks itself from inside the sandbox), `pre_run_hooks`, `run_setup` (repository guidance and git setup) |
+| `running` | `run_started` | the run's turns and verification end | — |
+| `post_run` | the end of the turns | the run's `done` | `post_run_hooks` |
+| `idle_followup` | the run's `done`, when a follow-up grace window is open | the next run starts or the window closes | — |
+
+An empty `step` is the phase's work outside the named steps, such as
+building providers and tools during `constructing`. A step name is
+never reused by another phase. Both vocabularies are open: preserve and
+display values that are not recognised. A heartbeat means the harness
+is alive, not that a run is active: only `running` says that.
+
+A change of phase or step sends a heartbeat at once and restarts the
+interval, so the heartbeat that opens a phase marks when it began. A
+control plane can show "constructing, `sandbox_ready`, 90 s" and apply a
+separate deadline to each phase. Heartbeats continue through a slow
+sandbox start, a long model call or tool execution, and `postRun` hooks
+that run past the run's deadline (see
 [`security.md`](security.md#lifecycle-hooks)).
+
+Heartbeats stop just before each `done` and resume with the next phase.
+A session without a follow-up window therefore ends with `done`, and a
+build failure's `error` and `done` pair is never followed by a
+heartbeat. With a follow-up window open, `idle_followup` heartbeats
+follow the run's `done` for as long as the harness accepts a
+`user_response`, and stop when the window closes.
+
+#### Choosing reap deadlines
 
 A control plane that reaps a Pod after missing heartbeats should pick a
 deadline of several intervals, not one, so a single delayed event does
-not trigger a reap. The heartbeat is emitted by a background goroutine
-rather than by the turn loop, so it continues through a long model call
-or tool execution. A shorter interval raises event volume on
-the stream accordingly. `batch_waiting` events are a separate liveness
-signal during batch waits (see [Batch mode](#batch-mode-amortised-token-pricing)).
+not trigger a reap. With `session_liveness`, a gap of that length in any
+phase means the harness or its stream has stopped. A healthy harness is
+silent only between a run's `done` and the next phase (a moment) and
+after the session's last event, while it releases its sandbox and
+exits; on Kubernetes that teardown can take tens of seconds, and the
+stream is already done with. Separate per-phase ceilings guard
+against a harness that is alive but stuck: for example a `constructing`
+ceiling sized for the slowest expected cold start (image pull and node
+scale-up included), and a `post_run` ceiling sized for the `postRun`
+hook budget (the sum of the hooks' timeouts plus 30 s, at most 1,830 s).
+A shorter interval raises event volume on the stream accordingly.
+`batch_waiting` events are a separate keep-alive during batch waits
+(see [Batch mode](#batch-mode-amortised-token-pricing)).
+
+#### Harnesses without `session_liveness`
+
+An older harness sends heartbeats only while a run is in progress, and
+they carry no `session_phase`. They start when the loop begins the run,
+after component construction, and stop when the run's context ends (its
+`timeout` or a `cancel`) or just before `done`, whichever comes first.
+None are sent while that harness waits for the assignment, while it
+builds the loop, between runs (including the follow-up grace window), or
+during `postRun` hooks that outlive the run's deadline. A watchdog for
+such a harness must not treat a gap in those windows as a lost run;
+size its deadline for the worst case of each window instead.
 
 ## Composing a RunConfig
 

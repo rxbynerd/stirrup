@@ -168,6 +168,34 @@ func TestBoundEventFields_CapsIdentifiers(t *testing.T) {
 	must.Equal("read_file", short.Name, "identifier under the cap must not be altered")
 }
 
+func TestBoundEventFields_CapsSessionPhaseWithoutAliasing(t *testing.T) {
+	must := require.New(t)
+	big := strings.Repeat("é", maxEventIdentifierBytes)
+	phase := &types.SessionPhase{Phase: big, Step: big}
+	ev := types.HarnessEvent{Type: "heartbeat", SessionPhase: phase}
+
+	must.NoError(boundEventFields(&ev))
+
+	must.LessOrEqual(len(ev.SessionPhase.Phase), maxEventIdentifierBytes)
+	must.LessOrEqual(len(ev.SessionPhase.Step), maxEventIdentifierBytes)
+	must.True(utf8.ValidString(ev.SessionPhase.Step))
+	must.Equal(big, phase.Phase, "the caller's phase is not modified")
+}
+
+func TestBoundEventFields_CapsBuildFailureWithoutAliasing(t *testing.T) {
+	must := require.New(t)
+	big := strings.Repeat("é", maxEventIdentifierBytes)
+	failure := &types.BuildFailure{Reason: big, Phase: types.SessionPhase{Phase: big, Step: big}}
+	ev := types.HarnessEvent{Type: "error", BuildFailure: failure}
+
+	must.NoError(boundEventFields(&ev))
+
+	must.LessOrEqual(len(ev.BuildFailure.Reason), maxEventIdentifierBytes)
+	must.LessOrEqual(len(ev.BuildFailure.Phase.Phase), maxEventIdentifierBytes)
+	must.LessOrEqual(len(ev.BuildFailure.Phase.Step), maxEventIdentifierBytes)
+	must.Equal(big, failure.Reason, "the caller's failure is not modified")
+}
+
 func TestBoundEventFields_CapsToolsLoaded(t *testing.T) {
 	t.Run("tool list is cut to the entry cap", func(t *testing.T) {
 		must := require.New(t)

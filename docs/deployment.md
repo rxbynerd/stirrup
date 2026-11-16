@@ -18,6 +18,7 @@ sequenceDiagram
     K-->>H: Pod scheduled
     H->>CP: Dial gRPC, open RunTask stream
     H->>CP: HarnessEvent{type:"ready", harness_version, harness_semver, capabilities, config_fields}
+    H->>CP: heartbeat{session_phase: awaiting_assignment}, then every 30s
     H->>H: Write /tmp/healthy (liveness) and /tmp/ready (readiness)
     CP->>H: ControlEvent{type:"task_assignment", task: RunConfig, trace_context?}
     H->>H: Remove /tmp/ready
@@ -25,11 +26,12 @@ sequenceDiagram
         H->>CP: sandbox_token_request
         CP-->>H: sandbox_token_response
     end
+    H->>CP: heartbeat{session_phase: constructing}, and at each step
     H->>H: Build AgenticLoop with the supplied RunConfig
     H->>CP: HarnessEvent{type:"run_started", id: run ID, trace_reference?}
     H-->>CP: user_message (the prompt)
     loop For each turn
-        H->>CP: heartbeat (every 30s by default)
+        H->>CP: heartbeat{session_phase: running} (every 30s by default)
         H-->>CP: turn_started
         H-->>CP: text_delta · thinking_delta · tool_call · tool_result
         H-->>CP: turn_committed or turn_abandoned · user_message
@@ -102,7 +104,8 @@ first `ControlEvent` on the stream.
 
 | Variable | Purpose |
 |---|---|
-| `CONTROL_PLANE_SESSION_ID` | Session correlation ID echoed back in the initial `ready` event so the control plane can match this gRPC stream to the session that launched it. |
+| `CONTROL_PLANE_SESSION_ID` | Session correlation ID echoed back in the initial `ready` event so the control plane can match this gRPC stream to the session that launched it. When unset, `ready.id` is empty. |
+| `CONTROL_PLANE_REQUIRE_SESSION_ID` | `true` makes the job refuse to start without a non-empty `CONTROL_PLANE_SESSION_ID`: it exits non-zero before dialling the control plane, so a misconfigured Pod fails instead of opening a stream the control plane cannot correlate. Accepts the values Go's `strconv.ParseBool` reads (`true`, `1`, `false`, `0`, ...); any other value also fails the job. Unset or `false` keeps the ID optional. The ID correlates the stream; it does not authenticate the job, since any client the control plane accepts can claim any ID. |
 | `STIRRUP_FOLLOWUP_GRACE` | Idle seconds to keep the gRPC stream open after each run completes, so the control plane can deliver a follow-up `user_response` that starts the next run. The window restarts after every run. Capped at 3600 s; a positive `RunConfig.followUpGrace` takes precedence. |
 
 Per-provider secrets (Anthropic API key, AWS / GCP / Azure
@@ -158,7 +161,9 @@ IMDS, GitHub Actions OIDC). See
    and execution begins. A `RunConfig` that fails validation, or any
    other failure to build the loop, terminates the run here: the
    harness emits `HarnessEvent{type:"error"}` carrying the validation
-   message followed by `HarnessEvent{type:"done", stop_reason:"error"}`,
+   message and a `build_failure` classifying it (see
+   [Classifying a construction failure](integration-guide.md#classifying-a-construction-failure))
+   followed by `HarnessEvent{type:"done", stop_reason:"error"}`,
    then exits non-zero. No run ever started, so that `done` carries no
    `trace` and no `RunResult` reaches the configured `resultSink`.
 7. **Stream events.** After the git setup the harness first emits
@@ -172,7 +177,9 @@ IMDS, GitHub Actions OIDC). See
    `tool_call`, `tool_result`, `turn_committed` or `turn_abandoned`, and
    `user_message` (see
    [Watching a run live](integration-guide.md#watching-a-run-live)) —
-   plus `heartbeat` (every 30 s unless `heartbeatSeconds` is set) and, depending on the permission
+   plus `heartbeat` (every 30 s unless `heartbeatSeconds` is set; from
+   `ready` to the session's last event, naming the session's phase, see
+   [Detecting a stalled or orphaned run](integration-guide.md#detecting-a-stalled-or-orphaned-run)) and, depending on the permission
    policy, `permission_request` events. Tools declared in
    `tools.controlPlane` emit `tool_result_request` and block on
    `tool_result_response`; the request's `trace_context`, when

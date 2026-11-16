@@ -425,7 +425,115 @@ type HarnessEvent struct {
 	Tools           []string    `json:"tools,omitempty"`           // internal IDs of the tools a search loaded (tools_loaded only)
 	ConfigFields    []string    `json:"configFields,omitempty"`    // RunConfig field paths, in ConfigFieldPaths form, that a task_assignment can set (ready from `stirrup job` only)
 	HarnessSemver   string      `json:"harnessSemver,omitempty"`   // HarnessVersion as a semantic version without the leading "v", empty for non-release builds (ready only)
+
+	SessionPhase *SessionPhase `json:"sessionPhase,omitempty"` // what the session is doing (heartbeat from a harness advertising CapabilitySessionLiveness only)
+	BuildFailure *BuildFailure `json:"buildFailure,omitempty"` // why the task could not be built into a run (error from `stirrup job` before any run started only)
 }
+
+// BuildFailure classifies a task that could not be built into a run.
+// Reason is one of the BuildFailure* values. Reasons are only ever added;
+// consumers preserve a value they do not recognise and handle it as
+// BuildFailureUnclassified. Phase is where construction stopped.
+type BuildFailure struct {
+	Reason string       `json:"reason"`
+	Phase  SessionPhase `json:"phase"`
+}
+
+// Values of BuildFailure.Reason.
+const (
+	// BuildFailureConfigInvalid: the RunConfig failed validation or sets a
+	// field the harness does not know.
+	BuildFailureConfigInvalid = "config_invalid"
+	// BuildFailureHostFile: a file the RunConfig names could not be used
+	// from the harness host.
+	BuildFailureHostFile = "host_file"
+	// BuildFailureCredential: a secret reference or provider credential
+	// could not be resolved.
+	BuildFailureCredential = "credential"
+	// BuildFailureTokenExchange: the sandbox identity token exchange was
+	// declined, timed out, or returned an unusable token.
+	BuildFailureTokenExchange = "token_exchange"
+	// BuildFailureSandboxPlatform: the cluster or container engine that
+	// hosts the sandbox refused or could not serve a request, for example
+	// RBAC, a missing namespace or RuntimeClass, a quota, or an
+	// unreachable engine.
+	BuildFailureSandboxPlatform = "sandbox_platform"
+	// BuildFailureAdmissionMismatch: admission changed the sandbox Pod in
+	// a way the executor's runtime does not accept.
+	BuildFailureAdmissionMismatch = "admission_mismatch"
+	// BuildFailureRuntimeDiagnosticFailed: the sandbox's runtime
+	// diagnostics found it was not isolated as its runtime requires.
+	BuildFailureRuntimeDiagnosticFailed = "runtime_diagnostic_failed"
+	// BuildFailureSandboxImage: the sandbox image could not be pulled or
+	// was not allowed, or the sandbox container exited before it was
+	// ready.
+	BuildFailureSandboxImage = "sandbox_image"
+	// BuildFailureSandboxNotReady: the sandbox did not become ready or
+	// reachable for commands, for example within the readiness timeout.
+	BuildFailureSandboxNotReady = "sandbox_not_ready"
+	// BuildFailureControlStreamLost: the control stream ended during
+	// construction. Sent best-effort on a stream already found lost; the
+	// "done" stop_reason is authoritative.
+	BuildFailureControlStreamLost = "control_stream_lost"
+	// BuildFailureInterrupted: a shutdown signal cut construction short,
+	// whatever component was running.
+	BuildFailureInterrupted = "interrupted"
+	// BuildFailureUnclassified: any other construction failure; the
+	// error message has the detail.
+	BuildFailureUnclassified = "unclassified"
+)
+
+// SessionPhase names what a `stirrup job` session is doing when it sends a
+// "heartbeat". Phase is one of the SessionPhase* values and Step, when set,
+// one of the SessionStep* values; both vocabularies are open, so consumers
+// preserve values they do not recognise.
+type SessionPhase struct {
+	Phase string `json:"phase"`
+	Step  string `json:"step,omitempty"`
+}
+
+// Values of SessionPhase.Phase.
+const (
+	// SessionPhaseAwaitingAssignment: "ready" is sent and no
+	// task_assignment has arrived.
+	SessionPhaseAwaitingAssignment = "awaiting_assignment"
+	// SessionPhaseConstructing: the task is being built into a run, from
+	// the task_assignment to the run's "run_started".
+	SessionPhaseConstructing = "constructing"
+	// SessionPhaseRunning: from "run_started" until the run's turns and
+	// verification end.
+	SessionPhaseRunning = "running"
+	// SessionPhasePostRun: the run's git finalisation, postRun hooks,
+	// workspace export, trace upload and result delivery, before its
+	// "done".
+	SessionPhasePostRun = "post_run"
+	// SessionPhaseIdleFollowUp: the follow-up grace window is open and no
+	// run is active.
+	SessionPhaseIdleFollowUp = "idle_followup"
+)
+
+// Values of SessionPhase.Step. An empty Step is the phase's work outside
+// the named steps.
+const (
+	// SessionStepTokenExchange: waiting for a sandbox_token_response
+	// (constructing).
+	SessionStepTokenExchange = "token_exchange"
+	// SessionStepSandboxCreate: creating the sandbox (constructing).
+	SessionStepSandboxCreate = "sandbox_create"
+	// SessionStepSandboxReady: waiting for a created sandbox to be
+	// scheduled, pull its image, start and accept commands (constructing).
+	SessionStepSandboxReady = "sandbox_ready"
+	// SessionStepRuntimeDiagnostics: checking the sandbox's isolation
+	// runtime from inside it (constructing).
+	SessionStepRuntimeDiagnostics = "runtime_diagnostics"
+	// SessionStepPreRunHooks: the run's preRun hooks (constructing).
+	SessionStepPreRunHooks = "pre_run_hooks"
+	// SessionStepRunSetup: the run's setup outside its preRun hooks, such
+	// as repository guidance and git setup (constructing).
+	SessionStepRunSetup = "run_setup"
+	// SessionStepPostRunHooks: the run's postRun hooks (post_run).
+	SessionStepPostRunHooks = "post_run_hooks"
+)
 
 // Contract capabilities a harness advertises on "ready".
 const (
@@ -449,6 +557,14 @@ const (
 	// carries a field the harness does not know, at any depth, is
 	// rejected with "error" and "done" before the run is built.
 	CapabilityStrictTaskAssignment = "strict_task_assignment"
+	// CapabilitySessionLiveness: "heartbeat" events cover the whole
+	// session, from "ready" to the session's last event, and carry
+	// SessionPhase. Advertised by `stirrup job` only, so it is not in
+	// HarnessCapabilities.
+	CapabilitySessionLiveness = "session_liveness"
+	// CapabilityBuildFailure: the "error" sent when a task cannot be built
+	// into a run carries BuildFailure. Advertised by `stirrup job` only.
+	CapabilityBuildFailure = "build_failure"
 )
 
 // HarnessCapabilities returns the capabilities this harness advertises on

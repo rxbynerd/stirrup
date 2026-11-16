@@ -80,14 +80,22 @@ func TestRunJob_UnknownAssignedFieldsRejectedBeforeBuild(t *testing.T) {
 		must.FailNow("runJob did not return after rejecting the assignment")
 	}
 
-	var gotTypes []string
+	var events []*pb.HarnessEvent
 	for _, ev := range srv.events() {
-		gotTypes = append(gotTypes, ev.GetType())
+		if ev.GetType() == "heartbeat" {
+			check.Equal(types.SessionPhaseAwaitingAssignment, ev.GetSessionPhase().GetPhase(), "a rejected assignment never enters construction")
+			must.Empty(events, "no heartbeat follows the rejection")
+			continue
+		}
+		events = append(events, ev)
 	}
-	must.Equal([]string{"error", "done"}, gotTypes, "the rejection is the error/done pair and nothing else")
-	events := srv.events()
+	must.Len(events, 2, "the rejection is the error/done pair and nothing else")
+	must.Equal("error", events[0].GetType())
+	must.Equal("done", events[1].GetType())
 	check.Contains(events[0].GetMessage(), "field 9001 at the top level")
 	check.Contains(events[0].GetMessage(), "field 9002 under executor")
+	check.Equal(types.BuildFailureConfigInvalid, events[0].GetBuildFailure().GetReason(), "an unknown field is fixed in the task, like any invalid config")
+	check.Equal(types.SessionPhaseConstructing, events[0].GetBuildFailure().GetPhase().GetPhase())
 	check.Equal("error", events[1].GetStopReason())
 	check.Nil(events[1].GetTrace(), "no run started, so done carries no trace")
 

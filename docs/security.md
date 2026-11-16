@@ -945,22 +945,20 @@ everything else in this document, and worth being explicit about:
   hooks"](configuration.md#lifecycle-hooks) for the full schema and
   failure semantics.
 
-**Heartbeat caveat:** the agentic loop's `heartbeat` transport event
-(every 30 s by default, see [`architecture.md`
-"Heartbeat and health probes"](architecture.md#heartbeat-and-health-probes))
-is emitted on `runCtx` — the run's own wall-clock-bounded context — and
-stops the instant that context is done, at the run's `timeout` deadline
-or a control-plane cancel. `postRun` hooks execute afterwards on a
-*detached* context (`context.WithoutCancel`) specifically so they can
-outlive that deadline. This means a run whose `postRun` hooks are still
-uploading an artifact after wall-clock expiry emits **no heartbeats**
-for up to the detached budget (sum of configured `postRun` timeouts
-plus a 30 s margin, capped at 1830 s). A control plane that treats a
-heartbeat gap as "orphaned and safe to reap" may kill the process
-mid-upload. Operators relying on heartbeat-based liveness for runs with
-`postRun` hooks should account for this gap in their reap timeout;
-re-arming heartbeats for the detached post-hook phase is tracked as a
-follow-up if this proves disruptive in practice.
+**Heartbeat and detached hooks:** `postRun` hooks execute on a
+*detached* context (`context.WithoutCancel`) so they can outlive the
+run's `timeout` deadline or a control-plane cancel, for up to the
+detached budget (sum of configured `postRun` timeouts plus a 30 s
+margin, capped at 1830 s). Under `stirrup job`, which advertises the
+`session_liveness` capability, the session heartbeat keeps running
+through them and names the `post_run` phase with the `post_run_hooks`
+step, so a control plane can tell a slow upload from a dead harness.
+The run-scoped heartbeat of `stirrup harness`, and of any harness
+without that capability, is emitted on the run's own context and stops
+when it ends, so such a run sends **no heartbeats** while its hooks run
+past the deadline; a control plane that reaps on a heartbeat gap must
+allow for that window there. See
+[Detecting a stalled or orphaned run](integration-guide.md#detecting-a-stalled-or-orphaned-run).
 
 ## Sandbox identity tokens (git-proxy credential binding)
 

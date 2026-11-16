@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -158,6 +159,7 @@ func (s *server) RunTask(stream harnessv1.HarnessService_RunTaskServer) error {
 // harness exited abnormally or closed the follow-up window.
 func (s *server) handle(ctx context.Context, stream runStream) (result, error) {
 	var res result
+	var phase phaseTracker
 	for {
 		ev, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
@@ -218,8 +220,20 @@ func (s *server) handle(ctx context.Context, stream runStream) (result, error) {
 		case "warning":
 			writef(s.errOut, "[warning] %s\n", escapeLine(ev.GetMessage()))
 		case "error":
+			if f := ev.GetBuildFailure(); f != nil {
+				where := escapeLine(f.GetPhase().GetPhase())
+				if step := f.GetPhase().GetStep(); step != "" {
+					where += "/" + escapeLine(step)
+				}
+				writef(s.errOut, "[build_failure] %s during %s\n", escapeLine(f.GetReason()), where)
+			}
 			writef(s.errOut, "[error] %s\n", escapeLine(ev.GetMessage()))
 		case "heartbeat":
+			if line, changed := phase.observe(ev.GetSessionPhase(), time.Now()); changed {
+				writef(s.errOut, "[phase] %s\n", line)
+			} else if line != "" {
+				writef(s.errOut, "[heartbeat] %s\n", line)
+			}
 		case "done":
 			outcome := ev.GetTrace().GetOutcome()
 			if outcome == "" {
@@ -245,6 +259,37 @@ func (s *server) handle(ctx context.Context, stream runStream) (result, error) {
 			writef(s.errOut, "[%s] not handled by this example; the run may stall\n", escapeLine(ev.GetType()))
 		}
 	}
+}
+
+// phaseTracker follows the session phase that heartbeats carry: a change
+// is reported with how long the previous phase lasted, and a heartbeat
+// within a phase with how long it has lasted so far. Heartbeats from a
+// harness without the session_liveness capability carry no phase and are
+// ignored.
+type phaseTracker struct {
+	current string
+	since   time.Time
+}
+
+// observe records p at now and returns the line to print, and whether the
+// phase or step changed.
+func (t *phaseTracker) observe(p *harnessv1.SessionPhase, now time.Time) (string, bool) {
+	if p.GetPhase() == "" {
+		return "", false
+	}
+	name := escapeLine(p.GetPhase())
+	if step := p.GetStep(); step != "" {
+		name += "/" + escapeLine(step)
+	}
+	if name == t.current {
+		return fmt.Sprintf("%s +%s", name, now.Sub(t.since).Round(time.Millisecond)), false
+	}
+	line := name
+	if t.current != "" {
+		line = fmt.Sprintf("%s (%s took %s)", name, t.current, now.Sub(t.since).Round(time.Millisecond))
+	}
+	t.current, t.since = name, now
+	return line, true
 }
 
 // decide answers one permission request according to the configured mode.

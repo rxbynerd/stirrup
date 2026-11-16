@@ -53,6 +53,61 @@ func TestRunJob_MissingControlPlaneAddrIsPlain(t *testing.T) {
 	must.NotContains(err.Error(), "\x1b[", "job error must not contain ANSI escapes (log aggregators ingest it verbatim)")
 }
 
+func TestSessionIDFromEnv_RequirementIsOptIn(t *testing.T) {
+	cases := []struct {
+		name      string
+		sessionID string
+		require   *string
+		wantID    string
+		wantErr   string
+	}{
+		{name: "not required and unset", wantID: ""},
+		{name: "not required and set", sessionID: "sess-1", wantID: "sess-1"},
+		{name: "required and set", sessionID: "sess-1", require: ptrTo("true"), wantID: "sess-1"},
+		{name: "required and empty", require: ptrTo("true"), wantErr: "CONTROL_PLANE_SESSION_ID is required"},
+		{name: "required and blank", sessionID: "  ", require: ptrTo("1"), wantErr: "CONTROL_PLANE_SESSION_ID is required"},
+		{name: "explicitly not required", require: ptrTo("false"), wantID: ""},
+		{name: "not a boolean", sessionID: "sess-1", require: ptrTo("yes please"), wantErr: `CONTROL_PLANE_REQUIRE_SESSION_ID must be true or false, got "yes please"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			t.Setenv("CONTROL_PLANE_SESSION_ID", tc.sessionID)
+			if tc.require != nil {
+				t.Setenv("CONTROL_PLANE_REQUIRE_SESSION_ID", *tc.require)
+			} else {
+				unsetEnv(t, "CONTROL_PLANE_REQUIRE_SESSION_ID")
+			}
+
+			got, err := sessionIDFromEnv()
+
+			if tc.wantErr != "" {
+				must.ErrorContains(err, tc.wantErr)
+				return
+			}
+			must.NoError(err)
+			must.Equal(tc.wantID, got)
+		})
+	}
+}
+
+func TestRunJob_RequiredSessionIDMissingFailsBeforeDialling(t *testing.T) {
+	must := require.New(t)
+	srv := newRecordingControlPlane(&pb.RunConfig{Mode: "execution"})
+	startControlPlane(t, srv)
+	t.Setenv("CONTROL_PLANE_SESSION_ID", "")
+	t.Setenv("CONTROL_PLANE_REQUIRE_SESSION_ID", "true")
+
+	err := runJob(jobCmd, nil)
+
+	must.ErrorContains(err, "CONTROL_PLANE_SESSION_ID is required")
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	must.Nil(srv.ready, "the job never opened a stream")
+}
+
+func ptrTo(s string) *string { return &s }
+
 // fakeControlPlane implements just enough of HarnessServiceServer to drive
 // runJob through the assignment wait and into a task_assignment carrying
 // the given RunConfig. It then keeps the stream open until the harness
@@ -307,7 +362,7 @@ func TestEmitTerminalFailure_EmitsErrorThenDone(t *testing.T) {
 	check := assert.New(t)
 	tp := &recordingTransport{}
 
-	emitTerminalFailure(tp, errors.New("building harness: config validation: bad"), "error")
+	emitTerminalFailure(tp, errors.New("building harness: config validation: bad"), nil, "error")
 
 	must.Len(tp.events, 2, "want exactly error then done, got %v", tp.events)
 	check.Equal("error", tp.events[0].Type)
@@ -320,11 +375,35 @@ func TestEmitTerminalFailure_EmitsErrorThenDone(t *testing.T) {
 // failed "error" emit does not abandon the "done" event: "done" is the
 // terminal signal, so a control plane that missed the diagnostic still
 // needs the run closed out.
+func TestBuildFailureFor_ClassAndInterruption(t *testing.T) {
+	must := require.New(t)
+	sandboxReady := types.SessionPhase{Phase: types.SessionPhaseConstructing, Step: types.SessionStepSandboxReady}
+	built := &core.BuildError{Reason: types.BuildFailureSandboxNotReady, Step: types.SessionStepSandboxReady, Err: errors.New("pod not ready")}
+
+	must.Equal(&types.BuildFailure{Reason: types.BuildFailureSandboxNotReady, Phase: sandboxReady}, buildFailureFor(built, false))
+	must.Equal(&types.BuildFailure{Reason: types.BuildFailureInterrupted, Phase: sandboxReady}, buildFailureFor(built, true),
+		"a signal outranks the component's class but keeps the step")
+	must.Equal(&types.BuildFailure{Reason: types.BuildFailureUnclassified, Phase: types.SessionPhase{Phase: types.SessionPhaseConstructing}},
+		buildFailureFor(errors.New("not from BuildLoop"), false))
+}
+
+func TestEmitTerminalFailure_ErrorCarriesBuildFailure(t *testing.T) {
+	must := require.New(t)
+	tp := &recordingTransport{}
+	failure := &types.BuildFailure{Reason: types.BuildFailureCredential, Phase: types.SessionPhase{Phase: types.SessionPhaseConstructing}}
+
+	emitTerminalFailure(tp, errors.New("building harness: resolve credentials"), failure, "error")
+
+	must.Len(tp.events, 2)
+	must.Equal(failure, tp.events[0].BuildFailure)
+	must.Nil(tp.events[1].BuildFailure, "done carries no build failure")
+}
+
 func TestEmitTerminalFailure_EmitFailureStillAttemptsDone(t *testing.T) {
 	must := require.New(t)
 	tp := &recordingTransport{emitErr: errors.New("stream closed")}
 
-	emitTerminalFailure(tp, errors.New("building harness: boom"), "error")
+	emitTerminalFailure(tp, errors.New("building harness: boom"), nil, "error")
 
 	must.Len(tp.events, 2, "want both events attempted despite the emit failure, got %v", tp.events)
 	must.Equal("done", tp.events[1].Type)
@@ -333,7 +412,7 @@ func TestEmitTerminalFailure_EmitFailureStillAttemptsDone(t *testing.T) {
 // emitTerminalFailure is safe when no transport was established, so the
 // caller never has to guard it.
 func TestEmitTerminalFailure_NilTransportDoesNotPanic(t *testing.T) {
-	emitTerminalFailure(nil, errors.New("boom"), "error")
+	emitTerminalFailure(nil, errors.New("boom"), nil, "error")
 }
 
 // recordingControlPlane is the minimal correct control plane from
@@ -428,7 +507,7 @@ func TestRunJob_ReadyAdvertisesCapabilitiesAndConfigFields(t *testing.T) {
 	ready := srv.ready
 	srv.mu.Unlock()
 	must.Equal("ready", ready.GetType(), "first event sent to the control plane")
-	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned", "lazy_tool_loading", "heartbeat_interval", "strict_task_assignment"}
+	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned", "lazy_tool_loading", "heartbeat_interval", "strict_task_assignment", "session_liveness", "build_failure"}
 	must.Equal(want, ready.GetCapabilities())
 	must.Equal(transport.TaskAssignmentFieldPaths(), ready.GetConfigFields())
 	must.NotContains(ready.GetConfigFields(), "transport", "a field a task_assignment cannot carry is not advertised")
@@ -483,6 +562,9 @@ func TestRunJob_InvalidAssignedConfigSignalsControlPlane(t *testing.T) {
 	for _, ev := range srv.events() {
 		if ev.Type == "error" {
 			errMessages = append(errMessages, ev.Message)
+			check.Equal(types.BuildFailureConfigInvalid, ev.GetBuildFailure().GetReason(), "the error names the failure's class")
+			check.Equal(types.SessionPhaseConstructing, ev.GetBuildFailure().GetPhase().GetPhase())
+			check.Empty(ev.GetBuildFailure().GetPhase().GetStep(), "validation runs outside the named steps")
 		}
 	}
 	must.NotEmpty(errMessages, "no error event received; got %v", srv.events())
@@ -559,6 +641,7 @@ func TestRunJob_UnusableReplayFileLooksTheSameToControlPlane(t *testing.T) {
 			errEvent := srv.findEvent("error")
 			must.NotNil(errEvent, "no error event received; got %v", srv.events())
 			check.Equal(want, errEvent.Message)
+			check.Equal(types.BuildFailureHostFile, errEvent.GetBuildFailure().GetReason(), "every cause has the same class")
 		})
 	}
 }

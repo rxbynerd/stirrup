@@ -29,6 +29,9 @@ runs the agentic loop with the pre-established transport.
 Required environment variables:
   CONTROL_PLANE_ADDR          gRPC address of the control plane
   CONTROL_PLANE_SESSION_ID    Session ID for correlation (optional)
+  CONTROL_PLANE_REQUIRE_SESSION_ID
+                              "true" refuses to start without a non-empty
+                              CONTROL_PLANE_SESSION_ID (optional)
   STIRRUP_FOLLOWUP_GRACE      Follow-up grace period in seconds (optional)
   STIRRUP_SESSION_DEADLINE    Session length in seconds the sandbox must outlive;
                               set to the Job's activeDeadlineSeconds (optional)
@@ -82,10 +85,14 @@ func readyEvent(sessionID, versionLabel string) types.HarnessEvent {
 		ID:             sessionID,
 		HarnessVersion: versionLabel,
 		HarnessSemver:  version.SemverOf(versionLabel),
-		Capabilities:   types.HarnessCapabilities(),
+		Capabilities:   append(types.HarnessCapabilities(), types.CapabilitySessionLiveness, types.CapabilityBuildFailure),
 		ConfigFields:   transport.TaskAssignmentFieldPaths(),
 	}
 }
+
+// sessionHeartbeatInterval is the session heartbeat's interval until a
+// task_assignment sets its own; tests shorten it.
+var sessionHeartbeatInterval = types.DefaultHeartbeatSeconds * time.Second
 
 func runJob(cmd *cobra.Command, args []string) error {
 	started := time.Now()
@@ -93,6 +100,13 @@ func runJob(cmd *cobra.Command, args []string) error {
 	addr := os.Getenv("CONTROL_PLANE_ADDR")
 	if addr == "" {
 		return fmt.Errorf("CONTROL_PLANE_ADDR environment variable is required")
+	}
+
+	// Session ID (if set) lets the control plane correlate this stream with
+	// the session that launched the subprocess.
+	sessionID, err := sessionIDFromEnv()
+	if err != nil {
+		return err
 	}
 
 	tlsCfg, err := controlPlaneTLSFromEnv()
@@ -128,12 +142,12 @@ func runJob(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = tp.Close() }()
 
-	// Session ID (if set) lets the control plane correlate this stream with
-	// the session that launched the subprocess.
-	sessionID := os.Getenv("CONTROL_PLANE_SESSION_ID")
 	if err := tp.Emit(readyEvent(sessionID, version.Version())); err != nil {
 		return fmt.Errorf("failed to send ready event: %w", err)
 	}
+	liveness := core.StartSessionHeartbeat(tp, sessionHeartbeatInterval,
+		types.SessionPhase{Phase: types.SessionPhaseAwaitingAssignment}, nil)
+	defer liveness.Stop()
 
 	if err := health.WriteProbe(livenessMarkerPath); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write liveness probe: %v\n", err)
@@ -194,9 +208,14 @@ func runJob(cmd *cobra.Command, args []string) error {
 	config := assignment.Task
 	if len(assignment.UnknownTaskFields) > 0 {
 		rejectErr := unknownTaskFieldsError(assignment.UnknownTaskFields)
-		emitTerminalFailure(tp, rejectErr, "error")
+		liveness.Stop()
+		emitTerminalFailure(tp, rejectErr, &types.BuildFailure{
+			Reason: types.BuildFailureConfigInvalid,
+			Phase:  types.SessionPhase{Phase: types.SessionPhaseConstructing},
+		}, "error")
 		return rejectErr
 	}
+	liveness.SetPhase(types.SessionPhase{Phase: types.SessionPhaseConstructing})
 
 	// The wall-clock budget covers component construction plus the
 	// primary run. Follow-up runs derive their own budget from the
@@ -218,14 +237,18 @@ func runJob(cmd *cobra.Command, args []string) error {
 	graceSecs := followUpGraceSeconds(config)
 	loop, err := buildJobLoop(buildCtx, config, tp,
 		core.WithSessionBudget(jobSessionBudget(runTimeout, graceSecs)),
+		core.WithSessionLiveness(liveness),
 	)
 	stopBuildWatch()
 	if lossErr := controlStreamErr(tp); lossErr != nil {
+		liveness.Stop()
 		if loop != nil {
 			_ = loop.Close()
 		}
 		lostErr := fmt.Errorf("building harness: %w: %w", core.ErrControlStreamLost, lossErr)
-		emitTerminalFailure(tp, lostErr, "control_stream_lost")
+		failure := buildFailureOf(err)
+		failure.Reason = types.BuildFailureControlStreamLost
+		emitTerminalFailure(tp, lostErr, failure, "control_stream_lost")
 		return lostErr
 	}
 	if err != nil {
@@ -234,7 +257,8 @@ func runJob(cmd *cobra.Command, args []string) error {
 		// crashed pod or a dropped connection.
 		buildErr := fmt.Errorf("building harness: %w", err)
 		buildFailed := time.Since(started)
-		emitTerminalFailure(tp, controlPlaneBuildError(buildErr), "error")
+		liveness.Stop()
+		emitTerminalFailure(tp, controlPlaneBuildError(buildErr), buildFailureFor(err, ctx.Err() != nil), "error")
 		// Phase timings for the terminal-failure path, so a control plane
 		// reporting a missing "done" can name the phase that stalled.
 		// emit_returned marks the handoff to the transport, not delivery;
@@ -277,6 +301,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 		RunTimeout:    runTimeout,
 		OnRunComplete: policy.finaliseFollowUp,
 	})
+	liveness.Stop()
 	// A required export that fails on a follow-up fails the process the
 	// same way it would for the primary run.
 	if err := policy.followUpErr(); err != nil {
@@ -286,6 +311,26 @@ func runJob(cmd *cobra.Command, args []string) error {
 	// A non-success outcome (runErr == nil) must still fail the process so
 	// the job orchestrator can decide whether to retry or alert.
 	return runOutcomeError(runTrace, interrupted())
+}
+
+// sessionIDFromEnv reads CONTROL_PLANE_SESSION_ID. With
+// CONTROL_PLANE_REQUIRE_SESSION_ID true, an unset or empty ID fails the job
+// before it dials, so a deployment cannot open a stream the control plane
+// cannot correlate; a value that is not a boolean fails it too.
+func sessionIDFromEnv() (string, error) {
+	sessionID := os.Getenv("CONTROL_PLANE_SESSION_ID")
+	raw, present := os.LookupEnv("CONTROL_PLANE_REQUIRE_SESSION_ID")
+	if !present {
+		return sessionID, nil
+	}
+	required, err := strconv.ParseBool(raw)
+	if err != nil {
+		return "", fmt.Errorf("CONTROL_PLANE_REQUIRE_SESSION_ID must be true or false, got %q", raw)
+	}
+	if required && strings.TrimSpace(sessionID) == "" {
+		return "", fmt.Errorf("CONTROL_PLANE_SESSION_ID is required because CONTROL_PLANE_REQUIRE_SESSION_ID is true")
+	}
+	return sessionID, nil
 }
 
 // followUpGraceSeconds resolves the follow-up window: the task's
@@ -329,19 +374,44 @@ func controlPlaneBuildError(err error) error {
 	return err
 }
 
+// buildFailureFor is the class the job reports for a failed build. A build
+// cut short by a shutdown signal is interrupted, whatever component was
+// running when the signal arrived.
+func buildFailureFor(err error, interrupted bool) *types.BuildFailure {
+	failure := buildFailureOf(err)
+	if interrupted {
+		failure.Reason = types.BuildFailureInterrupted
+	}
+	return failure
+}
+
+// buildFailureOf is the class BuildLoop gave err, or an unclassified
+// failure outside the named steps when err carries none.
+func buildFailureOf(err error) *types.BuildFailure {
+	var built *core.BuildError
+	if errors.As(err, &built) {
+		return built.Failure()
+	}
+	return &types.BuildFailure{
+		Reason: types.BuildFailureUnclassified,
+		Phase:  types.SessionPhase{Phase: types.SessionPhaseConstructing},
+	}
+}
+
 // emitTerminalFailure sends the "error" then "done" pair that the
 // agentic loop emits on its own fatal paths, for failures that occur
 // after a task assignment but before the loop exists to emit them.
-// "done" is the control plane's terminal signal, so it must follow
-// "error" even here; stopReason is its stop_reason.
+// "error" carries failure, and "done" is the control plane's terminal
+// signal, so it must follow "error" even here; stopReason is its
+// stop_reason.
 //
 // Best-effort: emit failures are reported on stderr and never replace
 // the failure being signalled.
-func emitTerminalFailure(tp transport.Transport, cause error, stopReason string) {
+func emitTerminalFailure(tp transport.Transport, cause error, failure *types.BuildFailure, stopReason string) {
 	if tp == nil {
 		return
 	}
-	if err := tp.Emit(types.HarnessEvent{Type: "error", Message: cause.Error()}); err != nil {
+	if err := tp.Emit(types.HarnessEvent{Type: "error", Message: cause.Error(), BuildFailure: failure}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to send error event: %v\n", err)
 	}
 	if err := tp.Emit(types.HarnessEvent{Type: "done", StopReason: stopReason}); err != nil {

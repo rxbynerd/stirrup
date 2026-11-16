@@ -74,6 +74,14 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		opt(&loopOpts)
 	}
 
+	// step is the construction step in progress, which a failure names.
+	var step string
+	defer func() {
+		if buildErr != nil {
+			buildErr = classifyBuildError(buildErr, step)
+		}
+	}()
+
 	var ownedClosers []io.Closer
 	// sandboxRefresher is held outside ownedClosers until the build
 	// completes so that, whether the build fails or the loop is closed, it
@@ -107,11 +115,21 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	if err := types.ValidateRunConfig(config); err != nil {
 		secLogger.ConfigValidationFailed([]string{err.Error()})
-		return nil, fmt.Errorf("config validation: %w", err)
+		return nil, markBuildFailure(types.BuildFailureConfigInvalid, fmt.Errorf("config validation: %w", err))
 	}
 	if err := ValidateOutputSchema(config); err != nil {
 		secLogger.ConfigValidationFailed([]string{err.Error()})
-		return nil, fmt.Errorf("config validation: %w", err)
+		return nil, markBuildFailure(types.BuildFailureConfigInvalid, fmt.Errorf("config validation: %w", err))
+	}
+	liveness := loopOpts.liveness
+	constructionStep := func(next string) {
+		step = next
+		if liveness != nil {
+			liveness.SetPhase(types.SessionPhase{Phase: types.SessionPhaseConstructing, Step: next})
+		}
+	}
+	if liveness != nil {
+		liveness.SetInterval(sessionLivenessInterval(config))
 	}
 
 	// Rule-of-Two arming/audit; see docs/safety-rings.md. The arming
@@ -124,7 +142,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// back to env/file otherwise.
 	secrets, err := security.NewAutoSecretStore(ctx, config)
 	if err != nil {
-		return nil, fmt.Errorf("build secret store: %w", err)
+		return nil, markBuildFailure(types.BuildFailureCredential, fmt.Errorf("build secret store: %w", err))
 	}
 
 	// 1. Model router. Needs only the provider TYPE (a string), not the
@@ -158,16 +176,18 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 
 		sandboxExchanger = sandboxidentity.NewExchanger(tp)
+		constructionStep(types.SessionStepTokenExchange)
 		result, exchErr := sandboxExchanger.Exchange(ctx, si.Audience, 0)
 		if exchErr != nil {
-			return nil, fmt.Errorf("executor.sandboxIdentity: %w", exchErr)
+			return nil, markBuildFailure(types.BuildFailureTokenExchange, fmt.Errorf("executor.sandboxIdentity: %w", exchErr))
 		}
+		constructionStep("")
 		sandboxToken = result
 		sandboxIssuedAt = time.Now()
 
 		composed, composeErr := sandboxidentity.ComposeEnv(si.EffectiveEnvVar(), result.Token, executor.SandboxIdentityTokenPath, config.Executor.GitProxy)
 		if composeErr != nil {
-			return nil, fmt.Errorf("executor.sandboxIdentity: %w", composeErr)
+			return nil, markBuildFailure(types.BuildFailureTokenExchange, fmt.Errorf("executor.sandboxIdentity: %w", composeErr))
 		}
 		sandboxExtraEnv = make([]executor.EnvPair, len(composed))
 		for i, e := range composed {
@@ -178,10 +198,16 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// 3. Executor (built early because context strategy may need it).
 	// secLogger is threaded into the container executor so its in-process
 	// egress proxy can emit egress_allowed/egress_blocked events.
-	exec, err := buildExecutorFn(ctx, config.Executor, secrets, secLogger, sandboxExtraEnv, sandboxLifecycle(config, loopOpts.sessionBudget))
+	life := sandboxLifecycle(config, loopOpts.sessionBudget)
+	if createsSandbox(config.Executor.Type) {
+		constructionStep(types.SessionStepSandboxCreate)
+		life.StartupProgress = constructionStep
+	}
+	exec, err := buildExecutorFn(ctx, config.Executor, secrets, secLogger, sandboxExtraEnv, life)
 	if err != nil {
 		return nil, fmt.Errorf("build executor: %w", err)
 	}
+	constructionStep("")
 	if closer, ok := exec.(io.Closer); ok {
 		ownedClosers = append(ownedClosers, closer)
 	}
@@ -202,18 +228,20 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		// A slow sandbox start can use up a short-lived token's lifetime, so
 		// a token past its refresh point is replaced before first delivery.
 		if sandboxidentity.DueForRefresh(time.Now(), sandboxIssuedAt, sandboxToken.ExpiresAt) {
+			constructionStep(types.SessionStepTokenExchange)
 			fresh, exchErr := sandboxExchanger.Exchange(ctx, config.Executor.SandboxIdentity.Audience, 0)
 			if exchErr != nil {
 				cleanup()
-				return nil, fmt.Errorf("executor.sandboxIdentity: token neared expiry during sandbox startup and could not be re-exchanged: %w", exchErr)
+				return nil, markBuildFailure(types.BuildFailureTokenExchange, fmt.Errorf("executor.sandboxIdentity: token neared expiry during sandbox startup and could not be re-exchanged: %w", exchErr))
 			}
 			// The fresh token is checked against its own receipt time, so
 			// only one that is already expired is refused.
 			freshIssuedAt := time.Now()
 			if sandboxidentity.DueForRefresh(freshIssuedAt, freshIssuedAt, fresh.ExpiresAt) {
 				cleanup()
-				return nil, fmt.Errorf("executor.sandboxIdentity: the token re-exchanged during sandbox startup had already expired (expires_at %d)", *fresh.ExpiresAt)
+				return nil, markBuildFailure(types.BuildFailureTokenExchange, fmt.Errorf("executor.sandboxIdentity: the token re-exchanged during sandbox startup had already expired (expires_at %d)", *fresh.ExpiresAt))
 			}
+			constructionStep("")
 			attrs := []any{"startup", freshIssuedAt.Sub(sandboxIssuedAt).Round(time.Millisecond)}
 			if fresh.ExpiresAt != nil {
 				attrs = append(attrs, "tokenExpiresAtUnix", *fresh.ExpiresAt)
@@ -661,6 +689,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	loop := &AgenticLoop{
 		HeartbeatInterval:    time.Duration(config.EffectiveHeartbeatSeconds()) * time.Second,
+		Liveness:             liveness,
 		Provider:             prov,
 		Providers:            providers,
 		Router:               rtr,
@@ -911,10 +940,10 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 
 	src, err := credential.BuildSource(cfg, secrets)
 	if err != nil {
-		return nil, fmt.Errorf("build credential source: %w", err)
+		return nil, markBuildFailure(types.BuildFailureCredential, fmt.Errorf("build credential source: %w", err))
 	}
 	if _, static := src.(*credential.StaticSource); static && cfg.APIKeyRef == "" && !keylessEndpoint(cfg) {
-		return nil, fmt.Errorf("provider %s requires apiKeyRef (empty reference is only valid for openai-compatible/openai-responses with a custom baseUrl)", cfg.Type)
+		return nil, markBuildFailure(types.BuildFailureCredential, fmt.Errorf("provider %s requires apiKeyRef (empty reference is only valid for openai-compatible/openai-responses with a custom baseUrl)", cfg.Type))
 	}
 	cred, err := src.Resolve(ctx)
 	if err != nil {
@@ -925,7 +954,7 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		if cfg.Credential != nil && cfg.Credential.Type == "gcp-service-account" {
 			return nil, &HostFileError{Field: "provider.gcpCredentialsFile", Err: err}
 		}
-		return nil, err
+		return nil, markBuildFailure(types.BuildFailureCredential, err)
 	}
 
 	// Single point where RunConfig's retry config becomes a provider-level
@@ -1339,6 +1368,22 @@ func sandboxLifecycle(config *types.RunConfig, sessionBudget time.Duration) exec
 		life.MaxLifetime = span + executor.SandboxGCMargin
 	}
 	return life
+}
+
+// sessionLivenessInterval is the session heartbeat interval a validated
+// config sets; tests shorten it below the configurable minimum.
+var sessionLivenessInterval = func(config *types.RunConfig) time.Duration {
+	return time.Duration(config.EffectiveHeartbeatSeconds()) * time.Second
+}
+
+// createsSandbox reports whether an executor type creates a sandbox when
+// it is built.
+func createsSandbox(executorType string) bool {
+	switch executorType {
+	case "container", "k8s", "k8s-sandbox":
+		return true
+	}
+	return false
 }
 
 // buildExecutor constructs the run's executor. life labels and bounds any

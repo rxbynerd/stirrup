@@ -35,8 +35,8 @@ const (
 	EnvPodNamespace = "STIRRUP_POD_NAMESPACE"
 )
 
-// Lifecycle identifies a sandbox's run and bounds how long it survives an
-// unclean harness exit.
+// Lifecycle identifies a sandbox's run, bounds how long it survives an
+// unclean harness exit, and reports its startup.
 type Lifecycle struct {
 	// RunID is stamped on the sandbox as a label. Follow-up runs in the same
 	// session reuse the sandbox, so it holds the session's first run ID.
@@ -44,6 +44,17 @@ type Lifecycle struct {
 	// MaxLifetime caps the sandbox's life from creation. Zero leaves it
 	// unbounded.
 	MaxLifetime time.Duration
+	// StartupProgress, when non-nil, is called with a types.SessionStep*
+	// value as construction enters each step that follows the sandbox's
+	// creation.
+	StartupProgress func(step string)
+}
+
+// reportStartup calls StartupProgress with step when it is set.
+func (l Lifecycle) reportStartup(step string) {
+	if l.StartupProgress != nil {
+		l.StartupProgress(step)
+	}
 }
 
 // seconds returns MaxLifetime rounded up to whole seconds, and false when no
