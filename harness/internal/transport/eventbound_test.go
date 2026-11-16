@@ -174,7 +174,7 @@ func TestBoundEventFields_CapsSessionPhaseWithoutAliasing(t *testing.T) {
 	phase := &types.SessionPhase{Phase: big, Step: big}
 	ev := types.HarnessEvent{Type: "heartbeat", SessionPhase: phase}
 
-	boundEventFields(&ev)
+	must.NoError(boundEventFields(&ev))
 
 	must.LessOrEqual(len(ev.SessionPhase.Phase), maxEventIdentifierBytes)
 	must.LessOrEqual(len(ev.SessionPhase.Step), maxEventIdentifierBytes)
