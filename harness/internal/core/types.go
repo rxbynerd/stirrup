@@ -710,7 +710,7 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 	if resp.isError {
 		// The control plane is partially trusted and could embed
 		// secret-shaped strings in the error payload.
-		scrubbed := l.scrubToolError(resp.content)
+		scrubbed, _ := l.scrubToolError(resp.content)
 		return fmt.Sprintf("async tool %s upstream_error: %s", call.Name, scrubbed), false, observability.ToolFailureAsyncUpstreamError
 	}
 	return resp.content, true, ""

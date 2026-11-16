@@ -217,3 +217,51 @@ func TestPlanAndDispatch_AsyncFailuresRaiseRedactionEvents(t *testing.T) {
 		must.Contains(secBuf.String(), `"location":"core.tool_error"`, "the redaction must raise a security event")
 	})
 }
+
+func TestPlanAndDispatch_DropsFailedStructuredPayloadWhenTextHeldASecret(t *testing.T) {
+	must := require.New(t)
+	payload := json.RawMessage(`{"exit_code":null,"detail":"lookup failed"}`)
+	tr := newAsyncTestTransport()
+	loop := buildAsyncTestLoop(t, tr, secretErrorTool(func(t *tool.Tool) {
+		t.StructuredHandler = func(context.Context, json.RawMessage) (tool.StructuredResult, error) {
+			return tool.StructuredResult{Text: "failed: token " + toolErrorSecret, Structured: payload, Kind: "command_result", IsError: true}, nil
+		}
+	}))
+
+	result, record := dispatchOne(t, loop, &types.RunConfig{Mode: "execution"}, "leaky")
+
+	must.NotContains(result.Content, toolErrorSecret)
+	must.Nil(result.Structured, "a payload that accompanies text holding a match must not reach the model")
+	must.Nil(record.Structured, "the turn record must drop the payload too")
+}
+
+func TestPlanAndDispatch_RaisesOneRedactionEventPerSecretInTextAndPayload(t *testing.T) {
+	must := require.New(t)
+	payload, err := json.Marshal(map[string]string{"detail": "token " + toolErrorSecret})
+	must.NoError(err)
+	tr := newAsyncTestTransport()
+	loop := buildAsyncTestLoop(t, tr, secretErrorTool(func(t *tool.Tool) {
+		t.StructuredHandler = func(context.Context, json.RawMessage) (tool.StructuredResult, error) {
+			return tool.StructuredResult{Text: "failed: token " + toolErrorSecret, Structured: payload, Kind: "command_result", IsError: true}, nil
+		}
+	}))
+	var secBuf bytes.Buffer
+	loop.Security = security.NewSecurityLogger(&secBuf, "run-1")
+
+	dispatchOne(t, loop, &types.RunConfig{Mode: "execution"}, "leaky")
+
+	must.Equal(1, strings.Count(secBuf.String(), `"location":"core.tool_error"`), "one secret must raise one event")
+}
+
+func TestSpawnSubAgent_SetupErrorTextIsScrubbed(t *testing.T) {
+	must := require.New(t)
+	parentLoop := buildSubAgentTestLoop(&mockProvider{})
+	parentLoop.Prompt = &failingPromptBuilder{err: errors.New("template read failed: token " + toolErrorSecret)}
+
+	result, err := SpawnSubAgent(context.Background(), parentLoop, buildTestConfig(), SubAgentConfig{Prompt: "Do a subtask"})
+
+	must.NoError(err)
+	must.Equal("error", result.Outcome)
+	must.NotContains(result.Output, toolErrorSecret, "the parent model must not see the credential")
+	must.Contains(result.Output, "[REDACTED]", "the redaction must stay visible")
+}

@@ -18,6 +18,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
 	"github.com/rxbynerd/stirrup/harness/internal/prompt"
 	"github.com/rxbynerd/stirrup/harness/internal/router"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/harness/internal/transport"
@@ -81,7 +82,7 @@ func SpawnSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *types
 	if err != nil {
 		return &SubAgentResult{
 			Outcome:     "error",
-			Output:      err.Error(),
+			Output:      security.Scrub(err.Error()),
 			TokenBudget: run.config.MaxTokenBudget,
 		}, nil
 	}
