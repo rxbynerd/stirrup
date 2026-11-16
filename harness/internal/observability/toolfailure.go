@@ -64,6 +64,11 @@ const (
 	// before the loop emitted tool_result_request.
 	ToolFailureAsyncPreflight ToolFailureCategory = "async_preflight_error"
 
+	// ToolFailureAsyncInputRefused — the transport refused the
+	// tool_result_request because the call's input was over the request
+	// bound or withheld by the secret scrub; nothing was sent.
+	ToolFailureAsyncInputRefused ToolFailureCategory = "async_input_refused"
+
 	// ToolFailureAsyncTransport — async tool dispatch attempted with no
 	// control-plane transport, or the correlator raised a
 	// transport_disconnect.

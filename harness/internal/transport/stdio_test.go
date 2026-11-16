@@ -188,7 +188,7 @@ func TestStdioTransport_Emit_ScrubInvalidatedJSONUsesPlaceholder(t *testing.T) {
 
 	const hex = "0123456789abcdef0123456789abcdef" // 32 hex chars
 	raw := `{"note":"password=` + hex + `"}`
-	must.NoError(tr.Emit(types.HarnessEvent{Type: "permission_request", Input: json.RawMessage(raw)}))
+	must.NoError(tr.Emit(types.HarnessEvent{Type: "tool_call", ID: "tc1", Name: "run_command", Input: json.RawMessage(raw)}))
 
 	output := strings.TrimSpace(buf.String())
 	var got types.HarnessEvent
@@ -196,6 +196,25 @@ func TestStdioTransport_Emit_ScrubInvalidatedJSONUsesPlaceholder(t *testing.T) {
 	must.True(json.Valid(got.Input), "Input must be valid JSON even on the fallback path, got: %q", got.Input)
 	must.NotContains(string(got.Input), hex, "secret survived the fallback")
 	must.Contains(string(got.Input), "scrub-invalidated-json", "expected the scrub-invalidated-json placeholder")
+}
+
+// TestStdioTransport_Emit_RequestWithScrubWithheldInputIsNotSent: a
+// request event whose input the scrub replaced with the placeholder is
+// refused, so the control plane is never asked to decide on an input it
+// cannot see.
+func TestStdioTransport_Emit_RequestWithScrubWithheldInputIsNotSent(t *testing.T) {
+	const hex = "0123456789abcdef0123456789abcdef" // 32 hex chars
+	raw := json.RawMessage(`{"note":"password=` + hex + `"}`)
+	for _, typ := range []string{"permission_request", "tool_result_request", "batch_submission"} {
+		t.Run(typ, func(t *testing.T) {
+			must := require.New(t)
+			var buf bytes.Buffer
+			tr := NewStdioTransport(&buf, strings.NewReader(""))
+			err := tr.Emit(types.HarnessEvent{Type: typ, RequestID: "r-1", Input: raw})
+			must.ErrorIs(err, ErrRequestInputWithheld)
+			must.Empty(buf.String(), "a refused request event must not be written")
+		})
+	}
 }
 
 func TestStdioTransport_Close_ReturnsNoError(t *testing.T) {

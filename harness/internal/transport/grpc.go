@@ -118,10 +118,11 @@ func NewGRPCTransport(ctx context.Context, target string, opts ...GRPCTransportO
 	}, nil
 }
 
-// Emit scrubs secret patterns from the event's string fields, caps
-// tool_result content, tool_call input, user_message text and
-// thinking_delta text at maxEventFieldBytes, translates
-// the event to its proto representation, and sends it on the gRPC stream.
+// Emit scrubs secret patterns from the event's string fields, bounds the
+// event's fields (see boundEventFields), translates the event to its
+// proto representation, and sends it on the gRPC stream. A request event
+// whose input is over its bound, or withheld by the scrub, is not sent;
+// Emit returns ErrRequestInputTooLarge or ErrRequestInputWithheld.
 // When the optional Security logger is wired and any redaction occurs,
 // emits a SecretRedactedInOutput event with the matched pattern name and a
 // stable location string identifying the call site.
@@ -129,8 +130,14 @@ func (g *GRPCTransport) Emit(event types.HarnessEvent) error {
 	event.Text = g.scrubAndReport(event.Text, "transport.grpc.event.text")
 	event.Content = g.scrubAndReport(event.Content, "transport.grpc.event.content")
 	event.Message = g.scrubAndReport(event.Message, "transport.grpc.event.message")
-	event.Input = scrubEventInput(event.Input, g.scrubAndReport, "transport.grpc.event.input")
-	boundEventFields(&event)
+	var withheld bool
+	event.Input, withheld = scrubEventInput(event.Input, g.scrubAndReport, "transport.grpc.event.input")
+	if err := refuseWithheldRequestInput(event.Type, withheld); err != nil {
+		return err
+	}
+	if err := boundEventFields(&event); err != nil {
+		return err
+	}
 
 	pe := harnessEventToProto(event)
 

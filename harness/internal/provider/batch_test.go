@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/harness/internal/provider/quirks"
+	"github.com/rxbynerd/stirrup/harness/internal/transport"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -1870,6 +1871,26 @@ func TestControlPlaneBatchClient_Submit_EmitFailureDropsPending(t *testing.T) {
 
 	_, err = c.Result(context.Background(), requestID)
 	must.ErrorContains(err, "no pending submission")
+}
+
+// TestControlPlaneBatchClient_Submit_OversizedBodyRefusalSurfacesBound: a
+// batch_submission the transport refuses as over its bound fails Submit
+// with an error that still identifies the bound.
+func TestControlPlaneBatchClient_Submit_OversizedBodyRefusalSurfacesBound(t *testing.T) {
+	must := require.New(t)
+	tr := &mockBatchTransport{
+		emitErr:      fmt.Errorf("%w: batch_submission input is 4000000 bytes", transport.ErrRequestInputTooLarge),
+		emitErrTypes: map[string]bool{"batch_submission": true},
+	}
+	c := NewControlPlaneBatchClient(tr, time.Second, false)
+
+	batchID, err := c.Submit(context.Background(), []BatchEntry{{
+		CustomID: "run-test-turn-1",
+		Provider: "anthropic",
+		Body:     json.RawMessage(`{}`),
+	}})
+	must.ErrorIs(err, transport.ErrRequestInputTooLarge)
+	must.Empty(batchID)
 }
 
 // TestControlPlaneBatchClient_Heartbeat_StopsOnCtxCancel asserts the

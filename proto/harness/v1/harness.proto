@@ -166,7 +166,10 @@ service HarnessService {
 //                   back in the corresponding permission_response ControlEvent.
 //     - tool_name:  the tool requesting permission.
 //     - input:      JSON-encoded tool input (so the control plane can display
-//                   what the tool wants to do).
+//                   what the tool wants to do), at most 4 MiB less 64 KiB
+//                   and never truncated: the harness denies a call whose
+//                   input is larger, or that secret redaction would leave
+//                   as invalid JSON, without sending the request.
 //
 //   "tool_result_request"
 //     - request_id: unique ID for this request; the control plane must echo it
@@ -175,7 +178,10 @@ service HarnessService {
 //                    the control plane can correlate to the original tool_call).
 //     - tool_name:   the async tool whose result is being requested.
 //     - input:       JSON-encoded tool input (so the control plane can decide
-//                    what to do).
+//                    what to do), at most 4 MiB less 64 KiB and never
+//                    truncated: a larger input, or one that secret
+//                    redaction would leave as invalid JSON, fails the call
+//                    without sending the request.
 //     Emitted by the agentic loop when an async tool defers its result to the
 //     control plane. The harness blocks on the matching tool_result_response
 //     under ctx cancellation and a per-call timeout.
@@ -212,7 +218,11 @@ service HarnessService {
 //                   the corresponding batch_result ControlEvent.
 //     - input:      JSON-encoded BatchSubmission payload (provider_type,
 //                   custom_id, body). The body is the marshalled provider
-//                   request the streaming adapter would have POSTed.
+//                   request the streaming adapter would have POSTed. At
+//                   most 4 MiB less 64 KiB and never truncated: a larger
+//                   submission, or one that secret redaction would leave
+//                   as invalid JSON, is not sent and the run ends with an
+//                   error.
 //
 //   "batch_waiting"
 //     - request_id: the originating batch_submission request_id.
@@ -244,8 +254,10 @@ service HarnessService {
 //     the matching sandbox_token_response under a fail-closed 60s timeout;
 //     on the first request a timeout aborts the run before any sandbox is
 //     created; on the pre-delivery request it aborts construction and tears
-//     the sandbox down; on a refresh it stops refreshing and emits a
-//     "warning".
+//     the sandbox down; on a refresh it retries after half the current
+//     token's remaining lifetime while the eight-request budget lasts, and
+//     emits a "warning" if the token expires first, or if the budget runs
+//     out while the token would expire before the run ends.
 message HarnessEvent {
   // Required. The event type discriminator.
   // Valid values: "text_delta", "thinking_delta", "tool_call",

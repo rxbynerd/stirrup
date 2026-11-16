@@ -3,6 +3,7 @@ package transport
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"unicode/utf8"
 
@@ -25,6 +26,22 @@ const maxEventIdentifierBytes = 1 << 10
 // misbehaving producer.
 const maxEventToolEntries = 256
 
+// MaxRequestInputBytes bounds the input of a permission_request,
+// tool_result_request or batch_submission: grpc-go's 4 MiB default
+// receive limit less headroom for the event's other fields. The control
+// plane approves, executes or submits exactly that input, so an
+// oversized one is refused rather than truncated.
+const MaxRequestInputBytes = 4<<20 - 64<<10
+
+// ErrRequestInputTooLarge is returned by Emit when a request event's
+// input exceeds its bound. The event is not sent.
+var ErrRequestInputTooLarge = errors.New("request input exceeds the control stream bound")
+
+// ErrRequestInputWithheld is returned by Emit when the secret scrub had to
+// replace a request event's whole input with a placeholder. The event is
+// not sent: the control plane would be deciding on an input it cannot see.
+var ErrRequestInputWithheld = errors.New("request input withheld by the secret scrub")
+
 const eventTruncationFmt = "\n[truncated by harness for the control stream: %d of %d bytes shown]"
 
 // boundEventFields caps the event fields that carry tool payloads,
@@ -34,8 +51,9 @@ const eventTruncationFmt = "\n[truncated by harness for the control stream: %d o
 // this cap protects the control stream when that budget is raised, a tool
 // input is large, a user_message carries a long prompt, a warning quotes
 // model output, or a provider delivers a whole reasoning block as one
-// thinking_delta. text_delta stays uncapped.
-func boundEventFields(event *types.HarnessEvent) {
+// thinking_delta. text_delta stays uncapped. A request event whose input
+// is over its bound is refused with ErrRequestInputTooLarge, never cut.
+func boundEventFields(event *types.HarnessEvent) error {
 	event.ID = capEventIdentifier(event.ID)
 	event.Name = capEventIdentifier(event.Name)
 	event.ToolUseID = capEventIdentifier(event.ToolUseID)
@@ -54,7 +72,30 @@ func boundEventFields(event *types.HarnessEvent) {
 	case "tools_loaded":
 		event.Input = capEventInput(event.Input)
 		event.Tools = capEventIdentifiers(event.Tools)
+	case "permission_request", "tool_result_request", "batch_submission":
+		return refuseOversizedInput(event)
 	}
+	return nil
+}
+
+// refuseWithheldRequestInput refuses a request event whose input the
+// scrub replaced with a placeholder.
+func refuseWithheldRequestInput(eventType string, withheld bool) error {
+	if !withheld {
+		return nil
+	}
+	switch eventType {
+	case "permission_request", "tool_result_request", "batch_submission":
+		return fmt.Errorf("%w: %s", ErrRequestInputWithheld, eventType)
+	}
+	return nil
+}
+
+func refuseOversizedInput(event *types.HarnessEvent) error {
+	if len(event.Input) <= MaxRequestInputBytes {
+		return nil
+	}
+	return fmt.Errorf("%w: %s input is %d bytes, limit %d", ErrRequestInputTooLarge, event.Type, len(event.Input), MaxRequestInputBytes)
 }
 
 // capEventIdentifiers caps every entry and the length of a name list.

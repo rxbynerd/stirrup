@@ -381,6 +381,43 @@ func TestAsyncDispatch_EmitFailureReportsTransportDisconnect(t *testing.T) {
 	must.Zero(loop.asyncCorrelatorForTest().PendingCount())
 }
 
+func TestAsyncDispatch_OversizedInputRefusedByTransportReportsInputTooLarge(t *testing.T) {
+	must := require.New(t)
+	tr := newAsyncTestTransport()
+	tr.emitErr = fmt.Errorf("%w: tool_result_request input is 300000 bytes", transport.ErrRequestInputTooLarge)
+	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
+
+	call := types.ToolCall{
+		ID:    "tc_async_big",
+		Name:  "async_echo",
+		Input: json.RawMessage(`{}`),
+	}
+
+	output, success := loop.dispatchToolCall(context.Background(), call)
+	must.False(success, "output %q", output)
+	must.Contains(output, "async tool async_echo input_too_large")
+	must.NotContains(output, "transport_disconnect")
+	must.Zero(loop.asyncCorrelatorForTest().PendingCount())
+}
+
+func TestAsyncDispatch_InputWithheldByTransportReportsInputWithheld(t *testing.T) {
+	must := require.New(t)
+	tr := newAsyncTestTransport()
+	tr.emitErr = fmt.Errorf("%w: tool_result_request", transport.ErrRequestInputWithheld)
+	loop := buildAsyncTestLoop(t, tr, asyncEchoTool())
+
+	call := types.ToolCall{
+		ID:    "tc_async_withheld",
+		Name:  "async_echo",
+		Input: json.RawMessage(`{}`),
+	}
+
+	output, success := loop.dispatchToolCall(context.Background(), call)
+	must.False(success, "output %q", output)
+	must.Contains(output, "async tool async_echo input_withheld")
+	must.Zero(loop.asyncCorrelatorForTest().PendingCount())
+}
+
 func TestAsyncDispatch_OutOfOrderResolution(t *testing.T) {
 	must := require.New(t)
 	// The dispatch loop is sequential, so two async tool calls cannot be

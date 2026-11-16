@@ -137,6 +137,15 @@ below).
 - `cancelBundleOnRunCancel=true` with `transport=stdio` is rejected
   — there is no bundle to cancel.
 
+### The `batch_submission` bound
+
+A `batch_submission` carries the whole provider request in `input`,
+which the harness never truncates. A body larger than grpc-go's 4 MiB
+default receive limit less 64 KiB, or one that secret redaction would
+leave as invalid JSON, is not sent, and the run ends with an error.
+[Request input bounds](integration-guide.md#request-input-bounds)
+cover the other request events.
+
 ### The `batch_result` outcome contract
 
 On the gRPC path the control plane completes each `batch_submission`
