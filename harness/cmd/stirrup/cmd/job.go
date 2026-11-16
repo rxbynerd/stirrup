@@ -193,7 +193,6 @@ func runJob(cmd *cobra.Command, args []string) error {
 	select {
 	case assignment = <-assignmentCh:
 		assigned = time.Since(started)
-		liveness.SetPhase(types.SessionPhase{Phase: types.SessionPhaseConstructing})
 		// Assignment received; the pod is no longer idle-and-assignable.
 		_ = health.RemoveProbe(readinessMarkerPath)
 	case <-preTaskCancelCh:
@@ -209,9 +208,11 @@ func runJob(cmd *cobra.Command, args []string) error {
 	config := assignment.Task
 	if len(assignment.UnknownTaskFields) > 0 {
 		rejectErr := unknownTaskFieldsError(assignment.UnknownTaskFields)
+		liveness.Stop()
 		emitTerminalFailure(tp, rejectErr, "error")
 		return rejectErr
 	}
+	liveness.SetPhase(types.SessionPhase{Phase: types.SessionPhaseConstructing})
 
 	// The wall-clock budget covers component construction plus the
 	// primary run. Follow-up runs derive their own budget from the
