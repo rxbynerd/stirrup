@@ -6393,7 +6393,7 @@ type ToolsConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Optional. List of built-in tools to enable. When omitted, all built-in
 	// tools are enabled (except in read-only modes, which require an explicit
-	// list excluding write tools).
+	// list excluding write tools, or no_built_in).
 	//
 	// Valid built-in tool names:
 	//

@@ -71,7 +71,7 @@ func TestValidateRunConfig_NoBuiltInAllowsExplicitMCPAndControlPlaneTools(t *tes
 	must.NoError(ValidateRunConfig(c))
 }
 
-func TestToolsConfigBuiltInEnabled_Selection(t *testing.T) {
+func TestToolsConfig_BuiltInEnabledSelection(t *testing.T) {
 	tests := []struct {
 		name  string
 		tools ToolsConfig
