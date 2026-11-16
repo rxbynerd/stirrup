@@ -1697,7 +1697,9 @@ message GitHandoff {
 // ExportReceipt mirrors types.ExportReceipt: the result of one run's
 // workspace export.
 message ExportReceipt {
-  // The destination object URI.
+  // The destination object URI. For an HTTPS PUT destination, the URL's
+  // origin (scheme and host) only; empty when the URL reference did not
+  // resolve.
   string uri = 1;
 
   // "uploaded" when a non-empty archive reached the destination, "empty"
@@ -2453,11 +2455,39 @@ message ExecutorConfig {
 
   // Optional. Whether a failed workspace export fails an otherwise
   // successful run with outcome "handoff_failed". Unset defaults to true
-  // when workspace_export_to is set. Rejected when workspace_export_to is
-  // empty.
+  // when an export destination is set. Rejected when neither
+  // workspace_export_to nor workspace_export_https_put is set.
   optional bool workspace_export_required = 18;
 
-  // Next available field number: 19.
+  // Optional. Exports the workspace as workspace_export_to does, but
+  // uploads the archive with one HTTP PUT to the URL url_ref resolves
+  // to. Mutually exclusive with workspace_export_to, and bound by the
+  // same executor restriction. The receipt's uri is the URL's origin
+  // (scheme and host), never the URL.
+  HttpsPutConfig workspace_export_https_put = 19;
+
+  // Next available field number: 20.
+}
+
+// HttpsPutConfig mirrors types.HTTPSPutConfig: a destination the harness
+// uploads one object to with a single HTTP PUT, such as a presigned
+// object-store URL or an endpoint the control plane serves. The URL is a
+// capability: it is supplied as a secret reference, resolved in the
+// harness's own environment each time it uploads, and never written to a
+// log, trace, event or RunResult.
+message HttpsPutConfig {
+  // Required. A "secret://" reference resolving to the destination URL.
+  // An inline URL is rejected. The resolved URL must use https://, or
+  // http:// with a loopback host, and carry no userinfo or fragment.
+  string url_ref = 1;
+
+  // Optional. Headers sent on the PUT request; at most 32. Values are
+  // plaintext or a "secret://" reference. Authorization, Cookie and
+  // names ending in -token, -key, -secret, -signature, -password or
+  // -credential must be references. Headers the HTTP client owns (Host,
+  // Content-Length, Transfer-Encoding and the hop-by-hop headers) are
+  // rejected. A Content-Type entry replaces the harness's own.
+  map<string, string> headers = 2;
 }
 
 // SandboxIdentityConfig requests a short-lived, control-plane-issued

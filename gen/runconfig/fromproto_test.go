@@ -1548,6 +1548,31 @@ func TestRunConfigFromProto_ToolsProfilePreserved(t *testing.T) {
 	must.Equal("coding-classic", runConfigFromProto(&decoded).Tools.Profile)
 }
 
+func TestRunConfigFromProto_CopiesTheHTTPSPutWorkspaceExportDestination(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	in := &pb.HttpsPutConfig{
+		UrlRef:  "secret://file:///var/run/stirrup/export-url",
+		Headers: map[string]string{"x-ms-blob-type": "BlockBlob", "Authorization": "secret://EXPORT_AUTH"},
+	}
+	raw, err := proto.Marshal(&pb.RunConfig{Executor: &pb.ExecutorConfig{Type: "k8s", WorkspaceExportHttpsPut: in}})
+	must.NoError(err, "marshal")
+	var decoded pb.RunConfig
+	must.NoError(proto.Unmarshal(raw, &decoded), "unmarshal")
+
+	rc := runConfigFromProto(&decoded)
+	got := rc.Executor.WorkspaceExportHTTPSPut
+	must.NotNil(got)
+	check.Equal("secret://file:///var/run/stirrup/export-url", got.URLRef)
+	check.Equal(map[string]string{"x-ms-blob-type": "BlockBlob", "Authorization": "secret://EXPORT_AUTH"}, got.Headers)
+	check.True(rc.Executor.ExportRequired())
+
+	got.Headers["x-ms-blob-type"] = "mutated"
+	check.Equal("BlockBlob", decoded.GetExecutor().GetWorkspaceExportHttpsPut().GetHeaders()["x-ms-blob-type"], "the translated map must not alias the proto's")
+
+	check.Nil(runConfigFromProto(&pb.RunConfig{Executor: &pb.ExecutorConfig{Type: "k8s"}}).Executor.WorkspaceExportHTTPSPut)
+}
+
 // TestRunConfigFromProto_WorkspaceExportRequiredTriState pins that an
 // unset workspace_export_required stays nil (so the destination default
 // applies) and that both explicit values survive the wire and translate.

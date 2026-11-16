@@ -397,6 +397,13 @@ func (e *encoder) modelRouterConfig(c *types.ModelRouterConfig) *pb.ModelRouterC
 	}
 }
 
+func httpsPutConfigToProto(c *types.HTTPSPutConfig) *pb.HttpsPutConfig {
+	if c == nil {
+		return nil
+	}
+	return &pb.HttpsPutConfig{UrlRef: c.URLRef, Headers: maps.Clone(c.Headers)}
+}
+
 func (e *encoder) executorConfig(c *types.ExecutorConfig) *pb.ExecutorConfig {
 	pc := &pb.ExecutorConfig{
 		Type:                    c.Type,
@@ -411,6 +418,7 @@ func (e *encoder) executorConfig(c *types.ExecutorConfig) *pb.ExecutorConfig {
 		K8SEgressProxyUrl:       c.K8sEgressProxyURL,
 		WorkspaceExportTo:       c.WorkspaceExportTo,
 		WorkspaceExportRequired: clonePtr(c.WorkspaceExportRequired),
+		WorkspaceExportHttpsPut: httpsPutConfigToProto(c.WorkspaceExportHTTPSPut),
 	}
 	if si := c.SandboxIdentity; si != nil {
 		pc.SandboxIdentity = &pb.SandboxIdentityConfig{

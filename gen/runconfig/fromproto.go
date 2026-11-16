@@ -430,6 +430,17 @@ func modelRouterConfigFromProto(pc *pb.ModelRouterConfig) types.ModelRouterConfi
 	}
 }
 
+func httpsPutConfigFromProto(pc *pb.HttpsPutConfig) *types.HTTPSPutConfig {
+	if pc == nil {
+		return nil
+	}
+	out := &types.HTTPSPutConfig{URLRef: pc.GetUrlRef()}
+	if len(pc.GetHeaders()) > 0 {
+		out.Headers = maps.Clone(pc.GetHeaders())
+	}
+	return out
+}
+
 func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 	ec := types.ExecutorConfig{
 		Type:              pc.Type,
@@ -448,6 +459,7 @@ func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 		v := *pc.WorkspaceExportRequired
 		ec.WorkspaceExportRequired = &v
 	}
+	ec.WorkspaceExportHTTPSPut = httpsPutConfigFromProto(pc.WorkspaceExportHttpsPut)
 	if pc.SandboxIdentity != nil {
 		ec.SandboxIdentity = &types.SandboxIdentityConfig{
 			Source:   pc.SandboxIdentity.GetSource(),

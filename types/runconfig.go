@@ -597,6 +597,12 @@ func (rc RunConfig) Redact() RunConfig {
 		vcs.APIKeyRef = "secret://[REDACTED]"
 		redacted.Executor.VcsBackend = &vcs
 	}
+	redacted.Executor.WorkspaceExportHTTPSPut = redacted.Executor.WorkspaceExportHTTPSPut.redacted()
+	// An https:// URL pasted here fails validation, but a config recorded
+	// without validation must not carry its query string into a trace.
+	if dest := redacted.Executor.WorkspaceExportTo; dest != "" && !strings.HasPrefix(dest, "gs://") {
+		redacted.Executor.WorkspaceExportTo = redactURLToOrigin(dest)
+	}
 	if len(redacted.Tools.MCPServers) > 0 {
 		servers := make([]MCPServerConfig, len(redacted.Tools.MCPServers))
 		copy(servers, redacted.Tools.MCPServers)
@@ -1072,19 +1078,25 @@ type ExecutorConfig struct {
 	// WorkspaceExportTo, when set, instructs the harness to tarball the
 	// executor's workspace at the end of every run, before "done",
 	// archived inside the executor's own boundary, and upload it to the
-	// named URI. Currently only "gs://bucket/path" is accepted, and only
-	// for executors that can archive their workspace (see
-	// ExecutorCanArchiveWorkspace). A workspace with no files uploads an
-	// empty archive and reports export status "empty"; a missing workspace
-	// root is an export failure, as is any symlink whose target is
-	// absolute or resolves outside the workspace.
-	// Future S3 / Azure Blob support will broaden the scheme set.
+	// named URI. Only "gs://bucket/path" is accepted here (an HTTPS
+	// destination goes in WorkspaceExportHTTPSPut), and only for executors
+	// that can archive their workspace (see ExecutorCanArchiveWorkspace).
+	// A workspace with no files uploads an empty archive and reports
+	// export status "empty"; a missing workspace root is an export
+	// failure, as is any symlink whose target is absolute or resolves
+	// outside the workspace.
 	WorkspaceExportTo string `json:"workspaceExportTo,omitempty"`
+
+	// WorkspaceExportHTTPSPut, when set, exports the workspace as
+	// WorkspaceExportTo does but uploads the archive with one HTTP PUT to
+	// the URL its reference resolves to. Mutually exclusive with
+	// WorkspaceExportTo, and bound by the same executor restriction.
+	WorkspaceExportHTTPSPut *HTTPSPutConfig `json:"workspaceExportHttpsPut,omitempty"`
 
 	// WorkspaceExportRequired selects whether a failed workspace export
 	// fails a successful run with outcome "handoff_failed". Nil defaults
-	// to true; see ExportRequired. Rejected when WorkspaceExportTo is
-	// empty.
+	// to true; see ExportRequired. Rejected when no export destination
+	// is set.
 	WorkspaceExportRequired *bool `json:"workspaceExportRequired,omitempty"`
 
 	// SandboxIdentity requests a control-plane-issued token over the gRPC
@@ -6659,11 +6671,17 @@ func ScratchLimitErrors(executorType string, r *ResourceLimits) []string {
 	return nil
 }
 
+// ExportsWorkspace reports whether a workspace export destination of
+// either kind is configured.
+func (e ExecutorConfig) ExportsWorkspace() bool {
+	return e.WorkspaceExportTo != "" || e.WorkspaceExportHTTPSPut != nil
+}
+
 // ExportRequired reports whether a failed workspace export fails the
 // run: WorkspaceExportRequired when set, otherwise true whenever an
 // export destination is configured.
 func (e ExecutorConfig) ExportRequired() bool {
-	if e.WorkspaceExportTo == "" {
+	if !e.ExportsWorkspace() {
 		return false
 	}
 	if e.WorkspaceExportRequired != nil {
@@ -6672,37 +6690,47 @@ func (e ExecutorConfig) ExportRequired() bool {
 	return true
 }
 
-// validateExecutorWorkspaceExportTo enforces the URI shape on the
-// optional Executor.WorkspaceExportTo field and the cross-field
+// validateExecutorWorkspaceExportTo enforces the shape of the executor's
+// workspace export destination (Executor.WorkspaceExportTo or
+// Executor.WorkspaceExportHTTPSPut, never both) and the cross-field
 // constraint that the api and none executors (both read-only or
 // read-less, neither with a workspace) cannot produce a workspace
 // tarball.
 func validateExecutorWorkspaceExportTo(cfg ExecutorConfig, errs *[]string) {
-	if cfg.WorkspaceExportTo == "" {
+	if !cfg.ExportsWorkspace() {
 		if cfg.WorkspaceExportRequired != nil {
-			*errs = append(*errs, "executor.workspaceExportRequired requires executor.workspaceExportTo")
+			*errs = append(*errs, "executor.workspaceExportRequired requires executor.workspaceExportTo or executor.workspaceExportHttpsPut")
 		}
 		return
 	}
+	field := "executor.workspaceExportTo"
+	if cfg.WorkspaceExportTo == "" {
+		field = "executor.workspaceExportHttpsPut"
+	}
 	if cfg.Type == "" {
-		*errs = append(*errs, "executor.workspaceExportTo requires an explicit executor.type other than 'api' or 'none'")
+		*errs = append(*errs, field+" requires an explicit executor.type other than 'api' or 'none'")
 		return
 	}
 	if !ExecutorCanArchiveWorkspace(cfg.Type) {
 		*errs = append(*errs, fmt.Sprintf(
-			"executor.workspaceExportTo is not valid for executor.type=%q (the %s executor cannot archive its workspace)",
-			cfg.Type, cfg.Type))
+			"%s is not valid for executor.type=%q (the %s executor cannot archive its workspace)",
+			field, cfg.Type, cfg.Type))
 		return
 	}
-	// Only gs:// is accepted today. Future S3 / Azure Blob support
-	// will broaden the scheme set; for now keep the surface narrow so
-	// a typo (http://, gs:/, gcs://) fails at config load instead of
-	// during the post-run upload.
+	if cfg.WorkspaceExportHTTPSPut != nil {
+		if cfg.WorkspaceExportTo != "" {
+			*errs = append(*errs, "executor.workspaceExportTo and executor.workspaceExportHttpsPut are mutually exclusive; a run exports its workspace to one destination")
+		}
+		validateHTTPSPutConfig("executor.workspaceExportHttpsPut", cfg.WorkspaceExportHTTPSPut, errs)
+	}
+	if cfg.WorkspaceExportTo == "" {
+		return
+	}
+	// The scheme set is closed so a typo (gs:/, gcs://) fails at config
+	// load instead of during the post-run upload. The value is not
+	// echoed: an https:// URL pasted here is a capability.
 	if !strings.HasPrefix(cfg.WorkspaceExportTo, "gs://") {
-		*errs = append(*errs, fmt.Sprintf(
-			"executor.workspaceExportTo %q must use the gs:// scheme",
-			cfg.WorkspaceExportTo,
-		))
+		*errs = append(*errs, "executor.workspaceExportTo must use the gs:// scheme (an HTTPS destination goes in executor.workspaceExportHttpsPut as a secret reference)")
 		return
 	}
 	// "gs://" alone, or "gs:///" (empty bucket), are operator errors.
