@@ -44,9 +44,9 @@ var fastK8sTiming = k8sTiming{
 }
 
 // gvisorGuestDump is what the gVisor runtime diagnostics read on a gVisor
-// sandbox Pod (abridged from a kind capture).
+// sandbox Pod.
 const gvisorGuestDump = "begin /proc/version\n" +
-	" Linux version 4.19.0-gvisor #1 SMP Sun Jan 10 15:06:54 PST 2016\n" +
+	" " + gvisorProcVersion + "\n" +
 	"end /proc/version\n" +
 	"begin /proc/sentry-meminfo\n" +
 	" Alloc:              4202 kB\n" +

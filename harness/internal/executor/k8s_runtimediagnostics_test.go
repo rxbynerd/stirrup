@@ -131,7 +131,7 @@ func TestRunK8sRuntimeDiagnostics_NitroIsolatedFailures(t *testing.T) {
 		wantObserved map[string]string
 	}{
 		{
-			name:         "ordinary pod captured from kind",
+			name:         "ordinary pod",
 			stdout:       string(ordinaryPod),
 			wantCheck:    "dmi_product_name",
 			wantReason:   `DMI product name "kind" does not end in ".enclave"`,
