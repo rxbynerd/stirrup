@@ -22,6 +22,7 @@ import (
 
 // configOnlyFields are RunConfig JSON paths deliberately kept off the gRPC
 // wire, each with the reason. A path listed here covers its sub-fields.
+// notOnWirePaths in gen/runconfig/parity_test.go lists the same paths.
 var configOnlyFields = map[string]string{
 	"transport":                       "a task_assignment arrives over gRPC by construction, so the translator sets transport itself",
 	"traceEmitter.credential":         "the gcs credential override has no proto field; a gcs emitter on the wire uses workload identity",

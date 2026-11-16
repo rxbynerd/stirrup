@@ -2,6 +2,7 @@ package runconfig
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"sort"
@@ -18,8 +19,9 @@ import (
 )
 
 // notOnWirePaths are the RunConfig JSON paths with no RunConfig wire
-// field. ToProto rejects each when set; transport is also accepted as
-// {type: "grpc"}, the value FromProto reports.
+// field; configOnlyFields in harness/internal/invariants lists the same
+// paths. ToProto rejects each when set, except that transport must be
+// exactly {type: "grpc"}, the value FromProto reports.
 var notOnWirePaths = []string{
 	"traceEmitter.archive.credential",
 	"traceEmitter.credential",
@@ -32,18 +34,20 @@ type (
 )
 
 // filledProto returns a RunConfig message with every field set to a
-// non-zero value, recursive messages filled one level deeper than
-// types.ConfigFieldTypeNesting.
+// value no other field holds, every list and map holding two entries,
+// and recursive messages filled one level deeper than
+// types.ConfigFieldTypeNesting. Distinct values make a field translated
+// into a sibling of the same type fail the round trip.
 func filledProto(t *testing.T) *pb.RunConfig {
 	t.Helper()
 	pc := &pb.RunConfig{}
-	fillProtoMessage(t, pc.ProtoReflect(), map[protoreflect.FullName]int{})
+	(&protoFiller{t: t, active: map[protoreflect.FullName]int{}}).fill(pc.ProtoReflect())
 	return pc
 }
 
 // filledRunConfig returns a RunConfig with every field the wire carries
-// set to a non-zero value, and transport set to the grpc value FromProto
-// reports.
+// set as filledProto sets them, and transport set to the grpc value
+// FromProto reports.
 func filledRunConfig(t *testing.T) *types.RunConfig {
 	t.Helper()
 	rc, _ := filledRunConfigPaths(t)
@@ -55,10 +59,10 @@ func filledRunConfig(t *testing.T) *types.RunConfig {
 func filledRunConfigPaths(t *testing.T) (*types.RunConfig, map[string]bool) {
 	t.Helper()
 	rc := &types.RunConfig{}
-	set := map[string]bool{}
-	fillGoValue(t, reflect.ValueOf(rc).Elem(), "", notOnWirePaths, set, map[reflect.Type]int{})
+	f := &goFiller{t: t, skip: notOnWirePaths, set: map[string]bool{}, active: map[reflect.Type]int{}}
+	f.fill(reflect.ValueOf(rc).Elem(), "")
 	rc.Transport.Type = "grpc"
-	return rc, set
+	return rc, f.set
 }
 
 // lostProtoFields sends a fully populated message through from and then
@@ -80,7 +84,11 @@ func lostProtoFields(t *testing.T, from fromProtoFunc, to toProtoFunc) []string 
 // survive: a Go field one direction does not map.
 func lostGoFields(t *testing.T, from fromProtoFunc, to toProtoFunc) []string {
 	t.Helper()
-	want := filledRunConfig(t)
+	return lostGoFieldsOf(t, filledRunConfig(t), from, to)
+}
+
+func lostGoFieldsOf(t *testing.T, want *types.RunConfig, from fromProtoFunc, to toProtoFunc) []string {
+	t.Helper()
 	pc, err := to(want)
 	require.New(t).NoError(err)
 	var lost []string
@@ -97,6 +105,94 @@ func TestTranslator_EveryProtoFieldSurvivesFromProtoThenToProto(t *testing.T) {
 func TestTranslator_EveryGoFieldSurvivesToProtoThenFromProto(t *testing.T) {
 	check := assert.New(t)
 	check.Empty(lostGoFields(t, FromProto, ToProto), "RunConfig fields with no mapping in ToProto or FromProto")
+}
+
+// TestTranslator_ExplicitZeroOptionalValuesSurvive pins that an optional
+// field set to its zero value (temperature 0, ruleOfTwo.enforce false,
+// timeout 0) stays set in both directions, since the harness reads an
+// unset optional field as "apply the default".
+func TestTranslator_ExplicitZeroOptionalValuesSurvive(t *testing.T) {
+	t.Run("Go walk", func(t *testing.T) {
+		check := assert.New(t)
+		rc := filledRunConfig(t)
+		zeroed := zeroScalarPointees(reflect.ValueOf(rc).Elem())
+		check.Contains(zeroed, "temperature")
+		check.Contains(zeroed, "ruleOfTwo.enforce")
+		check.Empty(lostGoFieldsOf(t, rc, FromProto, ToProto))
+	})
+	t.Run("proto walk", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		want := filledProto(t)
+		zeroed := zeroOptionalScalars(want.ProtoReflect(), "")
+		check.Contains(zeroed, "temperature")
+		check.Contains(zeroed, "ruleOfTwo.enforce")
+		got, err := ToProto(FromProto(want))
+		must.NoError(err)
+		var lost []string
+		diffProtoMessages("", want.ProtoReflect(), got.ProtoReflect(), &lost)
+		check.Empty(lost)
+	})
+}
+
+// zeroScalarPointees sets every pointer-to-scalar reachable from v to
+// point at its type's zero value, and returns the paths it changed.
+func zeroScalarPointees(v reflect.Value) []string {
+	var out []string
+	var walk func(v reflect.Value, path string)
+	walk = func(v reflect.Value, path string) {
+		switch v.Kind() {
+		case reflect.Pointer:
+			if v.IsNil() {
+				return
+			}
+			switch v.Elem().Kind() {
+			case reflect.Bool, reflect.Int, reflect.Float64, reflect.String:
+				v.Elem().SetZero()
+				out = append(out, path)
+			default:
+				walk(v.Elem(), path)
+			}
+		case reflect.Struct:
+			for i := range v.NumField() {
+				if f := v.Type().Field(i); f.IsExported() {
+					walk(v.Field(i), joinPath(path, jsonName(f)))
+				}
+			}
+		case reflect.Slice:
+			for i := range v.Len() {
+				walk(v.Index(i), path)
+			}
+		}
+	}
+	walk(v, "")
+	return out
+}
+
+// zeroOptionalScalars sets every populated proto3 optional scalar
+// reachable from m to its zero value, keeping it populated, and returns
+// the paths it changed.
+func zeroOptionalScalars(m protoreflect.Message, prefix string) []string {
+	var out []string
+	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		path := joinPath(prefix, fd.JSONName())
+		switch {
+		case fd.IsList() && fd.Kind() == protoreflect.MessageKind && isHarnessMessage(fd):
+			for i := range v.List().Len() {
+				out = append(out, zeroOptionalScalars(v.List().Get(i).Message(), path)...)
+			}
+		case fd.IsList() || fd.IsMap():
+		case fd.Kind() == protoreflect.MessageKind:
+			if isHarnessMessage(fd) {
+				out = append(out, zeroOptionalScalars(v.Message(), path)...)
+			}
+		case fd.HasPresence():
+			m.Set(fd, fd.Default())
+			out = append(out, path)
+		}
+		return true
+	})
+	return out
 }
 
 // TestFilledRunConfig_SetsEveryWireField pins that the Go-side parity
@@ -158,82 +254,86 @@ func TestTranslator_ParityChecksReportAnUnmappedField(t *testing.T) {
 	})
 }
 
-// fillProtoMessage sets every field of m to a non-zero value. A recursive
-// message is filled one level deeper than types.ConfigFieldTypeNesting.
-func fillProtoMessage(t *testing.T, m protoreflect.Message, active map[protoreflect.FullName]int) {
-	t.Helper()
+// protoFiller fills a message for filledProto, drawing each scalar from
+// a counter so no two fields hold the same value.
+type protoFiller struct {
+	t      *testing.T
+	n      int
+	active map[protoreflect.FullName]int
+}
+
+func (f *protoFiller) fill(m protoreflect.Message) {
+	f.t.Helper()
 	md := m.Descriptor()
 	if md.FullName() == "google.protobuf.Struct" {
-		s, err := structpb.NewStruct(map[string]any{"type": "object"})
-		require.New(t).NoError(err)
+		f.n++
+		s, err := structpb.NewStruct(map[string]any{"type": "object", "title": fmt.Sprintf("v%d", f.n)})
+		require.New(f.t).NoError(err)
 		s.ProtoReflect().Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
 			m.Set(fd, v)
 			return true
 		})
 		return
 	}
-	if active[md.FullName()] > types.ConfigFieldTypeNesting {
+	if f.active[md.FullName()] > types.ConfigFieldTypeNesting {
 		return
 	}
-	active[md.FullName()]++
-	defer func() { active[md.FullName()]-- }()
+	f.active[md.FullName()]++
+	defer func() { f.active[md.FullName()]-- }()
 	fields := md.Fields()
 	for i := range fields.Len() {
 		fd := fields.Get(i)
 		switch {
 		case fd.IsMap():
 			entries := m.Mutable(fd).Map()
-			v := entries.NewValue()
-			if fd.MapValue().Kind() == protoreflect.MessageKind {
-				fillProtoMessage(t, v.Message(), active)
-			} else {
-				v = nonZeroScalar(t, fd.MapValue())
+			for _, key := range []string{"key1", "key2"} {
+				v := entries.NewValue()
+				if fd.MapValue().Kind() == protoreflect.MessageKind {
+					f.fill(v.Message())
+				} else {
+					v = f.scalar(fd.MapValue())
+				}
+				entries.Set(protoreflect.ValueOfString(key).MapKey(), v)
 			}
-			entries.Set(protoreflect.ValueOfString("key").MapKey(), v)
 		case fd.IsList():
 			list := m.Mutable(fd).List()
-			if fd.Kind() == protoreflect.MessageKind {
-				v := list.NewElement()
-				fillProtoMessage(t, v.Message(), active)
-				list.Append(v)
-			} else {
-				list.Append(nonZeroScalar(t, fd))
+			for range 2 {
+				if fd.Kind() == protoreflect.MessageKind {
+					v := list.NewElement()
+					f.fill(v.Message())
+					list.Append(v)
+				} else {
+					list.Append(f.scalar(fd))
+				}
 			}
 		case fd.Kind() == protoreflect.MessageKind:
 			v := m.NewField(fd)
-			fillProtoMessage(t, v.Message(), active)
+			f.fill(v.Message())
 			m.Set(fd, v)
 		default:
-			m.Set(fd, nonZeroScalar(t, fd))
+			m.Set(fd, f.scalar(fd))
 		}
 	}
 }
 
-func nonZeroScalar(t *testing.T, fd protoreflect.FieldDescriptor) protoreflect.Value {
-	t.Helper()
+// scalar returns the next counter value in fd's kind. Booleans can only
+// be true, so a boolean swapped with another goes undetected.
+func (f *protoFiller) scalar(fd protoreflect.FieldDescriptor) protoreflect.Value {
+	f.t.Helper()
+	f.n++
 	switch fd.Kind() {
 	case protoreflect.StringKind:
-		return protoreflect.ValueOfString("x")
+		return protoreflect.ValueOfString(fmt.Sprintf("v%d", f.n))
 	case protoreflect.BoolKind:
 		return protoreflect.ValueOfBool(true)
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
-		return protoreflect.ValueOfInt32(1)
-	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		return protoreflect.ValueOfInt64(1)
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
-		return protoreflect.ValueOfUint32(1)
-	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		return protoreflect.ValueOfUint64(1)
-	case protoreflect.FloatKind:
-		return protoreflect.ValueOfFloat32(0.5)
+	case protoreflect.Int32Kind:
+		return protoreflect.ValueOfInt32(int32(f.n))
+	case protoreflect.Int64Kind:
+		return protoreflect.ValueOfInt64(int64(f.n))
 	case protoreflect.DoubleKind:
-		return protoreflect.ValueOfFloat64(0.5)
-	case protoreflect.BytesKind:
-		return protoreflect.ValueOfBytes([]byte("x"))
-	case protoreflect.EnumKind:
-		return protoreflect.ValueOfEnum(1)
+		return protoreflect.ValueOfFloat64(float64(f.n) + 0.5)
 	}
-	require.New(t).FailNow("unhandled proto kind", "%s", fd.Kind())
+	require.New(f.t).FailNow("unhandled proto kind", "%s", fd.Kind())
 	return protoreflect.Value{}
 }
 
@@ -287,62 +387,78 @@ func diffProtoMessages(prefix string, want, got protoreflect.Message, out *[]str
 
 var rawMessageType = reflect.TypeFor[json.RawMessage]()
 
-// fillGoValue sets v, and every field beneath it, to a non-zero value,
-// skipping the JSON paths in skip. A struct type is filled at most
+// goFiller fills a RunConfig for filledRunConfig the way protoFiller
+// fills a message, skipping the JSON paths in skip and recording every
+// path it sets. A struct type is filled at most
 // types.ConfigFieldTypeNesting+1 levels inside itself.
-func fillGoValue(t *testing.T, v reflect.Value, path string, skip []string, set map[string]bool, active map[reflect.Type]int) {
-	t.Helper()
-	if slices.Contains(skip, path) {
+type goFiller struct {
+	t      *testing.T
+	n      int
+	skip   []string
+	set    map[string]bool
+	active map[reflect.Type]int
+}
+
+func (f *goFiller) fill(v reflect.Value, path string) {
+	f.t.Helper()
+	if slices.Contains(f.skip, path) {
 		return
 	}
 	if path != "" {
-		set[path] = true
+		f.set[path] = true
 	}
 	switch v.Kind() {
 	case reflect.Pointer:
-		if tooDeep(v.Type(), active) {
+		if tooDeep(v.Type(), f.active) {
 			return
 		}
 		v.Set(reflect.New(v.Type().Elem()))
-		fillGoValue(t, v.Elem(), path, skip, set, active)
+		f.fill(v.Elem(), path)
 	case reflect.Struct:
-		if tooDeep(v.Type(), active) {
+		if tooDeep(v.Type(), f.active) {
 			return
 		}
-		active[v.Type()]++
-		defer func() { active[v.Type()]-- }()
+		f.active[v.Type()]++
+		defer func() { f.active[v.Type()]-- }()
 		for i := range v.NumField() {
-			f := v.Type().Field(i)
-			if !f.IsExported() {
-				continue
+			field := v.Type().Field(i)
+			if field.IsExported() {
+				f.fill(v.Field(i), joinPath(path, jsonName(field)))
 			}
-			fillGoValue(t, v.Field(i), joinPath(path, jsonName(f)), skip, set, active)
 		}
 	case reflect.Slice:
 		if v.Type() == rawMessageType {
-			v.SetBytes([]byte(`{"type":"object"}`))
+			f.n++
+			v.SetBytes(fmt.Appendf(nil, `{"type":"object","title":"v%d"}`, f.n))
 			return
 		}
-		if tooDeep(v.Type(), active) {
+		if tooDeep(v.Type(), f.active) {
 			return
 		}
-		v.Set(reflect.MakeSlice(v.Type(), 1, 1))
-		fillGoValue(t, v.Index(0), path, skip, set, active)
+		v.Set(reflect.MakeSlice(v.Type(), 2, 2))
+		for i := range 2 {
+			f.fill(v.Index(i), path)
+		}
 	case reflect.Map:
 		v.Set(reflect.MakeMap(v.Type()))
-		elem := reflect.New(v.Type().Elem()).Elem()
-		fillGoValue(t, elem, path+"."+types.ConfigFieldWildcard, skip, set, active)
-		v.SetMapIndex(reflect.ValueOf("key").Convert(v.Type().Key()), elem)
+		for _, key := range []string{"key1", "key2"} {
+			elem := reflect.New(v.Type().Elem()).Elem()
+			f.fill(elem, path+"."+types.ConfigFieldWildcard)
+			v.SetMapIndex(reflect.ValueOf(key).Convert(v.Type().Key()), elem)
+		}
 	case reflect.String:
-		v.SetString("x")
+		f.n++
+		v.SetString(fmt.Sprintf("v%d", f.n))
 	case reflect.Bool:
 		v.SetBool(true)
 	case reflect.Int, reflect.Int32, reflect.Int64:
-		v.SetInt(1)
+		f.n++
+		v.SetInt(int64(f.n))
 	case reflect.Float64:
-		v.SetFloat(0.5)
+		f.n++
+		v.SetFloat(float64(f.n) + 0.5)
 	default:
-		require.New(t).FailNow("unhandled Go kind", "%s at %s", v.Kind(), path)
+		require.New(f.t).FailNow("unhandled Go kind", "%s at %s", v.Kind(), path)
 	}
 }
 

@@ -67,6 +67,10 @@ func (e *encoder) transport(t types.TransportConfig) {
 	if t.Address != "" {
 		e.notOnWire("transport.address")
 	}
+	t.Type, t.Address = "", ""
+	if t != (types.TransportConfig{}) {
+		e.notOnWire("transport")
+	}
 }
 
 func (e *encoder) int32(path string, v int) int32 {
