@@ -100,10 +100,10 @@ func TestBuildSandboxPod_ShapePerRuntimeProfile(t *testing.T) {
 			must.Equal(ptr.To(false), podFor(runtime, "none").Spec.EnableServiceLinks)
 		})
 	}
-	t.Run("the shared spec leaves service links to the caller", func(t *testing.T) {
+	t.Run("the shared spec disables service links", func(t *testing.T) {
 		must := require.New(t)
 		cfg := K8sExecutorConfig{Image: "busybox", Namespace: testK8sNamespace, Network: &types.NetworkConfig{Mode: "none"}}
-		must.Nil(buildSandboxPodSpec(cfg, nil, nil).EnableServiceLinks)
+		must.Equal(ptr.To(false), buildSandboxPodSpec(cfg, nil, nil).EnableServiceLinks)
 	})
 	t.Run("the registry maps are not shared with the pod", func(t *testing.T) {
 		must := require.New(t)
