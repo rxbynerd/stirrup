@@ -33,11 +33,10 @@ func liveSandbox(t *testing.T, ctx context.Context, hostDir string) *executor.Co
 		t.Skip("STIRRUP_TEST_CONTAINER_IMAGE not set; it must name an image containing git")
 	}
 	exec, err := executor.NewContainerExecutorWithContext(ctx, executor.ContainerExecutorConfig{
-		Image:             image,
-		HostDir:           hostDir,
-		SocketPath:        sock,
-		Network:           &types.NetworkConfig{Mode: "none"},
-		RegistryAllowlist: []string{"localhost/*", "docker.io/library/*", "ghcr.io/rxbynerd/*"},
+		Image:      image,
+		HostDir:    hostDir,
+		SocketPath: sock,
+		Network:    &types.NetworkConfig{Mode: "none"},
 	})
 	must.NoError(err, "NewContainerExecutorWithContext")
 	t.Cleanup(func() { _ = exec.Close() })

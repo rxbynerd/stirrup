@@ -131,6 +131,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	if liveness != nil {
 		liveness.SetInterval(sessionLivenessInterval(config))
 	}
+	if err := admitExecutorImage(config.Executor, loopOpts.imageAdmission, secLogger); err != nil {
+		return nil, err
+	}
 
 	// Rule-of-Two arming/audit; see docs/safety-rings.md. The arming
 	// decision feeds both the audit event here and the monitor built
@@ -1431,7 +1434,6 @@ func buildExecutor(ctx context.Context, cfg types.ExecutorConfig, secrets securi
 			Network:              cfg.Network,
 			Resources:            cfg.Resources,
 			Runtime:              cfg.Runtime,
-			RegistryAllowlist:    cfg.RegistryAllowlist,
 			EgressSecurity:       secLogger,
 			ExtraEnv:             extraEnv,
 			SandboxIdentityToken: sandboxIdentityToken,

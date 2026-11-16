@@ -443,7 +443,6 @@ func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 		K8sServiceAccount: pc.K8SServiceAccount,
 		K8sEgressProxyURL: pc.K8SEgressProxyUrl,
 		WorkspaceExportTo: pc.WorkspaceExportTo,
-		RegistryAllowlist: append([]string(nil), pc.RegistryAllowlist...),
 	}
 	if pc.WorkspaceExportRequired != nil {
 		v := *pc.WorkspaceExportRequired

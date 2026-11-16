@@ -2416,13 +2416,11 @@ message ExecutorConfig {
   // the network) and REJECTED in every other mode.
   string k8s_egress_proxy_url = 13;
 
-  // For "container": path.Match globs constraining which image references
-  // may run, matched against the normalised reference (registry host plus
-  // repo path, tag/digest stripped). "*" does not cross "/", so
-  // "ghcr.io/rxbynerd/*" matches "ghcr.io/rxbynerd/base" but not a deeper
-  // namespace. Empty falls back to the harness's built-in default list.
-  // Rejected for any other executor type.
-  repeated string registry_allowlist = 14;
+  // The sandbox image admission policy is deployment configuration, set by
+  // the harness's --image-allowlist flag or STIRRUP_IMAGE_ALLOWLIST, not a
+  // RunConfig field.
+  reserved 14;
+  reserved "registry_allowlist";
 
   // Optional. Destination URI for a tarball of the executor's workspace,
   // uploaded at the end of every run, whatever its outcome, before the

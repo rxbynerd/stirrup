@@ -1277,15 +1277,9 @@ func TestContainerExecutor_CreateRequest_CarriesHardeningProfile(t *testing.T) {
 	check.Equal([]string{"no-new-privileges"}, hc.SecurityOpt, "SecurityOpt")
 }
 
-// TestContainerExecutor_RegistryAllowlist_Default verifies the built-in
-// allowlist: a Docker Hub official image (library/*) and a ghcr.io/rxbynerd
-// image construct, while a third-party reference is rejected before any
-// container is created.
-func TestContainerExecutor_RegistryAllowlist_Default(t *testing.T) {
-	createCalled := false
+func TestNewContainerExecutor_AcceptsAnyRegistry(t *testing.T) {
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
-			createCalled = true
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
 		},
@@ -1301,143 +1295,20 @@ func TestContainerExecutor_RegistryAllowlist_Default(t *testing.T) {
 	})
 	defer cleanup()
 
-	allowed := []struct {
-		name, image string
-	}{
-		{"ubuntu tag", "ubuntu:26.04"},
-		{"explicit docker hub library path", "docker.io/library/alpine"},
-		{"ghcr base image", "ghcr.io/rxbynerd/base:latest"},
-		// The documented quick-start sandbox image (docs/executors/k8s.md,
-		// README.md) must construct under the default allowlist.
-		{"quick-start sandbox image", "ghcr.io/rxbynerd/stirrup-sandbox:latest"},
-		// The Docker Hub pull aliases must fold to docker.io and match the
-		// default docker.io/library/* pattern, or operators hit a false deny.
-		{"index.docker.io alias", "index.docker.io/library/ubuntu"},
-		{"registry-1.docker.io alias", "registry-1.docker.io/library/ubuntu:26.04"},
-	}
-	for _, tt := range allowed {
-		t.Run("allows "+tt.name, func(t *testing.T) {
+	for _, image := range []string{
+		"registry.internal:5000/team/runner@sha256:" + strings.Repeat("a", 64),
+		"us-docker.pkg.dev/acme-prod/sandboxes/go/toolchain:1.27",
+		"docker.io/someuser/app",
+	} {
+		t.Run(image, func(t *testing.T) {
 			must := require.New(t)
 			exec, err := NewContainerExecutorWithContext(context.Background(), ContainerExecutorConfig{
-				Image:      tt.image,
+				Image:      image,
 				HostDir:    "/tmp/workspace",
 				SocketPath: sock,
 			})
-			must.NoError(err, "image should be allowed by default")
+			must.NoError(err)
 			_ = exec.Close()
-		})
-	}
-
-	createCalled = false
-	denied := []struct {
-		name, image string
-	}{
-		{"untrusted registry", "evil.example.com/malware:latest"},
-		{"unknown docker hub namespace", "docker.io/someuser/app"},
-		{"unknown ghcr namespace", "ghcr.io/attacker/img"},
-		// ghcr.io/stirrup is not a namespace the project publishes under;
-		// confirms the default was not left admitting a dead org.
-		{"unpublished ghcr org", "ghcr.io/stirrup/base"},
-	}
-	for _, tt := range denied {
-		t.Run("rejects "+tt.name, func(t *testing.T) {
-			must := require.New(t)
-			_, err := NewContainerExecutorWithContext(context.Background(), ContainerExecutorConfig{
-				Image:      tt.image,
-				HostDir:    "/tmp/workspace",
-				SocketPath: sock,
-			})
-			must.Error(err, "image should be rejected by the default allowlist")
-			must.False(createCalled, "container must not be created when the image is disallowed")
-		})
-	}
-}
-
-// TestContainerExecutor_RegistryAllowlist_Override verifies an operator can
-// widen the allowlist, and that the override fully replaces (does not extend)
-// the default set.
-func TestContainerExecutor_RegistryAllowlist_Override(t *testing.T) {
-	must := require.New(t)
-	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
-		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})
-		},
-		"POST /containers/*/start": func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusNoContent)
-		},
-		"POST /containers/*/stop": func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusNoContent)
-		},
-		"DELETE /containers/*": func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusNoContent)
-		},
-	})
-	defer cleanup()
-
-	// A custom registry the operator trusts.
-	exec, err := NewContainerExecutorWithContext(context.Background(), ContainerExecutorConfig{
-		Image:             "registry.internal:5000/team/runner@sha256:" + strings.Repeat("a", 64),
-		HostDir:           "/tmp/workspace",
-		SocketPath:        sock,
-		RegistryAllowlist: []string{"registry.internal:5000/team/*"},
-	})
-	must.NoError(err, "custom-registry image should be allowed by override")
-	_ = exec.Close()
-
-	// The override replaces the default, so a previously-default image is now
-	// rejected.
-	_, err = NewContainerExecutorWithContext(context.Background(), ContainerExecutorConfig{
-		Image:             "ubuntu:26.04",
-		HostDir:           "/tmp/workspace",
-		SocketPath:        sock,
-		RegistryAllowlist: []string{"registry.internal:5000/team/*"},
-	})
-	must.Error(err, "ubuntu:26.04 should be rejected when the override does not include docker.io/library/*")
-}
-
-func TestNormaliseImageRef_ReturnsCanonicalForm(t *testing.T) {
-	tests := []struct {
-		name, in, want string
-	}{
-		{"bare name defaults to docker hub library", "ubuntu", "docker.io/library/ubuntu"},
-		{"tag is dropped", "ubuntu:26.04", "docker.io/library/ubuntu"},
-		{"namespaced name defaults to docker hub", "myorg/app:tag", "docker.io/myorg/app"},
-		{"explicit registry is kept", "ghcr.io/stirrup/base", "ghcr.io/stirrup/base"},
-		{"explicit registry drops tag", "ghcr.io/stirrup/base:latest", "ghcr.io/stirrup/base"},
-		{"digest is dropped", "registry:5000/team/img@sha256:" + strings.Repeat("b", 64), "registry:5000/team/img"},
-		{"localhost without port is kept", "localhost/dev", "localhost/dev"},
-		{"localhost with port drops tag", "localhost:5000/dev:tag", "localhost:5000/dev"},
-		{"docker hub library path is unchanged", "docker.io/library/alpine", "docker.io/library/alpine"},
-		{"index.docker.io folds to docker.io", "index.docker.io/library/ubuntu", "docker.io/library/ubuntu"},
-		{"registry-1.docker.io folds to docker.io", "registry-1.docker.io/library/ubuntu:26.04", "docker.io/library/ubuntu"},
-		{"index.docker.io namespace folds to docker.io", "index.docker.io/myorg/app", "docker.io/myorg/app"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			must := require.New(t)
-			must.Equal(tt.want, normaliseImageRef(tt.in))
-		})
-	}
-}
-
-// TestCheckImageAllowed_RejectsEmptyRepo verifies a reference whose
-// normalised form has an empty final segment (trailing "/") is rejected with
-// a clear error rather than slipping through because the "*" glob matches the
-// empty string.
-func TestCheckImageAllowed_RejectsEmptyRepo(t *testing.T) {
-	tests := []struct {
-		name, image string
-	}{
-		{"ghcr namespace with no repository", "ghcr.io/stirrup/"},
-		{"docker hub library with no repository", "docker.io/library/"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			must := require.New(t)
-			err := checkImageAllowed(tt.image, nil)
-			must.Error(err, "image with empty repository should be rejected")
-			must.ErrorContains(err, "empty repository")
 		})
 	}
 }

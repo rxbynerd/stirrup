@@ -1069,14 +1069,6 @@ type ExecutorConfig struct {
 	// k8s-sandbox: gVisor-only).
 	Runtime string `json:"runtime,omitempty"`
 
-	// RegistryAllowlist constrains which container image references the
-	// container executor may run: path.Match globs over the normalised
-	// reference (registry host + repo path, tag/digest stripped). Empty
-	// falls back to the built-in default. "*" does not cross "/" —
-	// "ghcr.io/rxbynerd/*" matches "ghcr.io/rxbynerd/base" but not a
-	// deeper namespace. Only meaningful for executor.type == "container".
-	RegistryAllowlist []string `json:"registryAllowlist,omitempty"`
-
 	// WorkspaceExportTo, when set, instructs the harness to tarball the
 	// executor's workspace at the end of every run, before "done",
 	// archived inside the executor's own boundary, and upload it to the
@@ -2798,7 +2790,6 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateContextStrategyBudget(config.ContextStrategy, &errs)
 	validateClearToolResults(config.ContextStrategy, &errs)
 	validateOptionalType("executor", config.Executor.Type, validExecutorTypes, &errs)
-	validateExecutorRegistryAllowlist(config.Executor, &errs)
 	validateExecutorRuntime(config.Executor, &errs)
 	validateK8sExecutor(config.Executor, &errs)
 	validateNoneExecutor(config.Executor, &errs)
@@ -6656,31 +6647,6 @@ func validateVcsBackend(cfg *VcsBackendConfig, errs *[]string) {
 	validateRequiredType("executor.vcsBackend", cfg.Type, validVcsBackendTypes, errs)
 }
 
-// validateExecutorRegistryAllowlist checks the optional
-// Executor.RegistryAllowlist: every entry must be a syntactically valid glob
-// and the field is only meaningful for the container executor. An empty list
-// is valid — the executor falls back to its built-in default — so this only
-// rejects malformed patterns and misplacement on a non-container executor.
-// The matcher is path.Match, identical to the runtime enforcement path in the
-// executor, so a pattern that validates here behaves the same when enforced.
-func validateExecutorRegistryAllowlist(cfg ExecutorConfig, errs *[]string) {
-	if len(cfg.RegistryAllowlist) == 0 {
-		return
-	}
-	if cfg.Type != "container" && cfg.Type != "" {
-		*errs = append(*errs, "executor.registryAllowlist is only valid when executor.type is \"container\"")
-	}
-	for _, pattern := range cfg.RegistryAllowlist {
-		if pattern == "" {
-			*errs = append(*errs, "executor.registryAllowlist entries must be non-empty")
-			continue
-		}
-		if _, err := path.Match(pattern, ""); err != nil {
-			*errs = append(*errs, fmt.Sprintf("executor.registryAllowlist pattern %q is not a valid glob: %v", pattern, err))
-		}
-	}
-}
-
 // validateNoneExecutor rejects every container/k8s/api-only field on
 // ExecutorConfig when Type == "none". The none executor
 // (harness/internal/executor/none.go) has no execution surface at all, so
@@ -6690,11 +6656,10 @@ func validateExecutorRegistryAllowlist(cfg ExecutorConfig, errs *[]string) {
 // them. Scoped to "none" only — the sibling validators above already
 // police these fields for "container" and the k8s family.
 //
-// Runtime and RegistryAllowlist are deliberately absent from this list:
-// validateExecutorRuntime and validateExecutorRegistryAllowlist already
-// reject both for any Type outside their own applicable set (which does
-// not include "none"), so adding them here would produce two error
-// strings for the same misconfiguration.
+// Runtime is deliberately absent from this list: validateExecutorRuntime
+// already rejects it for any Type outside its applicable set (which does
+// not include "none"), so adding it here would produce two error strings
+// for the same misconfiguration.
 func validateNoneExecutor(cfg ExecutorConfig, errs *[]string) {
 	if cfg.Type != "none" {
 		return

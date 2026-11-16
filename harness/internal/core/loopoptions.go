@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"google.golang.org/grpc/credentials"
+
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 )
 
 // LoopOptions carries entrypoint-supplied behaviour into BuildLoop.
@@ -20,6 +22,7 @@ type LoopOptions struct {
 	sessionBudget          time.Duration
 	transportTLS           credentials.TransportCredentials
 	liveness               SessionLiveness
+	imageAdmission         executor.ImageAdmissionPolicy
 }
 
 // LoopOption configures a LoopOptions value, keeping BuildLoop's signature
@@ -59,4 +62,11 @@ func WithSessionLiveness(liveness SessionLiveness) LoopOption {
 // transport is not grpc, rather than ignoring it.
 func WithTransportTLS(creds credentials.TransportCredentials) LoopOption {
 	return func(o *LoopOptions) { o.transportTLS = creds }
+}
+
+// WithImageAdmission sets the deployment's sandbox image admission policy
+// (--image-allowlist, STIRRUP_IMAGE_ALLOWLIST). BuildLoop refuses an
+// executor.image the policy does not admit before any sandbox is created.
+func WithImageAdmission(policy executor.ImageAdmissionPolicy) LoopOption {
+	return func(o *LoopOptions) { o.imageAdmission = policy }
 }

@@ -65,7 +65,7 @@ func loadRunConfigFile(path string) (*types.RunConfig, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
-		return nil, fmt.Errorf("parsing run_config_file %q: %w", path, err)
+		return nil, fmt.Errorf("parsing run_config_file %q: %w", path, types.ExplainRunConfigDecodeError(err))
 	}
 	spec.AnchorRunConfigPaths(&cfg, filepath.Dir(path))
 	return &cfg, nil

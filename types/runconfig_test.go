@@ -2670,53 +2670,6 @@ func TestValidateRunConfig_ExecutorRuntimeRejectsUnknown(t *testing.T) {
 	must.ErrorContains(err, "foo")
 }
 
-func TestValidateRunConfig_RegistryAllowlistAcceptsValidGlobs(t *testing.T) {
-	must := require.New(t)
-	c := validConfig()
-	c.Executor = ExecutorConfig{
-		Type:              "container",
-		Image:             "ghcr.io/stirrup/base:latest",
-		RegistryAllowlist: []string{"ghcr.io/stirrup/*", "docker.io/library/*", "registry.internal:5000/team/*"},
-	}
-	must.NoError(ValidateRunConfig(c))
-}
-
-func TestValidateRunConfig_RegistryAllowlistRejectsBadGlob(t *testing.T) {
-	must := require.New(t)
-	c := validConfig()
-	c.Executor = ExecutorConfig{
-		Type:              "container",
-		Image:             "ghcr.io/stirrup/base:latest",
-		RegistryAllowlist: []string{"ghcr.io/stirrup/["},
-	}
-	err := ValidateRunConfig(c)
-	must.ErrorContains(err, "registryAllowlist")
-}
-
-func TestValidateRunConfig_RegistryAllowlistRejectsEmptyEntry(t *testing.T) {
-	must := require.New(t)
-	c := validConfig()
-	c.Executor = ExecutorConfig{
-		Type:              "container",
-		Image:             "ghcr.io/stirrup/base:latest",
-		RegistryAllowlist: []string{""},
-	}
-	err := ValidateRunConfig(c)
-	must.ErrorContains(err, "registryAllowlist")
-}
-
-func TestValidateRunConfig_RegistryAllowlistRequiresContainerExecutor(t *testing.T) {
-	must := require.New(t)
-	c := validConfig()
-	c.Executor = ExecutorConfig{
-		Type:              "local",
-		RegistryAllowlist: []string{"ghcr.io/stirrup/*"},
-	}
-	err := ValidateRunConfig(c)
-	must.ErrorContains(err, "registryAllowlist")
-	must.ErrorContains(err, "container")
-}
-
 // --- PermissionPolicyConfig.Type policy-engine ---
 
 func TestValidateRunConfig_PolicyEngineRequiresPolicyFile(t *testing.T) {
@@ -7873,10 +7826,10 @@ func TestValidateRunConfig_NoneExecutorRejectsWorkspaceExportTo(t *testing.T) {
 // rejection validateNoneExecutor enforces: every container/k8s/api-only
 // field on ExecutorConfig is rejected outright when Type == "none", since
 // the none executor has no execution surface to apply any of them to.
-// Runtime and RegistryAllowlist are deliberately NOT in this table — they
-// are covered by TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce,
-// which pins that validateExecutorRuntime/validateExecutorRegistryAllowlist
-// (not validateNoneExecutor) reject them for "none", exactly once each.
+// Runtime is deliberately NOT in this table — it is covered by
+// TestValidateRunConfig_NoneExecutorRuntimeRejectedOnce, which pins that
+// validateExecutorRuntime (not validateNoneExecutor) rejects it for "none",
+// exactly once.
 func TestValidateRunConfig_NoneExecutorRejectsExecutionOnlyFields(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -7907,31 +7860,19 @@ func TestValidateRunConfig_NoneExecutorRejectsExecutionOnlyFields(t *testing.T) 
 	}
 }
 
-// TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce pins
-// that Runtime and RegistryAllowlist are rejected for executor.type="none" by the
-// generic validateExecutorRuntime / validateExecutorRegistryAllowlist validators,
-// not validateNoneExecutor — so setting either produces exactly one error, not two.
-func TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce(t *testing.T) {
-	t.Run("runtime", func(t *testing.T) {
-		must := require.New(t)
-		c := validConfig()
-		c.Executor = ExecutorConfig{Type: "none", Runtime: "runc"}
-		err := ValidateRunConfig(c)
-		must.Error(err)
-		want := `executor.runtime is only valid when executor.type is "container", "k8s", or "k8s-sandbox"`
-		must.Equal(1, strings.Count(err.Error(), want), "error: %v", err)
-		must.NotContains(err.Error(), `executor.runtime is not valid for executor.type="none"`, "no duplicate none-specific error")
-	})
-	t.Run("registryAllowlist", func(t *testing.T) {
-		must := require.New(t)
-		c := validConfig()
-		c.Executor = ExecutorConfig{Type: "none", RegistryAllowlist: []string{"ghcr.io/*"}}
-		err := ValidateRunConfig(c)
-		must.Error(err)
-		want := `executor.registryAllowlist is only valid when executor.type is "container"`
-		must.Equal(1, strings.Count(err.Error(), want), "error: %v", err)
-		must.NotContains(err.Error(), `executor.registryAllowlist is not valid for executor.type="none"`, "no duplicate none-specific error")
-	})
+// TestValidateRunConfig_NoneExecutorRuntimeRejectedOnce pins that Runtime is
+// rejected for executor.type="none" by the generic validateExecutorRuntime
+// validator, not validateNoneExecutor — so setting it produces exactly one
+// error, not two.
+func TestValidateRunConfig_NoneExecutorRuntimeRejectedOnce(t *testing.T) {
+	must := require.New(t)
+	c := validConfig()
+	c.Executor = ExecutorConfig{Type: "none", Runtime: "runc"}
+	err := ValidateRunConfig(c)
+	must.Error(err)
+	want := `executor.runtime is only valid when executor.type is "container", "k8s", or "k8s-sandbox"`
+	must.Equal(1, strings.Count(err.Error(), want), "error: %v", err)
+	must.NotContains(err.Error(), `executor.runtime is not valid for executor.type="none"`, "no duplicate none-specific error")
 }
 
 func TestValidateRunConfig_NoneExecutorRejectsDeterministicGit(t *testing.T) {

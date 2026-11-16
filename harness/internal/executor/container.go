@@ -59,10 +59,6 @@ type ContainerExecutorConfig struct {
 	Network    *types.NetworkConfig
 	Resources  *types.ResourceLimits
 	SocketPath string // override auto-detection; empty = auto-detect
-	// RegistryAllowlist is a set of globs over the normalised image
-	// reference (registry host + repo path, digest/tag stripped). An empty
-	// list falls back to defaultRegistryAllowlist.
-	RegistryAllowlist []string
 	// Runtime selects the OCI runtime (e.g. "runsc", "kata-qemu"). Empty
 	// omits the field from the create-container request, yielding runc.
 	Runtime string
@@ -123,11 +119,6 @@ func (e *ContainerExecutor) Probe(ctx context.Context) error {
 // NewContainerExecutorWithContext, it never creates a container or starts
 // the egress proxy, so a `--dry-run` stays read-only.
 func ProbeContainerEngine(ctx context.Context, cfg ContainerExecutorConfig) error {
-	if cfg.Image != "" {
-		if err := checkImageAllowed(cfg.Image, cfg.RegistryAllowlist); err != nil {
-			return err
-		}
-	}
 	socketPath := cfg.SocketPath
 	if socketPath == "" {
 		var err error
@@ -181,10 +172,6 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 	if cfg.HostDir == "" {
 		return nil, fmt.Errorf("container executor requires a host directory")
 	}
-	if err := checkImageAllowed(cfg.Image, cfg.RegistryAllowlist); err != nil {
-		return nil, startupErr(types.BuildFailureSandboxImage, err)
-	}
-
 	socketPath := cfg.SocketPath
 	if socketPath == "" {
 		var err error

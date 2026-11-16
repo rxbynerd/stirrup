@@ -87,6 +87,9 @@ type PreflightOptions struct {
 	// effect on local/api executors, which expose no Probe regardless.
 	SkipExecutor bool
 	Timeout      time.Duration
+	// ImageAdmission is the deployment's sandbox image admission policy,
+	// checked in the "image-admission" step.
+	ImageAdmission executor.ImageAdmissionPolicy
 }
 
 // DefaultPreflightTimeout is the wall-clock budget for a dry-run when the
@@ -141,6 +144,7 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 		return report, nil
 	}
 	ok("config-validation", "RunConfig invariants satisfied")
+	preflightImageAdmission(config.Executor, opts.ImageAdmission, ok, warn, fail)
 
 	// Preflight constructs components that take a SecurityLogger, but a
 	// dry-run must not emit security events to the operator's stderr (those
@@ -450,16 +454,42 @@ func preflightGitStrategyProbe(
 	ok("git-strategy-probe", "git runs inside the executor")
 }
 
+// preflightImageAdmission runs the "image-admission" step for the executor
+// types that start a sandbox from executor.image; the step is absent for
+// every other type.
+func preflightImageAdmission(
+	cfg types.ExecutorConfig,
+	policy executor.ImageAdmissionPolicy,
+	ok func(string, string),
+	warn func(string, error),
+	fail func(string, error, string),
+) {
+	if !executorStartsImage(cfg.Type) || cfg.Image == "" {
+		return
+	}
+	if err := policy.Admit(cfg.Image); err != nil {
+		fail("image-admission", err, "the deployment's image admission policy (--image-allowlist or STIRRUP_IMAGE_ALLOWLIST) must admit executor.image")
+		return
+	}
+	switch {
+	case policy.Configured():
+		ok("image-admission", "executor.image admitted by the image admission policy")
+	case executor.ImageDigestPinned(cfg.Image):
+		ok("image-admission", "no image admission policy configured; executor.image is pinned by digest")
+	default:
+		warn("image-admission", errors.New("no image admission policy is configured and executor.image is not pinned by digest"))
+	}
+}
+
 // containerProbeConfig projects the RunConfig's executor block onto the
 // subset ProbeContainerEngine needs. The socket is left empty so
 // ProbeContainerEngine auto-detects it (RunConfig has no socket override;
 // that field exists only on the test-facing ContainerExecutorConfig).
 func containerProbeConfig(cfg types.ExecutorConfig) executor.ContainerExecutorConfig {
 	return executor.ContainerExecutorConfig{
-		Image:             cfg.Image,
-		Network:           cfg.Network,
-		Runtime:           cfg.Runtime,
-		RegistryAllowlist: cfg.RegistryAllowlist,
+		Image:   cfg.Image,
+		Network: cfg.Network,
+		Runtime: cfg.Runtime,
 	}
 }
 

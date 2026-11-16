@@ -107,34 +107,6 @@ func TestProbeContainerEngine_ImageAbsent(t *testing.T) {
 	must.ErrorContains(err, "not present locally")
 }
 
-// TestProbeContainerEngine_DisallowedImage asserts the dry-run preflight
-// enforces the registry allowlist too, and fails fast before pinging the
-// engine — so a misconfigured image is caught without a false-clean dry-run.
-func TestProbeContainerEngine_DisallowedImage(t *testing.T) {
-	must := require.New(t)
-	var pingHits atomic.Int64
-	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
-		"GET /_ping": func(w http.ResponseWriter, _ *http.Request) {
-			pingHits.Add(1)
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("OK"))
-		},
-		"GET /images/*/json": func(w http.ResponseWriter, _ *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"Id":"sha256:abc"}`))
-		},
-	})
-	defer cleanup()
-
-	err := ProbeContainerEngine(context.Background(), ContainerExecutorConfig{
-		Image:      "evil.example.com/malware:latest",
-		SocketPath: sock,
-	})
-	must.Error(err)
-	must.ErrorContains(err, "registry allowlist")
-	must.Zero(pingHits.Load(), "a disallowed image must be rejected before any engine call")
-}
-
 func TestContainerExecutor_Probe_EngineUnreachable(t *testing.T) {
 	must := require.New(t)
 	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{

@@ -127,6 +127,26 @@ func (sl *SecurityLogger) ConfigValidationFailed(errors []string) {
 	})
 }
 
+// ImageAdmissionDenied emits when the deployment's image admission policy
+// refuses executor.image, before any sandbox is created.
+func (sl *SecurityLogger) ImageAdmissionDenied(executorType, image string, patterns []string) {
+	sl.Emit("error", "image_admission_denied", map[string]any{
+		"executor": executorType,
+		"image":    image,
+		"patterns": patterns,
+	})
+}
+
+// ImageUnpinnedWithoutAdmissionPolicy emits when a sandbox image is neither
+// constrained by an image admission policy nor pinned by digest, so nothing
+// stops a mistyped or moved reference from running.
+func (sl *SecurityLogger) ImageUnpinnedWithoutAdmissionPolicy(executorType, image string) {
+	sl.Emit("warn", "image_unpinned_without_admission_policy", map[string]any{
+		"executor": executorType,
+		"image":    image,
+	})
+}
+
 // SecretRedactedInOutput emits when the LogScrubber detects and redacts a secret.
 func (sl *SecurityLogger) SecretRedactedInOutput(pattern, location string) {
 	sl.Emit("info", "secret_redacted_in_output", map[string]any{

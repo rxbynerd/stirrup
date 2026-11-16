@@ -5392,13 +5392,6 @@ type ExecutorConfig struct {
 	// network.mode is "allowlist" (the run would otherwise have no route to
 	// the network) and REJECTED in every other mode.
 	K8SEgressProxyUrl string `protobuf:"bytes,13,opt,name=k8s_egress_proxy_url,json=k8sEgressProxyUrl,proto3" json:"k8s_egress_proxy_url,omitempty"`
-	// For "container": path.Match globs constraining which image references
-	// may run, matched against the normalised reference (registry host plus
-	// repo path, tag/digest stripped). "*" does not cross "/", so
-	// "ghcr.io/rxbynerd/*" matches "ghcr.io/rxbynerd/base" but not a deeper
-	// namespace. Empty falls back to the harness's built-in default list.
-	// Rejected for any other executor type.
-	RegistryAllowlist []string `protobuf:"bytes,14,rep,name=registry_allowlist,json=registryAllowlist,proto3" json:"registry_allowlist,omitempty"`
 	// Optional. Destination URI for a tarball of the executor's workspace,
 	// uploaded at the end of every run, whatever its outcome, before the
 	// run's "done" event. Only the "gs://bucket/path" scheme is accepted
@@ -5549,13 +5542,6 @@ func (x *ExecutorConfig) GetK8SEgressProxyUrl() string {
 		return x.K8SEgressProxyUrl
 	}
 	return ""
-}
-
-func (x *ExecutorConfig) GetRegistryAllowlist() []string {
-	if x != nil {
-		return x.RegistryAllowlist
-	}
-	return nil
 }
 
 func (x *ExecutorConfig) GetWorkspaceExportTo() string {
@@ -7659,7 +7645,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x0eclear_at_least\x18\x06 \x01(\x05H\x01R\fclearAtLeast\x88\x01\x01\x12#\n" +
 	"\rexclude_tools\x18\a \x03(\tR\fexcludeToolsB\a\n" +
 	"\x05_keepB\x11\n" +
-	"\x0f_clear_at_least\"\xf9\a\n" +
+	"\x0f_clear_at_least\"\xe4\a\n" +
 	"\x0eExecutorConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12E\n" +
 	"\vvcs_backend\x18\x02 \x01(\v2$.stirrup.harness.v1.VcsBackendConfigR\n" +
@@ -7675,8 +7661,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	" \x01(\tR\rk8sKubeconfig\x12c\n" +
 	"\x11k8s_node_selector\x18\v \x03(\v27.stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntryR\x0fk8sNodeSelector\x12.\n" +
 	"\x13k8s_service_account\x18\f \x01(\tR\x11k8sServiceAccount\x12/\n" +
-	"\x14k8s_egress_proxy_url\x18\r \x01(\tR\x11k8sEgressProxyUrl\x12-\n" +
-	"\x12registry_allowlist\x18\x0e \x03(\tR\x11registryAllowlist\x12.\n" +
+	"\x14k8s_egress_proxy_url\x18\r \x01(\tR\x11k8sEgressProxyUrl\x12.\n" +
 	"\x13workspace_export_to\x18\x0f \x01(\tR\x11workspaceExportTo\x12T\n" +
 	"\x10sandbox_identity\x18\x10 \x01(\v2).stirrup.harness.v1.SandboxIdentityConfigR\x0fsandboxIdentity\x12?\n" +
 	"\tgit_proxy\x18\x11 \x01(\v2\".stirrup.harness.v1.GitProxyConfigR\bgitProxy\x12?\n" +
@@ -7684,7 +7669,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x14K8sNodeSelectorEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x1c\n" +
-	"\x1a_workspace_export_required\"d\n" +
+	"\x1a_workspace_export_requiredJ\x04\b\x0e\x10\x0fR\x12registry_allowlist\"d\n" +
 	"\x15SandboxIdentityConfig\x12\x16\n" +
 	"\x06source\x18\x01 \x01(\tR\x06source\x12\x1a\n" +
 	"\baudience\x18\x02 \x01(\tR\baudience\x12\x17\n" +

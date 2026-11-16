@@ -130,16 +130,3 @@ func TestClassifyContainerCreate_OnlyAMissingImageIsTheImages(t *testing.T) {
 	must.Equal(types.BuildFailureSandboxPlatform, startupReason(classifyContainerCreate(conflict)))
 	must.Equal(types.BuildFailureSandboxPlatform, startupReason(classifyContainerCreate(errors.New("dial unix: no such file"))))
 }
-
-func TestNewContainerExecutor_DisallowedImageIsAnImageFailure(t *testing.T) {
-	must := require.New(t)
-
-	_, err := NewContainerExecutorWithContext(context.Background(), ContainerExecutorConfig{
-		Image:             "registry.invalid/sandbox:1",
-		HostDir:           t.TempDir(),
-		RegistryAllowlist: []string{"ghcr.io/"},
-	})
-
-	must.Error(err)
-	must.Equal(types.BuildFailureSandboxImage, startupReason(err))
-}

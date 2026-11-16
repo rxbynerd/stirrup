@@ -38,6 +38,9 @@ Required environment variables:
   STIRRUP_POD_NAME,           Downward-API identity of this pod; with all three
   STIRRUP_POD_UID,            set, a k8s sandbox in the same namespace is owned
   STIRRUP_POD_NAMESPACE       by it (optional)
+  STIRRUP_IMAGE_ALLOWLIST     Comma-separated sandbox image admission policy;
+                              executor.image must match a pattern (optional;
+                              see docs/security.md#image-admission-policy)
 
 Transport security (optional; plaintext when none is set). Setting any of
 these enables TLS 1.3 with no plaintext fallback, and a missing or
@@ -114,6 +117,10 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	tlsCreds, err := resolveControlPlaneTLS(tlsCfg)
+	if err != nil {
+		return err
+	}
+	imageAdmission, err := resolveImageAdmissionPolicy(nil, os.Getenv)
 	if err != nil {
 		return err
 	}
@@ -238,6 +245,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	loop, err := buildJobLoop(buildCtx, config, tp,
 		core.WithSessionBudget(jobSessionBudget(runTimeout, graceSecs)),
 		core.WithSessionLiveness(liveness),
+		core.WithImageAdmission(imageAdmission),
 	)
 	stopBuildWatch()
 	if lossErr := controlStreamErr(tp); lossErr != nil {

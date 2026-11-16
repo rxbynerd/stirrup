@@ -411,7 +411,6 @@ func (e *encoder) executorConfig(c *types.ExecutorConfig) *pb.ExecutorConfig {
 		K8SEgressProxyUrl:       c.K8sEgressProxyURL,
 		WorkspaceExportTo:       c.WorkspaceExportTo,
 		WorkspaceExportRequired: clonePtr(c.WorkspaceExportRequired),
-		RegistryAllowlist:       slices.Clone(c.RegistryAllowlist),
 	}
 	if si := c.SandboxIdentity; si != nil {
 		pc.SandboxIdentity = &pb.SandboxIdentityConfig{
