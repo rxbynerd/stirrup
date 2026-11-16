@@ -285,6 +285,34 @@ hours. The TTL fires *only* if `Close()` never runs. A normal run is
 expected to be torn down in seconds, provided GKE accepts the one-second
 grace period above.
 
+The lifetime bound that the [`k8s` executor](k8s.md#teardown-edge-cases)
+derives from the run `timeout` and `STIRRUP_SESSION_DEADLINE` does not
+apply here. The backing Pod gets no `activeDeadlineSeconds`, and neither
+the Sandbox nor the Pod gets an owner reference to the harness Pod, so
+the 12-hour TTL is the only time bound on a leaked sandbox.
+
+### Finding and removing an orphaned sandbox
+
+The Sandbox, its backing Pod and its egress `NetworkPolicy` all carry
+`stirrup.dev/run-id=<run-id, truncated to 63 characters>`, the run ID cut
+at the 63-character label limit with trailing separators trimmed,
+alongside `stirrup-sandbox=true`. The run ID is the first run of the
+session, because follow-up runs reuse the sandbox. The `NetworkPolicy`
+has no owner reference, so a labelled delete is needed to remove it. The
+delete should run only after the harness process for that run is gone,
+because removing the sandbox of a live session ends it:
+
+```sh
+kubectl delete sandboxes.agents.x-k8s.io,networkpolicy -n <namespace> -l 'stirrup.dev/run-id=<run-id, truncated to 63 characters>'
+```
+
+Deleting the Sandbox cascades to the Pod through the controller's owner
+reference. `-l stirrup-sandbox=true` also matches the resources of live
+runs, so it is for inspection rather than blind deletion.
+When the executor reported retained objects, follow the
+[cleanup procedure](k8s.md#cleaning-up-retained-objects) instead: a
+retained policy stays until its Pod is confirmed gone.
+
 ## RBAC delta
 
 The orchestrator's Role for the `k8s-sandbox` path differs from the
@@ -353,6 +381,16 @@ or set it to `gvisor`. Any other value is rejected by validation
 (`ValidateRunConfig`); a non-empty, non-`gvisor` runtime that reaches the
 constructor is rejected before any cluster call. A run that
 needs `runc` or a Kata backend must use the `k8s` executor.
+
+The sandbox image must meet the same
+[requirements as the `k8s` executor](k8s.md#sandbox-image-requirements):
+a POSIX shell with `kill` and `command -v`, `tar`, `readlink`, `mkdir`,
+`rm`, a `sleep` that accepts fractional seconds and a writable `/tmp`,
+with `setsid` optional. The system prompt carries a listing of the Pod's
+`/workspace` and its git status, both read through the executor. The
+listing needs an `ls` that accepts `-A`, `-1` and `-p`, which busybox and
+coreutils both do, and the status section and the `deterministic` git strategy need
+`git` in the image.
 
 ```sh
 # gVisor sandbox provisioned via the Agent Sandbox CRD, no egress.

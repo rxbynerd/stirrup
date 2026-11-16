@@ -32,10 +32,18 @@ The repository is a Go workspace (`go.work`) composed of five modules:
   package. Zero external dependencies.
 - `gen/` — generated code from `proto/harness/v1/`. Edit the `.proto`,
   not the generated Go.
-- `harness/` — the harness binary and its 12 components.
+- `harness/` — the harness binary and its 13 components.
 - `eval/` — the eval CLI, judges, runner, and lakehouse adapters.
 - `examples/controlplane/` — a minimal control plane that drives
-  `stirrup job` over gRPC, used by the control-plane smoke tests.
+  `stirrup job` over gRPC, used by the control-plane smoke tests. It
+  is a separate module, so `go test` inside `harness/` does not run its
+  tests; `just test` and `just lint` include it.
+
+A new workspace member needs a `COPY <module>/go.mod ./<module>/go.mod`
+line in the [`Dockerfile`](Dockerfile) builder stage, next to the one
+for `examples/controlplane`. `go.work` lists every member, and the image
+build fails to load the workspace when a listed module's `go.mod` is
+missing.
 
 The `harness/internal/*` packages are not part of the public API. The
 embedding surface is `harness/harnessapi/`.
@@ -67,7 +75,9 @@ build-modules` for the build alone) instead.
 
 On every push, CI runs the equivalent of `just test`, a race-detector
 pass, `just fuzz-scrub` and a full build through the reusable
-`_verify.yml` workflow. It then fails if the build or tests changed
+`_verify.yml` workflow. The CI race pass omits
+`harness/internal/sandboxidentity`, which `just test-race` includes. The
+workflow then fails if the build or tests changed
 `go.work.sum` or any committed `go.sum`, so checksum changes are
 committed with the change that caused them. Dependabot updates each
 module's `go.sum` but not `go.work.sum`, so the
@@ -76,7 +86,8 @@ workflow regenerates the checksum files on each Dependabot Go update
 branch, commits them there, and dispatches the verify and lint
 workflows against that commit. An `eval-gate` job runs
 the baselined eval suites against committed baselines, pinned to a
-cheap model, and every merge to `main` publishes a container. A failing
+cheap model, on pushes to `main` and on manual dispatch only, and every
+merge to `main` publishes a container and a sandbox container. A failing
 `compare` exit fails the eval gate.
 See [`.github/workflows/`](.github/workflows/) for the full pipeline.
 

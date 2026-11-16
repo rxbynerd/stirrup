@@ -153,7 +153,8 @@ func sentRecord(turn int, model string, p types.StreamParams) *types.TurnRecord 
 //	  else → feed verifier feedback back into the loop as a user message
 //	}
 //
-// A non-nil trace returned with a non-nil error means the run completed
+// A non-nil trace returned with a non-nil error means either that setup
+// failed and the trace records that outcome, or that the run completed
 // but its trace could not be persisted.
 func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.RunTrace, error) {
 	l.windDown = windDownState{start: l.now()}
