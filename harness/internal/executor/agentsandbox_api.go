@@ -33,34 +33,39 @@ const (
 // missing or malformed status yields false rather than a panic, so a partially
 // populated object observed mid-reconcile is simply treated as not-yet-ready.
 func sandboxReady(obj *metav1unstructured.Unstructured) bool {
+	cond, ok := sandboxReadyCondition(obj)
+	if !ok {
+		return false
+	}
+	condStatus, ok := cond["status"].(string)
+	return ok && condStatus == "True"
+}
+
+// sandboxReadyCondition returns the first "Ready" entry of the Sandbox's
+// status.conditions, if any.
+func sandboxReadyCondition(obj *metav1unstructured.Unstructured) (map[string]any, bool) {
 	// NestedFieldNoCopy, not NestedSlice: the latter deep-copies the slice and
 	// panics on any element that is not a JSON-native type (e.g. a stray int),
 	// whereas this reader only inspects the conditions and must never panic on a
 	// malformed status. The no-copy accessor returns the raw value untouched.
 	raw, found, err := metav1unstructured.NestedFieldNoCopy(obj.Object, "status", "conditions")
 	if err != nil || !found {
-		return false
+		return nil, false
 	}
 	conditions, ok := raw.([]any)
 	if !ok {
-		return false
+		return nil, false
 	}
 	for _, c := range conditions {
 		cond, ok := c.(map[string]any)
 		if !ok {
 			continue
 		}
-		condType, ok := cond["type"].(string)
-		if !ok || condType != sandboxReadyConditionType {
-			continue
+		if condType, ok := cond["type"].(string); ok && condType == sandboxReadyConditionType {
+			return cond, true
 		}
-		condStatus, ok := cond["status"].(string)
-		if !ok {
-			return false
-		}
-		return condStatus == "True"
 	}
-	return false
+	return nil, false
 }
 
 // resolveSandboxPodName returns the name of the Pod backing the Sandbox. It

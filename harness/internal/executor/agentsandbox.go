@@ -15,8 +15,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	k8stypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -176,8 +174,10 @@ func buildSandboxObject(namespace, name, runID string, podSpec corev1.PodSpec, s
 // returns an executor bound to the backing Pod. It mirrors NewK8sExecutor's
 // fail-closed ordering: validate config and compute the proxy env before any
 // cluster op, install the egress NetworkPolicy BEFORE the Sandbox so the Pod
-// never runs with unrestricted egress, then create the Sandbox and wait for the
-// controller to report it Ready. A failure after the Sandbox create tears down
+// never runs with unrestricted egress, then create the Sandbox, wait for the
+// controller to report it Ready with its backing Pod Ready and matching the
+// Pod template, and wait for exec to reach that Pod. A failure after the
+// Sandbox create tears down
 // through Close, which removes the policy only once the Sandbox and its
 // backing Pod are gone; a failed create is reconciled by name first.
 func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*AgentSandboxExecutor, error) {
@@ -229,6 +229,10 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("agent sandbox executor: %s", strings.Join(errs, "; "))
 	}
+	profile, err := k8sRuntimeProfileFor(gkeSandboxRuntimeValue)
+	if err != nil {
+		return nil, err
+	}
 
 	name, err := generatePodName()
 	if err != nil {
@@ -237,6 +241,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 
 	spec := buildSandboxPodSpec(cfg, proxyEnv, cfg.ExtraEnv)
 	applyAgentSandboxAdmissionDeltas(&spec)
+	template := sandboxPodTemplate(cfg.Namespace, name, cfg.Lifecycle.RunID, spec)
 
 	policy, err := egressPolicyFor(cfg.Network, cfg.Namespace, name, cfg.Lifecycle.RunID)
 	if err != nil {
@@ -255,7 +260,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 		timing:            timing,
 	}
 
-	obj, err := buildSandboxObject(cfg.Namespace, name, cfg.Lifecycle.RunID, spec, time.Now().Add(agentSandboxMaxTTL))
+	obj, err := buildSandboxObject(cfg.Namespace, name, cfg.Lifecycle.RunID, template.Spec, time.Now().Add(agentSandboxMaxTTL))
 	if err != nil {
 		return nil, withTeardownErr(fmt.Errorf("build sandbox object: %w", err), partial.egress().removePolicy())
 	}
@@ -272,37 +277,9 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 	}
 
 	cfg.Lifecycle.reportStartup(types.SessionStepSandboxReady)
-	var ready *metav1unstructured.Unstructured
-	err = wait.PollUntilContextTimeout(ctx, timing.pollPeriod, timing.readyTimeout, true, func(ctx context.Context) (bool, error) {
-		got, getErr := dyn.Resource(sandboxGVR).Namespace(cfg.Namespace).Get(ctx, name, metav1.GetOptions{})
-		if getErr != nil {
-			// Only an RBAC denial fails fast; other errors retry until the
-			// readiness deadline (see docs/executors/k8s-agent-sandbox.md).
-			if apierrors.IsForbidden(getErr) || apierrors.IsUnauthorized(getErr) {
-				return false, getErr
-			}
-			logger.Debug("transient error polling sandbox readiness, retrying", "namespace", cfg.Namespace, "sandbox", name, "err", getErr)
-			return false, nil
-		}
-		ready = got
-		return sandboxReady(got), nil
-	})
+	pod, err := waitForSandboxReady(ctx, dyn, clientset, template, profile, timing, logger)
 	if err != nil {
-		// Duration omitted: readiness can end on the ceiling or a shorter
-		// caller deadline, and a hardcoded value would misreport the latter.
-		return nil, rollback(classifyK8sStartup(fmt.Errorf("sandbox %s/%s not ready: %w", cfg.Namespace, name, boundClusterErr(err)), types.BuildFailureSandboxNotReady))
-	}
-
-	podName := resolveSandboxPodName(ready)
-
-	// Cold-create only: an adopted (warm-pool) Sandbox's Pod name would not
-	// match, and the per-pod egress NetworkPolicy would bind to nothing. See
-	// docs/executors/k8s-agent-sandbox.md.
-	if podName != name {
-		return nil, rollback(fmt.Errorf(
-			"sandbox %s/%s resolved to backing pod %q: warm-pool adoption is not supported by the agent sandbox executor (its per-pod egress policy would not bind)",
-			cfg.Namespace, name, clusterText(podName),
-		))
+		return nil, rollback(classifyK8sStartup(fmt.Errorf("sandbox %s/%s %w", cfg.Namespace, name, err), types.BuildFailureSandboxNotReady))
 	}
 
 	exec := &AgentSandboxExecutor{
@@ -310,8 +287,8 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 			clientset:       clientset,
 			restConfig:      restCfg,
 			namespace:       cfg.Namespace,
-			podName:         podName,
-			podUID:          backingPodUID(ctx, clientset, cfg.Namespace, podName, logger),
+			podName:         name,
+			podUID:          pod.UID,
 			network:         cfg.Network,
 			Security:        cfg.Security,
 			logger:          logger,
@@ -332,18 +309,6 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 		return nil, rollback(fmt.Errorf("sandbox %s/%s: %w", cfg.Namespace, name, err))
 	}
 	return exec, nil
-}
-
-// backingPodUID reads the UID of the controller-created Pod, so a Pod the
-// controller recreates under the same name is detected as a lost sandbox. A
-// failed read leaves the UID empty and detection by name alone.
-func backingPodUID(ctx context.Context, clientset kubernetes.Interface, namespace, name string, logger *slog.Logger) k8stypes.UID {
-	pod, err := clientset.CoreV1().Pods(namespace).Get(ctx, name, metav1.GetOptions{})
-	if err != nil {
-		logger.Warn("agent sandbox executor could not read the backing pod's UID; a pod recreated under the same name will not be detected", "namespace", namespace, "pod", name, "err", clusterText(err.Error()))
-		return ""
-	}
-	return pod.UID
 }
 
 // Close deletes the Sandbox, waits until a read finds it gone and then until
