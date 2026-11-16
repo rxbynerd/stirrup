@@ -133,10 +133,12 @@ The pieces and their lifecycle:
   `$KUBECONFIG`. It holds the RBAC the executor's lifecycle needs:
   `pods` (create/get/delete), `pods/exec` (create), and
   `networkpolicies` (create/delete/patch). The reference Role
-  ([`examples/k8s/rbac.yaml`](../../examples/k8s/rbac.yaml)) also grants
-  `pods/log` (get); the executor does not use it, so it is granted only
-  for operator `kubectl logs` debugging and may be dropped to tighten
-  the Role to the executor's minimum.
+  ([`examples/k8s/rbac.yaml`](../../examples/k8s/rbac.yaml)) grants
+  exactly these, plus a `get` on the
+  [standing default-deny policy](#standing-default-deny-egress) by name
+  that only the dry run uses; an operator who reads sandbox logs with
+  the harness credentials (`kubectl logs`) adds `pods/log` (get) in a
+  separate Role.
 
 - **The sandbox Pod** is created per run with a fixed, config-independent
   hardened `securityContext`: `allowPrivilegeEscalation: false`,
@@ -1954,10 +1956,13 @@ standing policy to use.
 
 The [dry run](#dry-run-preflight) lists the namespace's NetworkPolicies
 and fails when none of them isolates every sandbox Pod for egress. The
-reference Roles grant no `list`, so a dry run with the orchestrator's
-own credentials reports the check as `not checked` and passes; only
-credentials that can list policies detect a missing standing policy. A
-run does not check, and nothing enforces the policy at run time.
+reference Roles grant no `list`, but they grant a `get` on the policy
+named `stirrup-sandbox-default-deny-egress` alone, so a dry run with the
+orchestrator's own credentials reads that policy and reports it as
+present or missing. Those credentials cannot see a standing policy under
+another name, so a namespace that uses one passes the check only with
+credentials that can list policies. A run does not check, and nothing
+enforces the policy at run time.
 
 The standing policy protects against the garbage collector and teardown
 edge cases, not against a leaked orchestrator credential. The reference
@@ -2119,9 +2124,8 @@ Defence-in-depth on K8s additionally relies on cluster-level controls the
 reference manifests configure: the sandbox namespace enforces the
 `restricted` Pod Security Standard (pinned to a version, not `latest`),
 and the orchestrator's RBAC is the minimal `pods` / `pods/exec` /
-`networkpolicies` verb set the executor needs (the reference Role adds
-`pods/log` get for operator debugging only; drop it to reach the
-executor's exact minimum). The sandbox Pod has no API access of its own
+`networkpolicies` verb set the executor needs, which is exactly what the
+reference Role grants. The sandbox Pod has no API access of its own
 (`automountServiceAccountToken: false`).
 
 ## Sandbox identity token exposure
@@ -2229,9 +2233,9 @@ not satisfy the `k8s-sandbox` check. The list matches what the executors
 call, and a test pins it to the reference Roles
 ([`rbac.yaml`](../../examples/k8s/rbac.yaml),
 [`rbac-agent-sandbox.yaml`](../../examples/k8s/agent-sandbox/rbac-agent-sandbox.yaml)):
-the permissions those Roles grant beyond the list (`pods/log` `get`;
-`sandboxes` `list` and `watch`) are not used by the executors and are not
-checked.
+the Roles grant exactly the listed permissions plus the optional `get` of
+the standing policy described below. That `get` is not checked, so a Role
+without it still passes.
 
 `pods/exec` is checked as `create`, which is correct on every Kubernetes
 version: SPDY exec is a POST authorised as `create`, and the WebSocket path
@@ -2267,19 +2271,21 @@ in the step detail, and a definitive negative fails the step.
   [standing default-deny egress policy](#standing-default-deny-egress): an
   `Egress` policy whose Pod selector matches every sandbox Pod. Any such
   policy passes and is named in the detail; when there is none the step
-  fails. The reference Roles grant no `list`, so `not checked` is the
-  normal outcome with them; run the dry run with operator credentials to
-  make the check. The list is skipped when the namespace is known not to
+  fails. When the list is refused, as with the reference Roles, the
+  policy named `stirrup-sandbox-default-deny-egress` is read instead and
+  must isolate every sandbox Pod; the reference Roles grant that `get`
+  and no `list`. A standing policy under another name is seen only with
+  credentials that can list. The step is `not checked` when both reads
+  are refused. The check is skipped when the namespace is known not to
   exist.
 
 A `not checked` outcome does not change the step status, which stays `ok`:
-the reference Roles cannot read RuntimeClasses, namespaces or the
-NetworkPolicy list, so a warning
-would appear on every dry run of the recommended setup. The step detail
+the reference Roles cannot read RuntimeClasses or namespaces, so a
+warning would appear on every dry run of the recommended setup. The step detail
 must be read to see what was and was not checked:
 
 ```text
-[OK  ] executor-probe: 7 required permissions granted in namespace "stirrup-sandbox"; namespace "stirrup-sandbox" not checked (the credentials may not read namespaces); standing egress policy not checked (the credentials may not list networkpolicies); RuntimeClass "gvisor" not checked (the credentials may not read runtimeclasses)
+[OK  ] executor-probe: 7 required permissions granted in namespace "stirrup-sandbox"; namespace "stirrup-sandbox" not checked (the credentials may not read namespaces); standing egress policy "stirrup-sandbox-default-deny-egress" selects every sandbox Pod; RuntimeClass "gvisor" not checked (the credentials may not read runtimeclasses)
 [FAIL] executor-probe: credentials lack permission in namespace "stirrup-sandbox": "delete networkpolicies.networking.k8s.io"
        hint: bind a Role granting the denied verbs in executor.k8sNamespace (reference: examples/k8s/rbac.yaml)
 ```

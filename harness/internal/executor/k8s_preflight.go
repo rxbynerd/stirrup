@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
@@ -75,9 +76,10 @@ func (e *K8sProbeError) HasKind(kind K8sProbeKind) bool {
 }
 
 // k8sAccess is one permission the executor needs in its namespace.
-// subresource is empty for a plain resource.
+// subresource is empty for a plain resource; name is empty unless the
+// permission is for one named object.
 type k8sAccess struct {
-	group, resource, subresource, verb string
+	group, resource, subresource, verb, name string
 }
 
 func (a k8sAccess) String() string {
@@ -88,12 +90,24 @@ func (a k8sAccess) String() string {
 	if a.group != "" {
 		name += "." + a.group
 	}
+	if a.name != "" {
+		name += " named " + strconv.Quote(a.name)
+	}
 	return a.verb + " " + name
 }
 
 // k8sExecAccess is checked as create alone: SPDY exec is a POST authorised as
 // create, and the WebSocket path falls back to it (newFallbackRemoteExecutor).
 var k8sExecAccess = k8sAccess{resource: "pods", subresource: "exec", verb: "create"}
+
+// k8sStandingEgressPolicyName is the name of the reference standing
+// default-deny egress policy (examples/k8s/sandbox-egress-default-deny.yaml).
+const k8sStandingEgressPolicyName = "stirrup-sandbox-default-deny-egress"
+
+// k8sStandingPolicyAccess is the read the dry run makes of the standing egress
+// policy when the credentials cannot list NetworkPolicies. RBAC can scope a
+// get to one name, so this adds no read of the per-run policies.
+var k8sStandingPolicyAccess = k8sAccess{group: "networking.k8s.io", resource: "networkpolicies", verb: "get", name: k8sStandingEgressPolicyName}
 
 var k8sNetworkPolicyAccess = []k8sAccess{
 	{group: "networking.k8s.io", resource: "networkpolicies", verb: "create"},
@@ -127,6 +141,16 @@ func k8sRequiredAccess(executorType string) []k8sAccess {
 	}
 	required := append(workload, k8sExecAccess)
 	return append(required, k8sNetworkPolicyAccess...)
+}
+
+// k8sOptionalAccess returns the permissions the dry run uses for checks that
+// may be skipped. The reference Roles grant them, and a Role without them
+// still passes the probe.
+func k8sOptionalAccess(executorType string) []k8sAccess {
+	if len(k8sRequiredAccess(executorType)) == 0 {
+		return nil
+	}
+	return []k8sAccess{k8sStandingPolicyAccess}
 }
 
 // ProbeK8sAccess is the dry-run check for the k8s and k8s-sandbox executors.
@@ -256,6 +280,7 @@ func reviewAccess(ctx context.Context, kube kubernetes.Interface, namespace stri
 				Group:       access.group,
 				Resource:    access.resource,
 				Subresource: access.subresource,
+				Name:        access.name,
 			},
 		},
 	}
@@ -288,13 +313,15 @@ func checkNamespaceExists(ctx context.Context, kube kubernetes.Interface, name s
 
 // checkStandingEgressPolicy looks for a NetworkPolicy that isolates every
 // sandbox Pod for egress independently of the per-run policy, so that removing
-// a per-run policy while its Pod still runs can only narrow egress. A refused
-// or failed list is reported as not checked rather than as a failure.
+// a per-run policy while its Pod still runs can only narrow egress. Credentials
+// that may list NetworkPolicies are checked against every policy; credentials
+// that may only get the reference policy by name are checked against that one.
+// A refused or failed read is reported as not checked rather than as a failure.
 func checkStandingEgressPolicy(ctx context.Context, kube kubernetes.Interface, namespace string) optionalCheck {
 	list, err := kube.NetworkingV1().NetworkPolicies(namespace).List(ctx, metav1.ListOptions{})
 	switch {
 	case apierrors.IsForbidden(err):
-		return optionalCheck{note: "standing egress policy not checked (the credentials may not list networkpolicies)"}
+		return checkNamedStandingPolicy(ctx, kube, namespace)
 	case err != nil:
 		return optionalCheck{note: fmt.Sprintf("standing egress policy not checked (%v)", err)}
 	}
@@ -305,12 +332,37 @@ func checkStandingEgressPolicy(ctx context.Context, kube kubernetes.Interface, n
 		}
 	}
 	if len(names) == 0 {
-		return optionalCheck{
-			kind:    K8sProbeEgressBaselineMissing,
-			problem: fmt.Sprintf("no standing NetworkPolicy in namespace %q isolates every %s=true Pod for egress", namespace, k8sSandboxLabel),
-		}
+		return optionalCheck{kind: K8sProbeEgressBaselineMissing, problem: noStandingPolicyProblem(namespace)}
 	}
 	return optionalCheck{note: "standing egress policy " + strings.Join(names, ", ") + " selects every sandbox Pod"}
+}
+
+// checkNamedStandingPolicy reads the reference standing policy by name. A
+// policy under another name is not seen, which the missing-policy problem says.
+func checkNamedStandingPolicy(ctx context.Context, kube kubernetes.Interface, namespace string) optionalCheck {
+	name := k8sStandingPolicyAccess.name
+	policy, err := kube.NetworkingV1().NetworkPolicies(namespace).Get(ctx, name, metav1.GetOptions{})
+	switch {
+	case apierrors.IsNotFound(err):
+		return optionalCheck{
+			kind:    K8sProbeEgressBaselineMissing,
+			problem: fmt.Sprintf("%s (the credentials may only get the policy named %q, so a standing policy under another name is not detected)", noStandingPolicyProblem(namespace), name),
+		}
+	case apierrors.IsForbidden(err):
+		return optionalCheck{note: fmt.Sprintf("standing egress policy not checked (the credentials may not list networkpolicies or get %q)", name)}
+	case err != nil:
+		return optionalCheck{note: fmt.Sprintf("standing egress policy not checked (%v)", err)}
+	case !isolatesEverySandboxPod(policy):
+		return optionalCheck{
+			kind:    K8sProbeEgressBaselineMissing,
+			problem: fmt.Sprintf("NetworkPolicy %q in namespace %q does not isolate every %s=true Pod for egress", name, namespace, k8sSandboxLabel),
+		}
+	}
+	return optionalCheck{note: fmt.Sprintf("standing egress policy %q selects every sandbox Pod", name)}
+}
+
+func noStandingPolicyProblem(namespace string) string {
+	return fmt.Sprintf("no standing NetworkPolicy in namespace %q isolates every %s=true Pod for egress", namespace, k8sSandboxLabel)
 }
 
 // isolatesEverySandboxPod reports whether policy is an Egress policy whose Pod

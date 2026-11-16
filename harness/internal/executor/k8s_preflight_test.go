@@ -42,7 +42,7 @@ func reviewReactor(denied ...string) k8stesting.ReactionFunc {
 	return func(action k8stesting.Action) (bool, runtime.Object, error) {
 		review := action.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
 		attrs := review.Spec.ResourceAttributes
-		access := k8sAccess{group: attrs.Group, resource: attrs.Resource, subresource: attrs.Subresource, verb: attrs.Verb}
+		access := k8sAccess{group: attrs.Group, resource: attrs.Resource, subresource: attrs.Subresource, verb: attrs.Verb, name: attrs.Name}
 		review.Status.Allowed = !deny[access.String()]
 		if !review.Status.Allowed {
 			review.Status.Reason = "no RBAC policy matched"
@@ -97,7 +97,7 @@ func refuseRead(kube *fake.Clientset, resource string, err error) {
 
 // unexpectedActions lists recorded actions other than access reviews and the
 // reads the probe is allowed to make: the namespace, the RuntimeClass, the
-// namespace's NetworkPolicies and API discovery.
+// namespace's NetworkPolicies, the standing policy by name and API discovery.
 func unexpectedActions(kube *fake.Clientset) []string {
 	var out []string
 	for _, a := range kube.Actions() {
@@ -105,7 +105,7 @@ func unexpectedActions(kube *fake.Clientset) []string {
 		switch {
 		case a.GetVerb() == "create" && resource == "selfsubjectaccessreviews":
 		case a.GetVerb() == "get" && (resource == "namespaces" || resource == "runtimeclasses" || resource == "resource"):
-		case a.GetVerb() == "list" && resource == "networkpolicies":
+		case (a.GetVerb() == "list" || a.GetVerb() == "get") && resource == "networkpolicies":
 		default:
 			out = append(out, a.GetVerb()+" "+resource)
 		}
@@ -496,17 +496,82 @@ func TestProbeK8sAccess_StandingEgressPolicyOutcomes(t *testing.T) {
 		})
 	}
 
-	for name, listErr := range map[string]error{
-		"forbidden":   apierrors.NewForbidden(schema.GroupResource{Group: "networking.k8s.io", Resource: "networkpolicies"}, "", errors.New("denied")),
+	listForbidden := apierrors.NewForbidden(schema.GroupResource{Group: "networking.k8s.io", Resource: "networkpolicies"}, "", errors.New("denied"))
+	refuseList := func(kube *fake.Clientset, err error) {
+		kube.PrependReactor("list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, err
+		})
+	}
+
+	t.Run("reports an unavailable list as not checked", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		kube := clientWith()
+		refuseList(kube, apierrors.NewServiceUnavailable("apiserver restarting"))
+
+		detail, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace})
+
+		must.NoError(err)
+		check.Contains(detail, "standing egress policy not checked")
+	})
+
+	t.Run("a refused list falls back to a get of the reference policy by name", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		kube := clientWith(standingDenyPolicy())
+		refuseList(kube, listForbidden)
+		kube.ClearActions()
+
+		detail, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace})
+
+		must.NoError(err)
+		check.Contains(detail, `standing egress policy "stirrup-sandbox-default-deny-egress" selects every sandbox Pod`)
+		var gets []string
+		for _, a := range kube.Actions() {
+			if get, ok := a.(k8stesting.GetAction); ok && a.GetResource().Resource == "networkpolicies" {
+				gets = append(gets, get.GetName())
+			}
+		}
+		check.Equal([]string{k8sStandingEgressPolicyName}, gets)
+	})
+
+	t.Run("a refused list and an absent reference policy fail naming the limit", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		kube := clientWith(named("baseline", networkingv1.NetworkPolicySpec{PodSelector: sandboxSelector, PolicyTypes: egressOnly}))
+		refuseList(kube, listForbidden)
+
+		_, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace})
+
+		must.ErrorContains(err, `no standing NetworkPolicy in namespace "stirrup-sandbox" isolates every stirrup-sandbox=true Pod for egress`)
+		check.Contains(err.Error(), "a standing policy under another name is not detected")
+		check.Equal([]K8sProbeKind{K8sProbeEgressBaselineMissing}, probeErrorKinds(t, err))
+	})
+
+	t.Run("a refused list and a reference policy that does not isolate fail", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		kube := clientWith(named(k8sStandingEgressPolicyName, networkingv1.NetworkPolicySpec{
+			PodSelector: metav1.LabelSelector{MatchLabels: map[string]string{"app": "web"}}, PolicyTypes: egressOnly,
+		}))
+		refuseList(kube, listForbidden)
+
+		_, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace})
+
+		must.ErrorContains(err, `NetworkPolicy "stirrup-sandbox-default-deny-egress" in namespace "stirrup-sandbox" does not isolate every stirrup-sandbox=true Pod for egress`)
+		check.Equal([]K8sProbeKind{K8sProbeEgressBaselineMissing}, probeErrorKinds(t, err))
+	})
+
+	for name, getErr := range map[string]error{
+		"forbidden":   apierrors.NewForbidden(schema.GroupResource{Group: "networking.k8s.io", Resource: "networkpolicies"}, k8sStandingEgressPolicyName, errors.New("denied")),
 		"unavailable": apierrors.NewServiceUnavailable("apiserver restarting"),
 	} {
-		t.Run("reports a "+name+" list as not checked", func(t *testing.T) {
+		t.Run("reports a refused list and a "+name+" get as not checked", func(t *testing.T) {
 			must := require.New(t)
 			check := assert.New(t)
 			kube := clientWith()
-			kube.PrependReactor("list", "networkpolicies", func(k8stesting.Action) (bool, runtime.Object, error) {
-				return true, nil, listErr
-			})
+			refuseList(kube, listForbidden)
+			refuseRead(kube, "networkpolicies", getErr)
 
 			detail, err := probeK8sAccess(context.Background(), kube, K8sProbeConfig{Type: "k8s", Namespace: probeTestNamespace})
 
@@ -612,7 +677,9 @@ func TestProbeK8sAccess_SimultaneousFailuresAreAllReported(t *testing.T) {
 }
 
 // referenceRolePermissions flattens the Role in a reference RBAC manifest
-// into k8sAccess.String entries.
+// into k8sAccess.String entries, one per resource name a rule is restricted
+// to. A rule with no resourceNames yields unnamed entries, so a restricted
+// rule never satisfies an unrestricted probe check.
 func referenceRolePermissions(t *testing.T, manifest string) map[string]bool {
 	t.Helper()
 	must := require.New(t)
@@ -632,15 +699,22 @@ func referenceRolePermissions(t *testing.T, manifest string) map[string]bool {
 		} else {
 			must.NoError(err)
 		}
+		must.Contains([]string{"ServiceAccount", "Role", "RoleBinding"}, doc.Kind, "%s holds a %s the pin does not read", manifest, doc.Kind)
 		if doc.Kind != "Role" {
 			continue
 		}
 		for _, rule := range doc.Rules {
+			names := rule.ResourceNames
+			if len(names) == 0 {
+				names = []string{""}
+			}
 			for _, group := range rule.APIGroups {
 				for _, res := range rule.Resources {
 					resource, subresource, _ := strings.Cut(res, "/")
 					for _, verb := range rule.Verbs {
-						got[k8sAccess{group: group, resource: resource, subresource: subresource, verb: verb}.String()] = true
+						for _, name := range names {
+							got[k8sAccess{group: group, resource: resource, subresource: subresource, verb: verb, name: name}.String()] = true
+						}
 					}
 				}
 			}
@@ -650,23 +724,16 @@ func referenceRolePermissions(t *testing.T, manifest string) map[string]bool {
 	return got
 }
 
-// TestK8sRequiredAccess_MatchesReferenceRoles pins the probe's permission list
-// to the reference Roles: every probed permission must be granted, and every
-// granted permission the probe does not check must be listed here with the
-// reason the executor does not use it.
+// TestK8sRequiredAccess_MatchesReferenceRoles pins the probe's permission lists
+// to the reference Roles: each Role grants every required permission and every
+// optional one, and nothing else.
 func TestK8sRequiredAccess_MatchesReferenceRoles(t *testing.T) {
 	tests := []struct {
 		executorType string
 		manifest     string
-		unprobed     map[string]string
 	}{
-		{"k8s", "rbac.yaml", map[string]string{
-			"get pods/log": "the executor reads no Pod logs; granted for operator debugging",
-		}},
-		{"k8s-sandbox", filepath.Join("agent-sandbox", "rbac-agent-sandbox.yaml"), map[string]string{
-			"list sandboxes.agents.x-k8s.io":  "the executor gets and deletes its own Sandbox by name and never lists",
-			"watch sandboxes.agents.x-k8s.io": "readiness is polled with get, not watched",
-		}},
+		{"k8s", "rbac.yaml"},
+		{"k8s-sandbox", filepath.Join("agent-sandbox", "rbac-agent-sandbox.yaml")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.executorType, func(t *testing.T) {
@@ -675,13 +742,46 @@ func TestK8sRequiredAccess_MatchesReferenceRoles(t *testing.T) {
 
 			want := map[string]bool{}
 			for _, access := range k8sRequiredAccess(tt.executorType) {
-				must.Truef(role[access.String()], "the probe checks %q but %s does not grant it", access, tt.manifest)
+				must.Truef(role[access.String()], "the probe requires %q but %s does not grant it", access, tt.manifest)
 				want[access.String()] = true
 			}
-			for k := range tt.unprobed {
-				want[k] = true
+			must.NotEmpty(k8sOptionalAccess(tt.executorType))
+			for _, access := range k8sOptionalAccess(tt.executorType) {
+				must.Truef(role[access.String()], "the probe reads %q when it can but %s does not grant it", access, tt.manifest)
+				want[access.String()] = true
 			}
-			must.Equal(want, role, "%s grants permissions that are neither probed nor listed as unprobed", tt.manifest)
+			must.Equal(want, role, "%s grants permissions the probe does not use", tt.manifest)
 		})
 	}
+}
+
+func TestK8sStandingEgressPolicyName_MatchesReferenceManifest(t *testing.T) {
+	must := require.New(t)
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "examples", "k8s", "sandbox-egress-default-deny.yaml"))
+	must.NoError(err)
+	var policy networkingv1.NetworkPolicy
+	must.NoError(utilyaml.Unmarshal(data, &policy))
+
+	must.Equal(k8sStandingEgressPolicyName, policy.Name)
+}
+
+func TestReviewAccess_CarriesTheResourceName(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	kube := fake.NewClientset()
+	var got *authorizationv1.ResourceAttributes
+	kube.PrependReactor("create", "selfsubjectaccessreviews", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		review := action.(k8stesting.CreateAction).GetObject().(*authorizationv1.SelfSubjectAccessReview)
+		got = review.Spec.ResourceAttributes
+		review.Status.Allowed = true
+		return true, review, nil
+	})
+
+	allowed, _, err := reviewAccess(context.Background(), kube, probeTestNamespace, k8sStandingPolicyAccess)
+
+	must.NoError(err)
+	check.True(allowed)
+	must.NotNil(got)
+	check.Equal(k8sStandingEgressPolicyName, got.Name)
+	check.Equal("get", got.Verb)
 }

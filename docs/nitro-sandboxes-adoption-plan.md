@@ -975,7 +975,7 @@ One change for all runtimes, replacing the constant:
   message. That comes from Pod status and needs no new permission. The
   autoscaler's own reason for not provisioning a node is published as
   Events, which the reference Role cannot read
-  (`examples/k8s/rbac.yaml:54-74`); the documentation says where to
+  (the Role in `examples/k8s/rbac.yaml`); the documentation says where to
   look rather than widening the Role.
 
 Two costs of a longer wait must be documented. The wait counts against
