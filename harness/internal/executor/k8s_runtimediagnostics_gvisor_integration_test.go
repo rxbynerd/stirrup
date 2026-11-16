@@ -6,7 +6,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
-	"strings"
+	"regexp"
 	"testing"
 	"time"
 
@@ -46,18 +46,20 @@ func TestK8sRuntimeDiagnostics_GVisorPassesOnGVisorPod(t *testing.T) {
 	event := security.runtimeDiagnostics[0]
 	t.Logf("observed=%v", event.observed)
 	must.True(event.passed)
-	must.True(strings.HasSuffix(event.observed["kernelVersion"], gvisorKernelBuildStamp), "kernelVersion %q", event.observed["kernelVersion"])
+	must.Regexp("^Linux version .*"+regexp.QuoteMeta(gvisorKernelBuildStamp)+"$", event.observed["kernelVersion"])
 	must.Equal("present", event.observed["sentryMeminfo"])
 }
 
 // TestK8sRuntimeDiagnostics_GVisorFailsOnNonGVisorPod runs the gVisor
-// diagnostics over the real pods/exec path of a Pod that is not under
-// gVisor. Both guest files must be read, and the kernel version check must
-// fail closed. STIRRUP_TEST_RUNTIME_CLASS must not select gvisor.
+// diagnostics over the real pods/exec path of a Pod on the executor.runtime
+// named by STIRRUP_TEST_NON_GVISOR_RUNTIME, whose RuntimeClass handler must
+// not be runsc. Both guest files must be read, and the kernel version check
+// must fail closed.
 func TestK8sRuntimeDiagnostics_GVisorFailsOnNonGVisorPod(t *testing.T) {
 	cfg := testK8sEnv(t)
-	if cfg.runtimeClass == "gvisor" {
-		t.Skip("STIRRUP_TEST_RUNTIME_CLASS selects gvisor; this test needs a Pod outside gVisor")
+	runtime := os.Getenv("STIRRUP_TEST_NON_GVISOR_RUNTIME")
+	if runtime == "" {
+		t.Skip("STIRRUP_TEST_NON_GVISOR_RUNTIME not set; it names an executor.runtime whose handler is not runsc")
 	}
 	must := require.New(t)
 	ctx, cancel := context.WithTimeout(context.Background(), k8sIntegrationTimeout)
@@ -67,7 +69,7 @@ func TestK8sRuntimeDiagnostics_GVisorFailsOnNonGVisorPod(t *testing.T) {
 		Image:      cfg.image,
 		Namespace:  cfg.namespace,
 		Kubeconfig: cfg.kubeconfig,
-		Runtime:    cfg.runtimeClass,
+		Runtime:    runtime,
 		Network:    &types.NetworkConfig{Mode: "none"},
 	})
 	must.NoError(err, "NewK8sExecutor")
@@ -83,7 +85,7 @@ func TestK8sRuntimeDiagnostics_GVisorFailsOnNonGVisorPod(t *testing.T) {
 	t.Logf("reason=%q observed=%v", event.reason, event.observed)
 	must.False(event.passed)
 	must.Equal("kernel_version", event.check)
-	must.True(strings.HasPrefix(event.observed["kernelVersion"], "Linux version "), "/proc/version read from the real guest")
+	must.Regexp("^Linux version ", event.observed["kernelVersion"])
 	must.Equal("absent", event.observed["sentryMeminfo"])
 }
 
