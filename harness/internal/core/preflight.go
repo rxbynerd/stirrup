@@ -528,6 +528,13 @@ func selectedProviderType(config *types.RunConfig, name string) string {
 	return providerTypeFor(config, name)
 }
 
+// providerHostFor returns the API host a routed selection's provider is
+// configured with, empty when it has no base URL.
+func providerHostFor(config *types.RunConfig, name string) string {
+	host, _ := observability.ServerEndpointFromURL(providerConfigFor(config, name).BaseURL)
+	return host
+}
+
 // providerConfigFor resolves the ProviderConfig of a routed selection, where
 // an empty name is the default provider. A name that is neither a key of
 // config.Providers nor the default provider's type has no configuration.

@@ -212,6 +212,15 @@ type openaiRequest struct {
 	strictNulls strictNullables
 }
 
+// sentTemperature returns the temperature the wire body carries, nil when
+// none is set or OmitSamplingParams suppresses it.
+func (r openaiRequest) sentTemperature() *float64 {
+	if r.OmitSamplingParams {
+		return nil
+	}
+	return r.Temperature
+}
+
 // MarshalJSON projects the canonical openaiRequest into the wire body the
 // resolved quirks selected: the token-budget key follows TokenField,
 // "temperature" is suppressed when OmitSamplingParams is set, and
@@ -239,8 +248,8 @@ func (r openaiRequest) MarshalJSON() ([]byte, error) {
 	if r.ParallelToolCalls != nil {
 		out["parallel_tool_calls"] = *r.ParallelToolCalls
 	}
-	if !r.OmitSamplingParams && r.Temperature != nil {
-		out["temperature"] = *r.Temperature
+	if temperature := r.sentTemperature(); temperature != nil {
+		out["temperature"] = *temperature
 	}
 	if r.ReasoningEffort != "" {
 		out["reasoning_effort"] = r.ReasoningEffort
@@ -1211,6 +1220,7 @@ func (o *OpenAICompatibleAdapter) Stream(ctx context.Context, params types.Strea
 		o.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("build request: %w", err)
 	}
+	recordSentTemperature(ctx, reqBody.sentTemperature())
 	warnStrictFallbacks(ctx, logger, "openai-compatible", params.Model, reqBody.strictFallbacks)
 
 	bodyBytes, err := json.Marshal(reqBody)

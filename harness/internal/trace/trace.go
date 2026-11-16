@@ -50,12 +50,19 @@ type TraceEmitter interface {
 // can implement to receive the run's built system prompt via a type
 // assertion after PromptBuilder.Build succeeds. The OTel emitter uses it
 // to emit gen_ai.system_instructions when content capture is opted into;
-// the JSONL emitter writes a system_prompt record. Not wired through
-// NestedJSONLEmitter: a
-// sub-agent's system prompt would clobber the parent's single stored
-// value, so sub-agent system instructions are not captured.
+// the JSONL emitter writes a system_prompt record. NestedJSONLEmitter
+// does not forward a sub-agent's prompt through it, since that would
+// clobber the parent's single stored value; it uses
+// SubRunSystemInstructionsRecorder instead.
 type SystemInstructionsRecorder interface {
 	RecordSystemInstructions(system string)
+}
+
+// SubRunSystemInstructionsRecorder is an optional capability for emitters
+// that record a sub-agent's own system prompt on that run's chat spans,
+// keyed by run ID so the parent's prompt is left alone.
+type SubRunSystemInstructionsRecorder interface {
+	RecordSubRunSystemInstructions(runID, system string)
 }
 
 // PromptResolutionRecorder is an optional capability a TraceEmitter can
@@ -221,7 +228,6 @@ type ChatSpanStart struct {
 	ServerAddress string
 	ServerPort    int
 	MaxTokens     int
-	Temperature   *float64
 	// RunID and ParentRunID identify a sub-agent's request; both are
 	// empty for the top-level run.
 	RunID       string
@@ -240,6 +246,9 @@ type ChatSpanEnd struct {
 	// ErrorText is already scrubbed by the caller; the emitter scrubs it
 	// again before it reaches a span.
 	ErrorText string
+	// Temperature is the sampling temperature the adapter put on the
+	// wire; nil when it sent none or reported nothing.
+	Temperature *float64
 }
 
 // ChatSpan is one live model request. Span exposes the underlying span so

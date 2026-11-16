@@ -1036,6 +1036,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, params types.StreamParams
 	}
 
 	reqBody := buildAnthropicRequest(params, true, q)
+	recordSentTemperature(ctx, reqBody.Temperature)
 
 	bodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

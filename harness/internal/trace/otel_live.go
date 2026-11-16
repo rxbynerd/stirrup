@@ -131,7 +131,7 @@ func (e *OTelTraceEmitter) StartChatSpan(parent context.Context, start ChatSpanS
 		providerType = e.config.Provider.Type
 	}
 	if providerType != "" {
-		attrs = append(attrs, attribute.String(genAIProviderNameKey, observability.GenAIProviderName(providerType)))
+		attrs = append(attrs, attribute.String(genAIProviderNameKey, observability.GenAIProviderName(providerType, start.ServerAddress)))
 	}
 	if start.ServerAddress != "" {
 		attrs = append(attrs, attribute.String(serverAddressKey, start.ServerAddress))
@@ -141,9 +141,6 @@ func (e *OTelTraceEmitter) StartChatSpan(parent context.Context, start ChatSpanS
 	}
 	if start.MaxTokens > 0 {
 		attrs = append(attrs, attribute.Int(genAIRequestMaxTokensKey, start.MaxTokens))
-	}
-	if start.Temperature != nil {
-		attrs = append(attrs, attribute.Float64(genAIRequestTemperatureKey, *start.Temperature))
 	}
 
 	_, span := e.tracer.Start(parent, name,
@@ -173,6 +170,9 @@ func (h *otelChatSpan) End(end ChatSpanEnd) {
 			errorType = "error"
 		}
 		var attrs []attribute.KeyValue
+		if end.Temperature != nil {
+			attrs = append(attrs, attribute.Float64(genAIRequestTemperatureKey, *end.Temperature))
+		}
 		stopReason := ""
 		if s := end.Summary; s != nil {
 			stopReason = s.StopReason
@@ -223,10 +223,10 @@ func (h *otelChatSpan) End(end ChatSpanEnd) {
 		systemInstructions := ""
 		if content != nil {
 			e.retainRunContentLocked(h.runID, content)
-			// A sub-agent's system prompt differs from the run's and is
-			// not recorded, so only top-level requests carry one.
 			if h.runID == "" {
 				systemInstructions = e.systemInstructionsJSON
+			} else {
+				systemInstructions = e.subRunSystemInstructions[h.runID]
 			}
 		}
 		e.mu.Unlock()
@@ -357,10 +357,13 @@ func (h *otelToolSpan) End(end ToolSpanEnd) {
 }
 
 // StartSubAgentSpan opens the "invoke_agent stirrup.subagent" span for a
-// sub-agent run under parent, the spawning tool call's context.
+// sub-agent run under parent, the spawning tool call's context. Run IDs
+// repeat across follow-up turns, so a prompt left by an earlier sub-agent
+// under the same ID is discarded.
 func (e *OTelTraceEmitter) StartSubAgentSpan(parent context.Context, start SubAgentSpanStart) AgentSpan {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	delete(e.subRunSystemInstructions, start.RunID)
 	if e.rootCtx == nil {
 		return nil
 	}
@@ -391,6 +394,7 @@ func (h *otelAgentSpan) End(end AgentSpanEnd) {
 		delete(e.open, liveHandle(h))
 		content := e.runContent[h.runID]
 		delete(e.runContent, h.runID)
+		delete(e.subRunSystemInstructions, h.runID)
 		e.mu.Unlock()
 
 		attrs := []attribute.KeyValue{

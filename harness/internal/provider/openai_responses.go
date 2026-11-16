@@ -1837,6 +1837,7 @@ func (o *OpenAIResponsesAdapter) Stream(ctx context.Context, params types.Stream
 		o.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("build request: %w", err)
 	}
+	recordSentTemperature(ctx, reqBody.Temperature)
 	warnStrictFallbacks(ctx, logger, "openai-responses", params.Model, reqBody.strictFallbacks)
 	reqBody.Stream = true
 

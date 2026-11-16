@@ -393,6 +393,7 @@ func recordSpawnMetrics(ctx context.Context, parent *AgenticLoop, parentConfig *
 	tokenAttrs := parent.metricAttrs(append(
 		observability.ProviderModelAttributes(
 			providerTypeFor(parentConfig, selection.Provider),
+			providerHostFor(parentConfig, selection.Provider),
 			selection.Model,
 		),
 		attribute.String("parent.mode", parentMode),

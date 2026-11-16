@@ -26,7 +26,44 @@ func TestGenAIProviderName_TranslatesStirrupTypes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			must.Equal(tc.want, GenAIProviderName(tc.stirrupType))
+			must.Equal(tc.want, GenAIProviderName(tc.stirrupType, ""))
+		})
+	}
+}
+
+func TestGenAIProviderName_OpenAICompatibleHost(t *testing.T) {
+	cases := []struct {
+		name string
+		host string
+		want string
+	}{
+		{"deepseek", "api.deepseek.com", "deepseek"},
+		{"groq", "api.groq.com", "groq"},
+		{"mistral", "api.mistral.ai", "mistral"},
+		{"xai", "api.x.ai", "x_ai"},
+		{"azure openai resource", "my-resource.openai.azure.com", "azure.ai.openai"},
+		{"azure cognitive services resource", "my-resource.cognitiveservices.azure.com", "azure.ai.openai"},
+		{"host match ignores case and a trailing dot", "API.DeepSeek.com.", "deepseek"},
+		{"openrouter has no registered name", "openrouter.ai", "openai-compatible"},
+		{"self-hosted server", "localhost", "openai-compatible"},
+		{"unknown host", "llm.internal.example", "openai-compatible"},
+		{"look-alike host is not a subdomain", "evilapi.deepseek.com.example", "openai-compatible"},
+		{"suffix without a dot boundary", "notapi.groq.com", "openai-compatible"},
+		{"no host", "", "openai-compatible"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, GenAIProviderName("openai-compatible", tc.host))
+		})
+	}
+}
+
+func TestGenAIProviderName_HostOnlyAffectsOpenAICompatible(t *testing.T) {
+	for _, stirrupType := range []string{"anthropic", "openai-responses", "gemini", "bedrock"} {
+		t.Run(stirrupType, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(GenAIProviderName(stirrupType, ""), GenAIProviderName(stirrupType, "api.deepseek.com"))
 		})
 	}
 }

@@ -218,8 +218,8 @@ func (e *NestedJSONLEmitter) RecordPermissionDenial() {
 // on the local accumulator so the child's own Finish returns it. It is
 // deliberately NOT forwarded to the parent: the parent stamps its own
 // final text at its own Finish, and forwarding would clobber that single
-// stored value — the same reason sub-agent system instructions are not
-// forwarded (see SystemInstructionsRecorder).
+// stored value — the same reason a sub-agent's system prompt is forwarded
+// under its own run ID (see SubRunSystemInstructionsRecorder).
 func (e *NestedJSONLEmitter) RecordFinalAssistantText(text string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -262,6 +262,21 @@ func (e *NestedJSONLEmitter) RecordPostEditCheck(record types.PostEditCheckRecor
 func (e *NestedJSONLEmitter) RecordSubRunStarted(runID, parentRunID string, startedAt time.Time, config *types.RunConfig) {
 	if recorder, ok := e.parent.(SubRunRecorder); ok {
 		recorder.RecordSubRunStarted(runID, parentRunID, startedAt, config)
+	}
+}
+
+// RecordSystemInstructions forwards the child's own system prompt to a
+// parent that records it per run. The child's local trace keeps none.
+func (e *NestedJSONLEmitter) RecordSystemInstructions(system string) {
+	runID, _ := e.tagRunIDs("", "")
+	e.RecordSubRunSystemInstructions(runID, system)
+}
+
+// RecordSubRunSystemInstructions forwards a system prompt keyed by run
+// ID, so a deeper sub-run's prompt keeps its own key on the way up.
+func (e *NestedJSONLEmitter) RecordSubRunSystemInstructions(runID, system string) {
+	if recorder, ok := e.parent.(SubRunSystemInstructionsRecorder); ok {
+		recorder.RecordSubRunSystemInstructions(runID, system)
 	}
 }
 

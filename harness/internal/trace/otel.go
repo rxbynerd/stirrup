@@ -134,6 +134,11 @@ type OTelTraceEmitter struct {
 	// chat span. Empty when capture is off or no prompt was forwarded.
 	systemInstructionsJSON string
 
+	// subRunSystemInstructions is each sub-agent run's own system prompt,
+	// serialised like systemInstructionsJSON and keyed by run ID; an
+	// entry is dropped when the run's agent span ends.
+	subRunSystemInstructions map[string]string
+
 	// runContent is each run's own I/O, keyed by run ID ("" for the
 	// top-level run): stamped on the root span at Finish and on a
 	// sub-agent span at its End. Empty when capture is off.
@@ -149,24 +154,25 @@ type OTelTraceEmitter struct {
 // SystemInstructionsRecorder assertion, so losing the method would be
 // a silent regression rather than a build break without this.
 var (
-	_ TraceEmitter                 = (*OTelTraceEmitter)(nil)
-	_ SystemInstructionsRecorder   = (*OTelTraceEmitter)(nil)
-	_ PromptResolutionRecorder     = (*OTelTraceEmitter)(nil)
-	_ RepositoryGuidanceRecorder   = (*OTelTraceEmitter)(nil)
-	_ FinalAssistantTextRecorder   = (*OTelTraceEmitter)(nil)
-	_ StopDetailsRecorder          = (*OTelTraceEmitter)(nil)
-	_ DegradedCapabilitiesRecorder = (*OTelTraceEmitter)(nil)
-	_ CommandOutputRecorder        = (*OTelTraceEmitter)(nil)
-	_ CommandOutputArchiveRecorder = (*OTelTraceEmitter)(nil)
-	_ GitHandoffRecorder           = (*OTelTraceEmitter)(nil)
-	_ WorkspaceExportRecorder      = (*OTelTraceEmitter)(nil)
-	_ RunErrorRecorder             = (*OTelTraceEmitter)(nil)
-	_ StructuredOutputRecorder     = (*OTelTraceEmitter)(nil)
-	_ RootContextProvider          = (*OTelTraceEmitter)(nil)
-	_ TraceReferenceProvider       = (*OTelTraceEmitter)(nil)
-	_ VerificationRecorder         = (*OTelTraceEmitter)(nil)
-	_ LedgerUsageRecorder          = (*OTelTraceEmitter)(nil)
-	_ PostEditCheckRecorder        = (*OTelTraceEmitter)(nil)
+	_ TraceEmitter                     = (*OTelTraceEmitter)(nil)
+	_ SystemInstructionsRecorder       = (*OTelTraceEmitter)(nil)
+	_ SubRunSystemInstructionsRecorder = (*OTelTraceEmitter)(nil)
+	_ PromptResolutionRecorder         = (*OTelTraceEmitter)(nil)
+	_ RepositoryGuidanceRecorder       = (*OTelTraceEmitter)(nil)
+	_ FinalAssistantTextRecorder       = (*OTelTraceEmitter)(nil)
+	_ StopDetailsRecorder              = (*OTelTraceEmitter)(nil)
+	_ DegradedCapabilitiesRecorder     = (*OTelTraceEmitter)(nil)
+	_ CommandOutputRecorder            = (*OTelTraceEmitter)(nil)
+	_ CommandOutputArchiveRecorder     = (*OTelTraceEmitter)(nil)
+	_ GitHandoffRecorder               = (*OTelTraceEmitter)(nil)
+	_ WorkspaceExportRecorder          = (*OTelTraceEmitter)(nil)
+	_ RunErrorRecorder                 = (*OTelTraceEmitter)(nil)
+	_ StructuredOutputRecorder         = (*OTelTraceEmitter)(nil)
+	_ RootContextProvider              = (*OTelTraceEmitter)(nil)
+	_ TraceReferenceProvider           = (*OTelTraceEmitter)(nil)
+	_ VerificationRecorder             = (*OTelTraceEmitter)(nil)
+	_ LedgerUsageRecorder              = (*OTelTraceEmitter)(nil)
+	_ PostEditCheckRecorder            = (*OTelTraceEmitter)(nil)
 )
 
 // OTelTraceEmitterOptions configures NewOTelTraceEmitter.
@@ -253,6 +259,12 @@ func NewOTelTraceEmitterForTest(tp *sdktrace.TracerProvider) *OTelTraceEmitter {
 	return newOTelTraceEmitterForTest(tp, false)
 }
 
+// NewOTelTraceEmitterWithCaptureForTest is NewOTelTraceEmitterForTest with
+// content capture on. Not intended for production use.
+func NewOTelTraceEmitterWithCaptureForTest(tp *sdktrace.TracerProvider) *OTelTraceEmitter {
+	return newOTelTraceEmitterForTest(tp, true)
+}
+
 // Start initialises a new trace with the given run ID and configuration.
 // It creates the root "invoke_agent stirrup" span.
 func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
@@ -293,6 +305,7 @@ func (e *OTelTraceEmitter) start(parent context.Context, runID string, config *t
 	e.auxiliaryTokens = types.TokenUsage{}
 	e.externalGuardTokens = types.TokenUsage{}
 	e.systemInstructionsJSON = ""
+	e.subRunSystemInstructions = nil
 	e.runContent = nil
 	e.open = nil
 	e.postEditChecks = nil
@@ -332,9 +345,10 @@ func agentSpanAttributes(agentName string, config *types.RunConfig) []attribute.
 	if config == nil {
 		return attrs
 	}
+	host, _ := observability.ServerEndpointFromURL(config.Provider.BaseURL)
 	attrs = append(attrs,
 		attribute.String("run.mode", config.Mode),
-		attribute.String(genAIProviderNameKey, observability.GenAIProviderName(config.Provider.Type)),
+		attribute.String(genAIProviderNameKey, observability.GenAIProviderName(config.Provider.Type, host)),
 	)
 	if config.ModelRouter.Model != "" {
 		attrs = append(attrs, attribute.String(genAIRequestModelKey, config.ModelRouter.Model))
@@ -375,6 +389,22 @@ func (e *OTelTraceEmitter) RecordSystemInstructions(system string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.systemInstructionsJSON = genAISystemInstructionsJSON(scrubOrPass(system, e.redactionDisabled))
+}
+
+// RecordSubRunSystemInstructions stores a sub-agent run's system prompt
+// for emission on that run's captured chat spans. With capture off
+// nothing is stored.
+func (e *OTelTraceEmitter) RecordSubRunSystemInstructions(runID, system string) {
+	if !e.captureContent {
+		return
+	}
+	serialised := genAISystemInstructionsJSON(scrubOrPass(system, e.redactionDisabled))
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.subRunSystemInstructions == nil {
+		e.subRunSystemInstructions = map[string]string{}
+	}
+	e.subRunSystemInstructions[runID] = serialised
 }
 
 // RecordPromptResolution sets the resolved prompt model and tier on the

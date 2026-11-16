@@ -11,8 +11,8 @@ import (
 
 // phoenixDefinition adds the OpenInference attributes Arize Phoenix reads
 // beyond what it derives from the GenAI semantic conventions: a span kind
-// on every span, the run's input and output on the root span, and the
-// project. Option: project (the Phoenix project; unset uses Phoenix's
+// on every span, the run's input, output and tags on the root span, and
+// the project. Option: project (the Phoenix project; unset uses Phoenix's
 // "default" project).
 //
 // Phoenix accepts OTLP over gRPC and HTTP, so no protocol is required, but
@@ -29,6 +29,7 @@ const (
 	openInferenceInputValueKey  = "input.value"
 	openInferenceOutputValueKey = "output.value"
 	openInferenceMetadataKey    = "metadata"
+	openInferenceTagsKey        = "tag.tags"
 )
 
 func buildPhoenix(_ context.Context, opts map[string]string, _ Deps) (Profile, error) {
@@ -86,6 +87,9 @@ func withOpenInference(s sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
 		add(openInferenceInputValueKey, firstUserText(values["gen_ai.input.messages"].AsString()))
 		add(openInferenceOutputValueKey, lastAssistantText(values["gen_ai.output.messages"].AsString()))
 		add(openInferenceMetadataKey, runMetadata(values["run.id"].AsString(), values["run.mode"].AsString()))
+	}
+	if _, present := values[openInferenceTagsKey]; !present && isRunSpan(values) {
+		added = append(added, attribute.StringSlice(openInferenceTagsKey, runTags(values["run.mode"].AsString())))
 	}
 	if len(added) == 0 {
 		return s
@@ -173,6 +177,15 @@ func lastAssistantText(raw string) string {
 		}
 	}
 	return ""
+}
+
+// runTags returns the Phoenix tags of a run: the agent name and the run
+// mode, both configuration values rather than anything identifying.
+func runTags(mode string) []string {
+	if mode == "" {
+		return []string{stirrupTag}
+	}
+	return []string{stirrupTag, mode}
 }
 
 // runMetadata renders the run identity as the JSON object Phoenix shows in
