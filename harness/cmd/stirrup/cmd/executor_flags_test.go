@@ -100,7 +100,7 @@ func TestFlagCompletion_ContainerRuntimeFollowsExecutor(t *testing.T) {
 		{executor: "local", want: types.ValidExecutorRuntimeValues()},
 		{executor: "container", want: types.ValidExecutorRuntimeValues()},
 		{executor: "k8s", want: types.ValidK8sExecutorRuntimeValues()},
-		{executor: "k8s-sandbox", want: types.ValidK8sExecutorRuntimeValues()},
+		{executor: "k8s-sandbox", want: types.ValidK8sSandboxExecutorRuntimeValues()},
 	} {
 		t.Run("executor_"+tc.executor, func(t *testing.T) {
 			must := require.New(t)

@@ -176,8 +176,12 @@ func addRunConfigFlagCompletions(cmd *cobra.Command) {
 	staticValues("lazy-tools-strategy", types.ValidLazyToolStrategyValues())
 
 	_ = cmd.RegisterFlagCompletionFunc("container-runtime", func(cmd *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
-		if executor, _ := cmd.Flags().GetString("executor"); types.IsK8sFamily(executor) {
+		executor, _ := cmd.Flags().GetString("executor")
+		switch executor {
+		case "k8s":
 			return types.ValidK8sExecutorRuntimeValues(), cobra.ShellCompDirectiveNoFileComp
+		case "k8s-sandbox":
+			return types.ValidK8sSandboxExecutorRuntimeValues(), cobra.ShellCompDirectiveNoFileComp
 		}
 		return types.ValidExecutorRuntimeValues(), cobra.ShellCompDirectiveNoFileComp
 	})

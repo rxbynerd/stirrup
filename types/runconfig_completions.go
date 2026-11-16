@@ -32,6 +32,11 @@ func ValidExecutorRuntimeValues() []string { return sortedNonEmptyKeys(validCont
 // value, which leaves the Pod's RuntimeClassName unset, is also accepted.
 func ValidK8sExecutorRuntimeValues() []string { return sortedNonEmptyKeys(validK8sRuntimes) }
 
+// ValidK8sSandboxExecutorRuntimeValues returns the non-empty runtime values
+// accepted on RunConfig.Executor.Runtime for the k8s-sandbox executor, which
+// is gVisor-only.
+func ValidK8sSandboxExecutorRuntimeValues() []string { return []string{"gvisor"} }
+
 // ValidExecutorNetworkModeValues returns the egress modes accepted on
 // RunConfig.Executor.Network.Mode.
 func ValidExecutorNetworkModeValues() []string { return []string{"allowlist", "none"} }
