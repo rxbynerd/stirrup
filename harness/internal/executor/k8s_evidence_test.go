@@ -217,11 +217,13 @@ func TestEvidenceDir_OmitsEnvironmentValuesAdmissionInjected(t *testing.T) {
 	var pod corev1.Pod
 	must.NoError(json.Unmarshal(data, &pod))
 	must.Equal([]corev1.EnvVar{
+		{Name: "HOME", Value: evidenceEnvValue},
+		{Name: "TMPDIR", Value: evidenceEnvValue},
 		{Name: "INJECTED", Value: evidenceEnvValue},
 		{Name: "FROM_SECRET", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{Key: "k"}}},
 	}, pod.Spec.Containers[0].Env)
 	_, created := record.pods()
-	must.Equal("injected-secret-value", created.Spec.Containers[0].Env[0].Value, "the record itself is not changed")
+	must.Equal("injected-secret-value", created.Spec.Containers[0].Env[2].Value, "the record itself is not changed")
 }
 
 func TestEvidenceDir_WritesTheCreateError(t *testing.T) {

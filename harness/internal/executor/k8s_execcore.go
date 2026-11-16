@@ -85,6 +85,21 @@ func (e *podExecCore) WriteSandboxIdentityToken(ctx context.Context, token strin
 
 var _ SandboxIdentityTokenWriter = (*podExecCore)(nil)
 
+// prepareScratch creates HOME and TMPDIR in the scratch volume.
+func (e *podExecCore) prepareScratch(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, e.fileIOBound())
+	defer cancel()
+
+	stderr := writeCapBuffer{limit: k8sClusterTextMax * 4}
+	if err := e.streamExec(ctx, scratchSetupCommand(), nil, io.Discard, &stderr); err != nil {
+		if code, ok := extractExitCode(err); ok && code != 0 {
+			return fmt.Errorf("prepare sandbox scratch: exit %d: %s", code, clusterText(strings.TrimSpace(stderr.String())))
+		}
+		return fmt.Errorf("prepare sandbox scratch: %w", boundClusterErr(err))
+	}
+	return nil
+}
+
 // ResolvePath validates that the given path does not escape the Pod
 // workspace. The check is purely textual — there is no local filesystem
 // to EvalSymlinks against, since the workspace lives inside the Pod.

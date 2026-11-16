@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -212,14 +213,18 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 		return nil, fmt.Errorf("build dynamic client: %w", err)
 	}
 
-	return newAgentSandboxExecutor(ctx, cfg, proxyEnv, clientset, dyn, restCfg, defaultK8sTiming, slog.Default())
+	return newAgentSandboxExecutor(ctx, cfg, proxyEnv, clientset, dyn, restCfg, nil, defaultK8sTiming, slog.Default())
 }
 
 // newAgentSandboxExecutor is NewAgentSandboxExecutor after the clients are
-// built.
-func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, clientset kubernetes.Interface, dyn dynamic.Interface, restCfg *rest.Config, timing k8sTiming, logger *slog.Logger) (*AgentSandboxExecutor, error) {
+// built. execFn, when non-nil, replaces the pods/exec round trip (see
+// podExecCore).
+func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, clientset kubernetes.Interface, dyn dynamic.Interface, restCfg *rest.Config, execFn podExecFunc, timing k8sTiming, logger *slog.Logger) (*AgentSandboxExecutor, error) {
 	if err := checkAgentSandboxRuntime(cfg.Runtime); err != nil {
 		return nil, err
+	}
+	if errs := types.ScratchLimitErrors("k8s-sandbox", cfg.Resources); len(errs) > 0 {
+		return nil, fmt.Errorf("agent sandbox executor: %s", strings.Join(errs, "; "))
 	}
 
 	name, err := generatePodName()
@@ -297,7 +302,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 		))
 	}
 
-	return &AgentSandboxExecutor{
+	exec := &AgentSandboxExecutor{
 		podExecCore: podExecCore{
 			clientset:       clientset,
 			restConfig:      restCfg,
@@ -307,13 +312,19 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 			Security:        cfg.Security,
 			logger:          logger,
 			sandboxIdentity: cfg.SandboxIdentityToken,
+			execFn:          execFn,
+			fileIOTimeout:   timing.fileIOTimeout,
 		},
 		dynamicClient:     dyn,
 		sandboxName:       name,
 		networkPolicyName: policy.Name,
 		runID:             cfg.Lifecycle.RunID,
 		timing:            timing,
-	}, nil
+	}
+	if err := exec.prepareScratch(ctx); err != nil {
+		return nil, rollback(fmt.Errorf("sandbox %s/%s: %w", cfg.Namespace, name, err))
+	}
+	return exec, nil
 }
 
 // Close deletes the Sandbox, waits until a read finds it gone and then until

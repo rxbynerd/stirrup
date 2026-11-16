@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -90,6 +91,28 @@ func matchPath(actual, pattern string) bool {
 	}
 	parts := strings.SplitN(pattern, "*", 2)
 	return strings.HasPrefix(actual, parts[0]) && strings.HasSuffix(actual, parts[1])
+}
+
+// mockContainerEngine is mockEngineServer for a test that runs the
+// constructor: the exec routes, unless handlers sets them, answer every
+// exec (the scratch setup among them) with a clean exit and no output.
+func mockContainerEngine(t *testing.T, handlers map[string]http.HandlerFunc) (socketPath string, cleanup func()) {
+	t.Helper()
+	merged := map[string]http.HandlerFunc{
+		"POST /containers/*/exec": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execCreateResponse{ID: "setup-exec"})
+		},
+		"POST /exec/*/start": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+		},
+		"GET /exec/*/json": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(execInspectResponse{ExitCode: 0})
+		},
+	}
+	maps.Copy(merged, handlers)
+	return mockEngineServer(t, merged)
 }
 
 // --- API client tests ---
@@ -749,7 +772,7 @@ func TestContainerExecutor_CreateRequestCarriesLifecycle(t *testing.T) {
 	must := require.New(t)
 	var got containerCreateRequest
 
-	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+	sock, cleanup := mockContainerEngine(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewDecoder(r.Body).Decode(&got)
 			w.Header().Set("Content-Type", "application/json")
@@ -780,7 +803,7 @@ func TestContainerExecutor_CreateRequestWithoutLifetimeKeepsAlive(t *testing.T) 
 	must := require.New(t)
 	var got containerCreateRequest
 
-	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+	sock, cleanup := mockContainerEngine(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewDecoder(r.Body).Decode(&got)
 			w.Header().Set("Content-Type", "application/json")
@@ -890,7 +913,7 @@ func TestContainerExecutor_StartFailure_RemovesContainer(t *testing.T) {
 	must := require.New(t)
 	removeCalled := false
 
-	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+	sock, cleanup := mockContainerEngine(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "orphan-container"})
@@ -920,7 +943,7 @@ func TestContainerExecutor_ResourceLimits_MapToHostConfig(t *testing.T) {
 	must := require.New(t)
 	var receivedBody containerCreateRequest
 
-	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+	sock, cleanup := mockContainerEngine(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewDecoder(r.Body).Decode(&receivedBody)
 			w.Header().Set("Content-Type", "application/json")
@@ -960,7 +983,7 @@ func TestContainerExecutor_ResourceLimits_MapToHostConfig(t *testing.T) {
 func TestContainerExecutor_NetworkMode_SelectsNoneOrBridge(t *testing.T) {
 	var receivedBody containerCreateRequest
 
-	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+	sock, cleanup := mockContainerEngine(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewDecoder(r.Body).Decode(&receivedBody)
 			w.Header().Set("Content-Type", "application/json")
@@ -1013,7 +1036,7 @@ func TestContainerExecutor_Runtime_SetAndOmittedWhenEmpty(t *testing.T) {
 	// older Docker versions can fail with `runtime "" not registered`.
 	var rawBody []byte
 
-	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+	sock, cleanup := mockContainerEngine(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			rawBody, _ = io.ReadAll(r.Body)
 			w.Header().Set("Content-Type", "application/json")
@@ -1079,7 +1102,7 @@ func TestContainerExecutor_AllowlistMode_WiringConfig(t *testing.T) {
 	check := assert.New(t)
 	var receivedBody containerCreateRequest
 
-	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+	sock, cleanup := mockContainerEngine(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewDecoder(r.Body).Decode(&receivedBody)
 			w.Header().Set("Content-Type", "application/json")
@@ -1149,7 +1172,7 @@ func TestContainerExecutor_NoneMode_NoProxyWiring(t *testing.T) {
 	must := require.New(t)
 	var receivedBody containerCreateRequest
 
-	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+	sock, cleanup := mockContainerEngine(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewDecoder(r.Body).Decode(&receivedBody)
 			w.Header().Set("Content-Type", "application/json")
@@ -1178,7 +1201,7 @@ func TestContainerExecutor_NoneMode_NoProxyWiring(t *testing.T) {
 
 	check.Equal("none", receivedBody.HostConfig.NetworkMode)
 	check.Empty(receivedBody.HostConfig.ExtraHosts, "ExtraHosts should be empty for none mode")
-	check.Empty(receivedBody.Env, "Env should be empty for none mode")
+	check.Equal([]string{"HOME=/scratch/home", "TMPDIR=/scratch/tmp"}, receivedBody.Env, "none mode injects only the scratch env")
 }
 
 // TestContainerExecutor_AllowlistMode_BadAllowlistFailsFast verifies that a
@@ -1211,8 +1234,9 @@ func TestContainerExecutor_AllowlistMode_BadAllowlistFailsFast(t *testing.T) {
 
 // TestContainerExecutor_CreateRequest_CarriesHardeningProfile asserts that the
 // create-container request carries the full sandbox-hardening profile: a read-only rootfs, a
-// sized /tmp tmpfs and /dev/shm, the nobody uid:gid, nosuid/nodev/noexec on
-// the tmpfs scratch mounts, and the retained PidsLimit. The mock engine only
+// sized /tmp tmpfs and /dev/shm mounted nosuid/nodev/noexec, a sized
+// executable /scratch tmpfs mounted nosuid/nodev, the 65532:65532 sandbox
+// identity, and the retained PidsLimit. The mock engine only
 // captures the request, so this proves what stirrup puts on the wire — not
 // that a live daemon honours every flag.
 func TestContainerExecutor_CreateRequest_CarriesHardeningProfile(t *testing.T) {
@@ -1221,7 +1245,7 @@ func TestContainerExecutor_CreateRequest_CarriesHardeningProfile(t *testing.T) {
 	var receivedBody containerCreateRequest
 	var rawBody []byte
 
-	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+	sock, cleanup := mockContainerEngine(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			rawBody, _ = io.ReadAll(r.Body)
 			_ = json.Unmarshal(rawBody, &receivedBody)
@@ -1255,7 +1279,7 @@ func TestContainerExecutor_CreateRequest_CarriesHardeningProfile(t *testing.T) {
 	// would drop false silently, so the field is emitted unconditionally.
 	check.Contains(string(rawBody), `"ReadonlyRootfs":true`, "create body should carry the literal field")
 	check.NotContains(string(rawBody), `"ShmSize"`, "create body should not carry a separate ShmSize field")
-	check.Equal("65534:65534", receivedBody.User, "User")
+	check.Equal("65532:65532", receivedBody.User, "User")
 	must.NotNil(hc.PidsLimit, "PidsLimit")
 	check.Equal(int64(256), *hc.PidsLimit, "PidsLimit")
 
@@ -1271,6 +1295,9 @@ func TestContainerExecutor_CreateRequest_CarriesHardeningProfile(t *testing.T) {
 	check.Contains(hc.Tmpfs["/dev/shm"], "noexec")
 	check.Contains(hc.Tmpfs["/dev/shm"], "size=67108864")
 
+	must.Contains(hc.Tmpfs, "/scratch", "Tmpfs should mount /scratch")
+	check.Equal("rw,nosuid,nodev,exec,mode=1777,size=1073741824", hc.Tmpfs["/scratch"], "the default scratch is 1024 MiB and executable")
+
 	// The hardening profile must not displace the existing baseline.
 	check.Equal("none", hc.NetworkMode, "NetworkMode")
 	check.Equal([]string{"ALL"}, hc.CapDrop, "CapDrop")
@@ -1278,7 +1305,7 @@ func TestContainerExecutor_CreateRequest_CarriesHardeningProfile(t *testing.T) {
 }
 
 func TestNewContainerExecutor_AcceptsAnyRegistry(t *testing.T) {
-	sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+	sock, cleanup := mockContainerEngine(t, map[string]http.HandlerFunc{
 		"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(containerCreateResponse{ID: "test-id"})

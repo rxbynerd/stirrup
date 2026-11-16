@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -24,17 +25,17 @@ const (
 	containerWorkspace = "/workspace"
 	maxDockerFrameSize = 10 * 1024 * 1024 // 10 MB cap on Docker stream frames
 
-	// hardenedUser is the conventional nobody:nogroup pair, so a container
-	// escape lands on an unprivileged identity.
-	hardenedUser = "65534:65534"
-
-	// tmpfsTmpSize and shmSize size the two writable scratch mounts the
-	// read-only rootfs requires. Both carry nosuid,nodev,noexec (tmpfsMountOpts)
-	// so a dropped binary cannot be executed from them.
+	// tmpfsTmpSize and shmSize size /tmp and /dev/shm, which carry
+	// tmpfsMountOpts. Their noexec is hygiene, not a control: /workspace and
+	// the scratch tmpfs are executable.
 	tmpfsTmpSize = 256 * 1024 * 1024 // 256 MiB
 	shmSize      = 64 * 1024 * 1024  // 64 MiB
 
 	tmpfsMountOpts = "rw,nosuid,nodev,noexec"
+	// scratchMountOpts names exec explicitly because the engines mount a
+	// tmpfs noexec by default. mode=1777 rather than uid= because the
+	// engines reject uid=/gid= on a tmpfs.
+	scratchMountOpts = "rw,nosuid,nodev,exec,mode=1777"
 
 	// hostGatewayHost resolves to the host's address via Docker/Podman's
 	// magic "host-gateway" ExtraHosts value (Docker >=20.10, Podman >=4.0).
@@ -172,6 +173,11 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 	if cfg.HostDir == "" {
 		return nil, fmt.Errorf("container executor requires a host directory")
 	}
+	errs := types.ResourceLimitErrors(cfg.Resources)
+	errs = append(errs, types.ScratchLimitErrors("container", cfg.Resources)...)
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("container executor: %s", strings.Join(errs, "; "))
+	}
 	socketPath := cfg.SocketPath
 	if socketPath == "" {
 		var err error
@@ -193,6 +199,8 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		Tmpfs: map[string]string{
 			"/tmp":     fmt.Sprintf("%s,size=%d", tmpfsMountOpts, tmpfsTmpSize),
 			"/dev/shm": fmt.Sprintf("%s,size=%d", tmpfsMountOpts, shmSize),
+			sandboxScratchDir: fmt.Sprintf("%s,size=%d", scratchMountOpts,
+				int64(cfg.Resources.EffectiveScratchMB())*1024*1024),
 		},
 	}
 	if cfg.SandboxIdentityToken {
@@ -247,7 +255,7 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		// Desktop.
 	}
 
-	for _, e := range cfg.ExtraEnv {
+	for _, e := range append(slices.Clone(cfg.ExtraEnv), scratchEnv()...) {
 		env = append(env, e.Name+"="+e.Value)
 	}
 
@@ -291,7 +299,7 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		return nil, startupErr(types.BuildFailureSandboxPlatform, fmt.Errorf("start container: %w", err))
 	}
 
-	return &ContainerExecutor{
+	exec := &ContainerExecutor{
 		api:             api,
 		containerID:     containerID,
 		workspace:       containerWorkspace,
@@ -301,7 +309,26 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		Security:        nil,
 		proxy:           proxy,
 		sandboxIdentity: cfg.SandboxIdentityToken,
-	}, nil
+	}
+	if err := exec.prepareScratch(ctx); err != nil {
+		if closeErr := exec.Close(); closeErr != nil {
+			return nil, fmt.Errorf("%w; cleanup: %w", err, closeErr)
+		}
+		return nil, err
+	}
+	return exec, nil
+}
+
+// prepareScratch creates HOME and TMPDIR in the scratch tmpfs.
+func (e *ContainerExecutor) prepareScratch(ctx context.Context) error {
+	result, err := e.execInContainer(ctx, scratchSetupCommand(), e.workspace, containerFileIOTimeout)
+	if err != nil {
+		return fmt.Errorf("prepare sandbox scratch: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("prepare sandbox scratch: exit %d: %s", result.ExitCode, clusterText(strings.TrimSpace(result.Stderr)))
+	}
+	return nil
 }
 
 // classifyContainerCreate classifies a failed container create: a missing

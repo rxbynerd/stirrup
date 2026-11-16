@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
+	utilexec "k8s.io/client-go/util/exec"
 
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -32,6 +34,8 @@ type fakeAgentSandbox struct {
 	released           bool
 	policyDeletedEarly bool
 	readsLeft          int
+	// execFn serves pods/exec; nil serves every call with a clean exit.
+	execFn podExecFunc
 }
 
 func newFakeAgentSandbox(t *testing.T) *fakeAgentSandbox {
@@ -106,7 +110,11 @@ func (f *fakeAgentSandbox) build(t *testing.T, timing k8sTiming) (*AgentSandboxE
 		Network:   &types.NetworkConfig{Mode: "none"},
 		Lifecycle: Lifecycle{RunID: testK8sRunID},
 	}
-	exec, err := newAgentSandboxExecutor(context.Background(), cfg, nil, f.cs, f.dyn, nil, timing, logger)
+	execFn := f.execFn
+	if execFn == nil {
+		execFn = reachableExec
+	}
+	exec, err := newAgentSandboxExecutor(context.Background(), cfg, nil, f.cs, f.dyn, nil, execFn, timing, logger)
 	return exec, logs, err
 }
 
@@ -213,6 +221,25 @@ func TestNewAgentSandboxExecutor_RollsBackThroughClose(t *testing.T) {
 		_, _, err := f.build(t, fastK8sTiming)
 
 		must.ErrorContains(err, "warm-pool adoption is not supported")
+		f.requireSandboxRemovedThenPolicy(t, f.sandboxName(t))
+	})
+
+	t.Run("scratch setup failure", func(t *testing.T) {
+		must := require.New(t)
+		f := newFakeAgentSandbox(t)
+		f.admitSandboxes(nil)
+		f.lingerOnDelete(t, 3)
+		var commands [][]string
+		f.execFn = func(_ context.Context, command []string, _ io.Reader, _, stderr io.Writer) error {
+			commands = append(commands, command)
+			_, _ = io.WriteString(stderr, "mkdir: can't create directory '/scratch/home': File exists\n")
+			return utilexec.CodeExitError{Err: errors.New("command terminated with exit code 1"), Code: 1}
+		}
+
+		_, _, err := f.build(t, fastK8sTiming)
+
+		must.ErrorContains(err, "prepare sandbox scratch: exit 1: mkdir: can't create directory '/scratch/home': File exists")
+		must.Equal([][]string{scratchSetupCommand()}, commands)
 		f.requireSandboxRemovedThenPolicy(t, f.sandboxName(t))
 	})
 }
@@ -457,7 +484,7 @@ func TestNewAgentSandboxExecutor_RejectsNonGVisorRuntimeBeforeAnyClusterCall(t *
 			}
 			logger, _ := testLogger()
 
-			_, err := newAgentSandboxExecutor(context.Background(), cfg, nil, f.cs, f.dyn, nil, fastK8sTiming, logger)
+			_, err := newAgentSandboxExecutor(context.Background(), cfg, nil, f.cs, f.dyn, nil, reachableExec, fastK8sTiming, logger)
 
 			must.ErrorContains(err, `executor.runtime must be "gvisor" or empty (got "`+runtime+`")`)
 			must.Empty(f.cs.Actions(), "a rejected runtime reached the cluster")

@@ -101,11 +101,11 @@ func TestContainerExecutor_SandboxIdentityToken_LiveEngine(t *testing.T) {
 	must.NoError(err, "cat token after aborted delivery")
 	must.Equal(second, res.Stdout, "token file after an aborted delivery")
 
-	res, err = exec.Exec(ctx, "stat -c '%a %U' "+SandboxIdentityTokenPath+" && ls -A "+SandboxIdentityTokenDir, 30*time.Second)
+	res, err = exec.Exec(ctx, "stat -c '%a %u' "+SandboxIdentityTokenPath+" && ls -A "+SandboxIdentityTokenDir, 30*time.Second)
 	must.NoError(err, "stat token")
 	lines := strings.Split(strings.TrimSpace(res.Stdout), "\n")
 	check.GreaterOrEqual(len(lines), 2, "stat and ls output %q", res.Stdout)
-	check.Equal("600 nobody", lines[0], "token file mode and owner")
+	check.Equal(fmt.Sprintf("600 %d", sandboxUID), lines[0], "token file mode and owner")
 	check.NotContains(res.Stdout, ".token.tmp", "staging file left behind")
 
 	_, err = exec.ReadFile(ctx, SandboxIdentityTokenPath)
@@ -115,6 +115,50 @@ func TestContainerExecutor_SandboxIdentityToken_LiveEngine(t *testing.T) {
 	for _, e := range entries {
 		check.NotContains(e, "token", "workspace listing contains a token artefact: %q", entries)
 	}
+}
+
+// TestContainerExecutor_Scratch_LiveEngine checks the scratch contract
+// against a real engine: the probe passes, /scratch is an executable
+// nosuid,nodev tmpfs of the configured size while /tmp stays noexec, and a
+// second sandbox starts with an empty scratch after the first wrote to it.
+func TestContainerExecutor_Scratch_LiveEngine(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	exec := liveContainerExecutor(t, ctx, false)
+
+	assertSandboxScratchUsable(t, ctx, exec)
+
+	res, err := exec.Exec(ctx, `grep -E ' /(scratch|tmp) ' /proc/mounts`, 30*time.Second)
+	must.NoError(err)
+	must.Equal(0, res.ExitCode, "stderr %q", res.Stderr)
+	for _, line := range strings.Split(strings.TrimSpace(res.Stdout), "\n") {
+		fields := strings.Fields(line)
+		must.GreaterOrEqual(len(fields), 4, "mount line %q", line)
+		opts := strings.Split(fields[3], ",")
+		check.Equal("tmpfs", fields[2], "filesystem of %s", fields[1])
+		check.Contains(opts, "nosuid", "options of %s", fields[1])
+		check.Contains(opts, "nodev", "options of %s", fields[1])
+		switch fields[1] {
+		case sandboxScratchDir:
+			check.NotContains(opts, "noexec", "scratch must be executable")
+			check.Contains(opts, fmt.Sprintf("size=%dk", types.DefaultScratchMB*1024))
+		case "/tmp":
+			check.Contains(opts, "noexec", "/tmp stays noexec")
+		}
+	}
+
+	res, err = exec.Exec(ctx, `printf '#!/bin/sh\necho ran\n' > /tmp/probe.sh && chmod +x /tmp/probe.sh && /tmp/probe.sh`, 30*time.Second)
+	must.NoError(err)
+	check.NotEqual(0, res.ExitCode, "a script in /tmp ran: %q", res.Stdout)
+	must.NoError(exec.Close())
+
+	next := liveContainerExecutor(t, ctx, false)
+	res, err = next.Exec(ctx, `ls -A /scratch/home /scratch/tmp`, 30*time.Second)
+	must.NoError(err)
+	must.Equal(0, res.ExitCode, "stderr %q", res.Stderr)
+	must.Equal("/scratch/home:\n\n/scratch/tmp:", strings.TrimSpace(res.Stdout), "a new sandbox's scratch is empty")
 }
 
 // TestContainerExecutor_ReadFile_SymlinkEscape_LiveEngine proves the read

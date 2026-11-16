@@ -92,7 +92,8 @@ func TestPodAdmission_StrictAcceptsAdmittedNitroPodFixture(t *testing.T) {
 	must.NotEqual(submitted.Spec.Containers[0].Resources, admitted.Spec.Containers[0].Resources,
 		"the fixture's quantities must differ structurally so the comparison is shown to be semantic")
 	must.Empty(admitted.Spec.Volumes[0].Projected, "no service-account token volume is injected")
-	must.Len(admitted.Spec.Volumes, 1)
+	must.Len(admitted.Spec.Volumes, 2)
+	must.Empty(admitted.Spec.Volumes[1].Projected, "no service-account token volume is injected")
 
 	admission := newPodAdmission(submitted, admitted, profile)
 	must.NoError(admission.checkCreate())

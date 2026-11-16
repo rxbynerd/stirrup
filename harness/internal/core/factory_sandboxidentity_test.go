@@ -213,6 +213,12 @@ func fakeDockerEngine(t *testing.T) (socketPath string, capture *engineCapture, 
 			_, _ = w.Write([]byte(`{"Id":"exec-id"}`))
 		case r.Method == http.MethodPost && strings.HasPrefix(apiPath, "/exec/") && strings.HasSuffix(apiPath, "/start"):
 			_, _ = io.ReadAll(r.Body)
+			if r.Header.Get("Upgrade") == "" {
+				// An exec without stdin, such as the scratch setup, reads
+				// a plain stream with no output.
+				w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
+				return
+			}
 			hj, ok := w.(http.Hijacker)
 			if !ok || r.Header.Get("Upgrade") != "tcp" {
 				http.Error(w, `{"message":"expected upgrade"}`, http.StatusBadRequest)
