@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"slices"
 	"testing"
 	"time"
 
@@ -54,7 +55,8 @@ func asObjectSlice(t *testing.T, path string, v any) []any {
 }
 
 // TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive checks that buildSandboxPodSpec
-// keeps both the proxy env and the extra env, with the proxy entries first.
+// keeps both the proxy env and the extra env, with the proxy entries first
+// and the scratch HOME and TMPDIR last.
 func TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive(t *testing.T) {
 	must := require.New(t)
 	cfg := baseSandboxCfg()
@@ -80,13 +82,14 @@ func TestBuildSandboxPodSpec_ProxyAndExtraEnvAdditive(t *testing.T) {
 	spec := buildSandboxPodSpec(cfg, proxyEnv, extraEnv)
 
 	gotEnv := spec.Containers[0].Env
-	must.Len(gotEnv, len(proxyEnv)+len(extraEnv), "Containers[0].Env must hold proxyEnv and extraEnv")
+	scratch := scratchEnv()
+	must.Len(gotEnv, len(proxyEnv)+len(extraEnv)+len(scratch), "Containers[0].Env must hold proxyEnv, extraEnv and the scratch env")
 
 	for i, want := range proxyEnv {
 		must.Equal(want.Name, gotEnv[i].Name, "Env[%d] name", i)
 		must.Equal(want.Value, gotEnv[i].Value, "Env[%d] value", i)
 	}
-	for i, want := range extraEnv {
+	for i, want := range slices.Concat(extraEnv, scratch) {
 		idx := len(proxyEnv) + i
 		must.Equal(want.Name, gotEnv[idx].Name, "Env[%d] name", idx)
 		must.Equal(want.Value, gotEnv[idx].Value, "Env[%d] value", idx)
@@ -252,7 +255,7 @@ func TestBuildSandboxObject_EmitsSandboxCR(t *testing.T) {
 		must.Equal(false, ptSpec["automountServiceAccountToken"])
 
 		podSC := asObjectMap(t, "spec.podTemplate.spec.securityContext", ptSpec["securityContext"])
-		must.Equal(int64(k8sRunAsUserUID), podSC["fsGroup"])
+		must.Equal(sandboxGID, podSC["fsGroup"])
 	})
 
 	t.Run("keeps the hardened container security context", func(t *testing.T) {
@@ -260,7 +263,8 @@ func TestBuildSandboxObject_EmitsSandboxCR(t *testing.T) {
 		cSC := asObjectMap(t, "containers[0].securityContext", c0["securityContext"])
 		must.Equal(false, cSC["allowPrivilegeEscalation"])
 		must.Equal(true, cSC["runAsNonRoot"])
-		must.Equal(int64(k8sRunAsUserUID), cSC["runAsUser"])
+		must.Equal(sandboxUID, cSC["runAsUser"])
+		must.Equal(sandboxGID, cSC["runAsGroup"])
 
 		seccomp := asObjectMap(t, "containers[0].securityContext.seccompProfile", cSC["seccompProfile"])
 		must.Equal("RuntimeDefault", seccomp["type"])
@@ -277,6 +281,26 @@ func TestBuildSandboxObject_EmitsSandboxCR(t *testing.T) {
 		v0 := asObjectMap(t, "volumes[0]", volumes[0])
 		must.Equal(k8sWorkspaceVolume, v0["name"])
 		must.Contains(v0, "emptyDir")
+	})
+
+	t.Run("keeps the size-capped scratch volume, its mount and the scratch env", func(t *testing.T) {
+		must := require.New(t)
+		volumes := asObjectSlice(t, "spec.podTemplate.spec.volumes", ptSpec["volumes"])
+		must.Len(volumes, 2)
+		v1 := asObjectMap(t, "volumes[1]", volumes[1])
+		must.Equal(k8sScratchVolume, v1["name"])
+		emptyDir := asObjectMap(t, "volumes[1].emptyDir", v1["emptyDir"])
+		must.Equal("1Gi", emptyDir["sizeLimit"])
+		must.NotContains(emptyDir, "medium", "scratch is disk-backed")
+
+		mounts := asObjectSlice(t, "containers[0].volumeMounts", c0["volumeMounts"])
+		must.Contains(mounts, map[string]any{"name": k8sScratchVolume, "mountPath": sandboxScratchDir})
+
+		env := asObjectSlice(t, "containers[0].env", c0["env"])
+		must.Equal([]any{
+			map[string]any{"name": "HOME", "value": sandboxHomeDir},
+			map[string]any{"name": "TMPDIR", "value": sandboxTmpDir},
+		}, env)
 	})
 }
 

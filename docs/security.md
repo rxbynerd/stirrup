@@ -679,12 +679,12 @@ appropriate to its own boundary:
   the write, not a concurrent process; on the container executor the
   engine performs the write.
 
-  The sandbox image must ship a `readlink` that supports `-f` and
-  `mkdir` for writes, and `tar` for reads (and for writes on
-  `k8s`/`k8s-sandbox`). An image with no `readlink` at all fails
-  closed: the first read or write returns an error naming it. These
-  guards cover `read_file`, `write_file`, and `edit_file`; the
-  sandboxed `grep_files`/`find_files` path is described below.
+  The commands the guards need from the sandbox image are listed in the
+  [sandbox image contract](executors/image-contract.md). An image with
+  no `readlink` at all fails closed: the first read or write returns an
+  error naming it. These guards cover `read_file`, `write_file`, and
+  `edit_file`; the sandboxed `grep_files`/`find_files` path is described
+  below.
 - **`api`** uses `url.PathEscape` on every path segment before
   constructing the GitHub Contents API URL.
 
@@ -746,46 +746,32 @@ The container executor applies these defaults regardless of what
 - `CapDrop: ["ALL"]`
 - `SecurityOpt: ["no-new-privileges"]`
 - `ReadonlyRootfs: true` — the container's root filesystem is
-  immutable. All writable scratch is confined to the workspace
+  immutable. All writable space is confined to the workspace
   bind and the explicit tmpfs mounts below, so a compromised run
   cannot persist a payload outside the paths it actually needs.
-- `User: "65534:65534"` (nobody:nogroup) — the main process and
-  every `run_command` exec run unprivileged, so a container escape
-  lands on a non-root identity rather than uid 0.
+- `User: "65532:65532"` — the main process and every `run_command`
+  exec run as the unprivileged [sandbox identity](#sandbox-identity-and-scratch),
+  so a container escape lands on a non-root identity rather than uid 0.
+- The [scratch directory](#sandbox-identity-and-scratch): a
+  `/scratch` tmpfs mounted `nosuid,nodev` and executable, sized by
+  `resources.scratchMb`, holding `HOME` and `TMPDIR`.
 - A 256 MiB `/tmp` tmpfs and a 64 MiB `/dev/shm`, each mounted
-  `nosuid,nodev,noexec`. These provide the writable, non-executable
-  scratch a read-only rootfs otherwise denies; `noexec` stops a
-  dropped binary from being run out of scratch.
+  `nosuid,nodev,noexec`. Their `noexec` is hygiene, not a control:
+  `/workspace` and `/scratch` are writable and executable, so a
+  dropped binary can be run from either. A program that writes an
+  executable temporary file honours `TMPDIR` or writes under
+  `/scratch`.
 - `PidsLimit` from `resources.pids` (fork-bomb containment),
   alongside the CPU and memory limits from `resources`.
 - `NetworkMode: "none"` (overridden to `"bridge"` only when
   `network.mode == "allowlist"`, in which case the egress proxy
   enforces FQDN allowlisting on the way out)
-- A registry allowlist on `executor.image`. The default admits
-  only the project's own `ghcr.io/rxbynerd/*` images and Docker Hub
-  official `docker.io/library/*` images; any other reference is
-  rejected before a container is created. Operators widen or
-  replace the set via `executor.registryAllowlist` (a list of
-  globs over the normalised `host/repo` reference, tag/digest
-  stripped, with the `index.docker.io` / `registry-1.docker.io`
-  pull aliases folded to `docker.io`). Globs follow `path.Match`
-  semantics, so `*` matches one path segment and does not cross
-  `/`: `ghcr.io/rxbynerd/*` admits `ghcr.io/rxbynerd/base` but not
-  `ghcr.io/rxbynerd/team/base` (use `ghcr.io/rxbynerd/*/*` for the
-  deeper namespace). An explicit list *replaces* the default rather
-  than extending it. Digest-pinned references (`@sha256:…`) are
-  accepted and preferred. The executor does not verify signatures on
-  the images it pulls; release images can be verified before their
+- `executor.image` passes the deployment's
+  [image admission policy](#image-admission-policy) before the
+  container is created. The executor does not verify signatures on
+  the images it runs; release images can be verified before their
   digests are pinned, as described in
-  [Verify what you run](deployment.md#verify-what-you-run). This
-  allowlist governs only the container executor's own image pulls
-  (via the Docker Engine API); it is not consulted for the
-  `k8s`/`k8s-sandbox` executors, whose Pod image is scheduled by the
-  cluster. A deployment pulling container-executor images from Google Cloud
-  Artifact Registry (a `*.pkg.dev` host, including a GAR
-  remote/standard repository) must add that host to
-  `executor.registryAllowlist` explicitly — the default does not
-  admit any Artifact Registry host.
+  [Verify what you run](deployment.md#verify-what-you-run).
 - API keys and `secret://` references are resolved on the *host*
   before tool dispatch; they never enter the container's
   environment.
@@ -804,6 +790,85 @@ mounts.
 
 Optional kernel-isolation runtime selection (`runc`, `runsc`, `kata*`)
 is documented in [`safety-rings.md`](safety-rings.md).
+
+### Sandbox identity and scratch
+
+The `container`, `k8s` and `k8s-sandbox` executors give a sandbox
+the same identity and the same writable paths, so one image works
+unchanged under each:
+
+- **Identity.** Every process runs as UID 65532 with primary GID
+  65532 (the distroless `nonroot` pair): `User: "65532:65532"` on
+  `container`, `runAsUser` and `runAsGroup` on the Kubernetes
+  executors, whose Pod `fsGroup` is also 65532.
+- **Scratch.** A size-capped directory at `/scratch`, outside
+  `/workspace`, that is writable and executable and mounted without
+  set-user-ID or device files (`nosuid,nodev` on `container`; the
+  Kubernetes executors' `allowPrivilegeEscalation: false` and dropped
+  capabilities cover the same ground).
+- **`HOME` and `TMPDIR`** are `/scratch/home` and `/scratch/tmp`,
+  set in the sandbox environment after every other variable the
+  executor injects, so they override an image's own `HOME`. The
+  executor creates both directories, mode `0700`, as the sandbox user
+  before the run starts; on Kubernetes this follows the runtime
+  diagnostics. Toolchain caches (the Go build cache, npm, pip, Cargo,
+  Bundler) and temporary binaries (`go test`, `go run`, native
+  extension builds) land there rather than in the workspace.
+
+Scratch is never committed and never exported: the deterministic git
+strategy commits only `/workspace`, and the workspace export archives
+only `/workspace`. It is created empty with each sandbox and discarded
+with it. The executor creates `HOME` and `TMPDIR` with `mkdir` and
+without `-p`, so a sandbox whose scratch already holds either directory
+fails to start rather than handing a run caches that an earlier one
+left. No executor carries scratch across sandboxes, snapshots or warm
+pools; the `k8s-sandbox` executor refuses warm-pool adoption. Follow-up
+turns of one session reuse the session's sandbox, so they see the same
+scratch, as they see the same workspace.
+
+Scratch persists for the life of the sandbox, and every later command
+in it reads what the run left there. That includes the commands that
+judge or record the run: the `test-runner` verifier, `postRun` hooks
+and the harness's own git commands. A file under `HOME` can change how
+those behave without appearing in the diff, the commit or the export:
+`go env -w GOFLAGS=-run=^$` makes a failing `go test` exit 0, and a
+Python `.pth` file, `~/.npmrc` or `~/.cargo/config.toml` can do the
+same for other toolchains. On these executors the deterministic git
+strategy overrides the global ignore and attributes files
+(`core.excludesFile` and `core.attributesFile` point at `/dev/null`),
+so a `HOME`-planted ignore entry cannot keep a workspace file out of
+the commit; other global git configuration in `HOME` still applies, and
+the agent-facing git tools and the prompt's `git status` read all of
+it. Under the `local` executor `HOME` is the operator's, and the
+strategy honours its global ignores. The agent could
+already subvert an in-sandbox verifier by editing the tests, but that
+edit appears in the workspace; tampering through `HOME` does not.
+Verification an operator relies on belongs outside the sandbox, as the
+eval suite's `test-command` judge runs on the host against the
+workspace.
+
+On `container`, scratch also changes two things a run had before. The
+Kubernetes executors do not mount the root filesystem read-only, so
+there the image's own world-writable `/tmp` was already writable and
+executable:
+
+- **Visibility.** A program built and run in `/workspace` appears in
+  the diff and the workspace export; one built and run in scratch is
+  discarded unseen. The workspace record of what ran was already weak,
+  since a run can delete files before it ends.
+- **Friction.** A `noexec` `/tmp` slowed dependency code that
+  assumes it can execute from `/tmp`. An executable `HOME` and
+  `TMPDIR` remove that obstacle. `/workspace` was already writable
+  and executable, so no new ability to execute code is granted.
+
+The size cap is `executor.resources.scratchMb`. Unset, it is 1024 MiB,
+or the limit scratch is charged against (below) when that is set and
+smaller. The limit that enforces it differs by executor:
+
+| Executor | Scratch backing | How the cap applies |
+|---|---|---|
+| `container` | `tmpfs` | A hard limit: a write beyond it fails with `No space left on device`. Pages in the tmpfs count against the container's memory limit (`resources.memoryMb`), so a scratch that fills toward the memory limit gets the writing process killed for lack of memory; validation rejects a `scratchMb` above `memoryMb`. Without `memoryMb` nothing else bounds it, so each sandbox can hold up to `scratchMb` plus 320 MiB (`/tmp` and `/dev/shm`) of host memory in tmpfs. *Measured* under Podman: a 16 MiB tmpfs stopped a write at 16 MiB, and in a 32 MiB container a write into a 64 MiB tmpfs was killed with 31.7 MiB charged to the container as shared memory. |
+| `k8s`, `k8s-sandbox` | disk-backed `emptyDir` with `sizeLimit` | Enforced by kubelet eviction, not as a hard cap: writes succeed past the limit until the kubelet's next usage check evicts the Pod, which ends the run ([Kubernetes: local ephemeral storage](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#local-ephemeral-storage)). *Measured* on a local `kind` cluster with the default `runc` runtime (not measured under gVisor): a Pod that wrote 32 MiB into a 16 MiB `emptyDir` was `Evicted` with ``Usage of EmptyDir volume "scratch" exceeds the limit "16Mi"``. Usage counts against the Pod's ephemeral storage (`resources.diskMb`); validation rejects a `scratchMb` above `diskMb`. Under `nitro-isolated` the workspace `emptyDir` shares the guest's disk, whose size `diskMb` bounds (see [Limits](executors/k8s.md#limits)); scratch is expected to share it too, but neither where scratch lands in the guest nor whether eviction enforces its `sizeLimit` there has been measured. |
 
 ### Runtime diagnostics on Kubernetes
 
@@ -848,6 +913,147 @@ before any upstream dial — the client's in-flight TLS handshake
 fails, but no egress leak occurs. Sending the 200 early costs only
 that a denied client briefly sees "tunnel established"; the audit
 event is still emitted.
+
+## Image admission policy
+
+An image admission policy states which registries a deployment's
+sandboxes may come from. The deployment sets it, not the `RunConfig` it
+constrains: whoever writes a `RunConfig` also writes `executor.image`, so
+a list beside the image would not constrain that author. The policy
+comes from `stirrup harness --image-allowlist` (repeatable) or the
+`STIRRUP_IMAGE_ALLOWLIST` environment variable. When both are set, the
+flag replaces the variable. `stirrup job` takes no flags, so a Job
+template sets the variable (see
+[`deployment.md`](deployment.md#optional-environment-variables)). Each
+flag value and the variable can each hold several patterns separated by
+commas. A malformed pattern stops the harness before it builds anything.
+
+The policy applies to every executor that starts a sandbox from
+`executor.image`: `container`, `k8s` and `k8s-sandbox`. The harness
+checks the image while it builds the run, before any container, Pod or
+Sandbox exists. `--dry-run` reports the same check as its
+`image-admission` step. The harness does not pull images. The
+`container` executor runs an image already present on the engine, and
+the cluster's kubelet pulls a `k8s` sandbox image. The policy decides
+which references the harness will hand to either of them.
+
+The check runs inside the harness process, so it is not a cluster
+admission control. Anything holding the harness ServiceAccount's rights
+to create Pods or Sandboxes can still create one with any image. A
+Kubernetes deployment that needs enforcement in the cluster should also
+apply the same registry list to the sandbox namespace with a
+`ValidatingAdmissionPolicy`, Kyverno or Gatekeeper. Only the `stirrup`
+binary reads the flag and the variable. A program that embeds the
+harness through `harness/harnessapi` runs without a policy.
+
+The harness first checks `executor.image` against the reference grammar
+that Docker, containerd, Podman and CRI-O parse references with
+(`github.com/distribution/reference`). That grammar requires a
+lowercase repository path of at most 255 bytes, at most one tag, and a
+digest the engines accept: `sha256`, `sha384` or `sha512` with a
+lower-case hexadecimal value of the matching length. A 64-character
+hexadecimal string is an image ID, not a name, and is refused. A
+reference the grammar rejects is refused whether or not a policy is set.
+
+Patterns are matched against the normalised reference: the registry
+host and repository path, with the tag and digest removed. The host is
+split off by the engines' rule. The first segment is a host when it
+contains a `.` or `:`, is `localhost`, or has an upper-case letter.
+Otherwise the reference is a Docker Hub short name. The `index.docker.io`
+alias folds to `docker.io`, as it does in the engines;
+`registry-1.docker.io` stays a separate host, so a policy that admits
+`docker.io/` does not admit it. A Docker Hub
+repository with one path segment gains `library/`, as it does in the
+engines: `ubuntu` and `docker.io/ubuntu` both become
+`docker.io/library/ubuntu`. Patterns get the same folding and `library/`
+rule, so `docker.io/ubuntu` as a pattern means `docker.io/library/ubuntu`.
+A pattern takes one of two forms:
+
+- A pattern ending in `/` is a **prefix**. It admits every repository
+  below that prefix, at any depth. `us-docker.pkg.dev/acme-prod/`
+  admits `us-docker.pkg.dev/acme-prod/sandboxes/go/toolchain`. It does
+  not admit `us-docker.pkg.dev/acme-prod-staging/base`, because a prefix
+  matches whole path segments. It also does not admit
+  `us-docker.pkg.dev/acme-prod` itself, because a prefix needs at least
+  one repository segment below it. `ghcr.io/` admits every repository
+  on that registry.
+- Any other pattern must match the **whole reference**, one path
+  segment at a time. `ghcr.io/acme/*` admits `ghcr.io/acme/base` but not
+  `ghcr.io/acme/team/base`. `docker.io/library/ubuntu` admits only that
+  repository.
+
+Each segment of either form is a `path.Match` glob. `*` and `?` match
+within a single segment, and no glob matches `/`. A literal IPv6 host
+such as `[fd00::1]:5000` is compared exactly, because `[` would
+otherwise start a glob character class.
+`123456789012.dkr.ecr.eu-west-1.amazonaws.com/platform/` admits the
+`platform/` namespace of one account's ECR registry, and
+`harbor.acme.internal:8443/sandboxes/` admits a Harbor project at any
+depth.
+
+The policy decides where a sandbox image comes from, not which executor a
+`RunConfig` selects. A `RunConfig` that sets `executor.type: local` runs
+on the host without an image, and the policy does not refuse it. A
+deployment that must guarantee a sandbox has to enforce the executor type
+by other means.
+
+A glob in the host segment trusts every owner of every matching host,
+so it must span only hosts the deployment controls, such as
+`registry-*.acme.internal/`. On a multi-tenant registry the host names
+the tenant: the account ID in an ECR host, the registry name in
+`*.azurecr.io`, the project in Artifact Registry. A host glob over that
+part admits registries that anyone, including a `RunConfig` author, can
+create. `*.dkr.ecr.eu-west-1.amazonaws.com/platform/` is an example:
+it admits the `platform/` namespace in every AWS account in that region.
+
+The parser rejects a pattern that could never match:
+
+- an empty pattern, including one left by a trailing comma;
+- a pattern with an empty segment;
+- a bare host with no `/` (write `ghcr.io/` to admit a whole registry);
+- a first segment that is not a registry host (one with a `.` or `:`,
+  `localhost`, or a glob);
+- a host made only of glob characters, such as `*/acme/` (any registry's
+  `acme` namespace, which anyone can register on a public registry);
+  `*/` on its own admits every registry that a reference names;
+- a malformed IPv6 host, or one holding a glob;
+- a pattern containing a tag or digest;
+- `**` (use a trailing `/` instead);
+- whitespace inside a pattern.
+
+A configured policy refuses a reference that does not name its registry,
+such as `ubuntu:26.04` or `acme/base`. Podman and CRI-O resolve such
+short names through `registries.conf`, which can name a registry other
+than `docker.io`, so a short name could match a `docker.io` pattern and
+then run from somewhere else. Write the reference in full, for example
+`docker.io/library/ubuntu:26.04`. The refusal message gives the full
+form.
+
+With no policy configured, every reference the grammar accepts is
+admitted.
+
+Two security events record the outcome on the harness's stderr:
+
+| Event | Level | When | Data |
+|---|---|---|---|
+| `image_admission_denied` | `error` | A configured policy refuses `executor.image`. The run fails before any sandbox is created. | `executor`, `image`, `patterns` |
+| `image_unpinned_without_admission_policy` | `warn` | No policy is configured and `executor.image` is not pinned by digest (`@sha256:…`), so nothing stops a mistyped or re-pushed reference from running. The run continues. | `executor`, `image` |
+
+A reference with a syntax error raises `config_validation_failed`
+instead. A digest pins an image's content but does not verify who
+published it. Signature verification (cosign/Sigstore) is not
+implemented.
+
+`executor.registryAllowlist` no longer exists. A JSON `RunConfig` that
+sets it fails to parse with an error that names this policy. The
+`ExecutorConfig` proto field it used is reserved. A control plane that
+still sends the field has its `task_assignment` rejected as setting an
+unknown field, and the harness logs a warning that names
+`STIRRUP_IMAGE_ALLOWLIST`. The field no longer appears in the `ready`
+event's `config_fields`. The removed built-in default admitted
+only `ghcr.io/rxbynerd/*` and `docker.io/library/*` for the `container`
+executor. A deployment that relied on it now admits every valid
+reference until it sets a policy.
 
 ## Untrusted context
 
@@ -1050,6 +1256,10 @@ Controls layered from outside in:
    GuardRail (pre-tool): LLM classifier on the cleaned call.
    PermissionPolicy: structural deny / Cedar policy / ask
    upstream.
+
+  ── Before the sandbox starts ─────────────────────────────
+   Image admission: the deployment's policy on executor.image
+   (container, k8s, k8s-sandbox).
 
   ── In sandbox ────────────────────────────────────────────
    Executor hardening: caps, no-new-privileges, network none,

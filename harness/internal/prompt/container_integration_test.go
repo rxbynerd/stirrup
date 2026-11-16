@@ -40,11 +40,10 @@ func TestContainer_ComposedPromptReadsSandbox(t *testing.T) {
 	marker := filepath.Join(hostMarkers, "fsmonitor-ran")
 
 	sandbox, err := executor.NewContainerExecutorWithContext(ctx, executor.ContainerExecutorConfig{
-		Image:             image,
-		HostDir:           hostDir,
-		SocketPath:        sock,
-		Network:           &types.NetworkConfig{Mode: "none"},
-		RegistryAllowlist: []string{"localhost/*", "docker.io/library/*", "ghcr.io/rxbynerd/*"},
+		Image:      image,
+		HostDir:    hostDir,
+		SocketPath: sock,
+		Network:    &types.NetworkConfig{Mode: "none"},
 	})
 	must.NoError(err, "NewContainerExecutorWithContext")
 	t.Cleanup(func() { _ = sandbox.Close() })

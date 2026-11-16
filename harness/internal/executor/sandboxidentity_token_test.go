@@ -104,7 +104,7 @@ func TestContainerExecutor_SandboxIdentityToken_MountsPrivateTmpfs(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			var received containerCreateRequest
-			sock, cleanup := mockEngineServer(t, map[string]http.HandlerFunc{
+			sock, cleanup := mockContainerEngine(t, map[string]http.HandlerFunc{
 				"POST /containers/create": func(w http.ResponseWriter, r *http.Request) {
 					_ = json.NewDecoder(r.Body).Decode(&received)
 					w.Header().Set("Content-Type", "application/json")
@@ -250,8 +250,8 @@ func TestBuildSandboxPodSpec_SandboxIdentityVolume(t *testing.T) {
 	must := require.New(t)
 	cfg := baseSandboxCfg()
 	without := buildSandboxPodSpec(cfg, nil, nil)
-	must.Len(without.Volumes, 1, "volumes without the flag")
-	must.Len(without.Containers[0].VolumeMounts, 1, "mounts without the flag")
+	must.Len(without.Volumes, 2, "volumes without the flag")
+	must.Len(without.Containers[0].VolumeMounts, 2, "mounts without the flag")
 
 	cfg.SandboxIdentityToken = true
 	spec := buildSandboxPodSpec(cfg, nil, nil)

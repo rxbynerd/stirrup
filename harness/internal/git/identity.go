@@ -22,6 +22,17 @@ var HardeningFlags = []string{
 	"-c", "maintenance.auto=false",
 }
 
+// sandboxHomeFlags make the deterministic strategy ignore the global ignore
+// and attributes files under a sandbox's HOME, which the agent can write
+// and which would otherwise change what a commit takes without leaving a
+// trace in the workspace. They are not applied under the local executor,
+// whose HOME is the operator's and whose global ignores protect files such
+// as .env from being committed.
+var sandboxHomeFlags = []string{
+	"-c", "core.excludesFile=/dev/null",
+	"-c", "core.attributesFile=/dev/null",
+}
+
 // IdentityFlags returns the argv elements that pin the harness identity for
 // one git invocation.
 func IdentityFlags() []string {

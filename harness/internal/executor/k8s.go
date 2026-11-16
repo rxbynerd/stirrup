@@ -32,6 +32,7 @@ import (
 const (
 	k8sWorkspace       = "/workspace"
 	k8sWorkspaceVolume = "workspace"
+	k8sScratchVolume   = "scratch"
 	k8sAgentContainer  = "agent"
 	// k8sSandboxIdentityVolume backs SandboxIdentityTokenDir when
 	// K8sExecutorConfig.SandboxIdentityToken is set; the size limit mirrors
@@ -58,9 +59,6 @@ const (
 	// reports the containers stopped, and short because the "sleep infinity"
 	// entrypoint ignores SIGTERM and has nothing to flush.
 	k8sTerminationGracePeriod int64 = 1
-	// k8sRunAsUserUID matches the distroless "nonroot" convention (65532),
-	// letting RunAsNonRoot be enforced without the image declaring its own USER.
-	k8sRunAsUserUID int64 = 65532
 	// k8sMaxOutput mirrors the container executor's 10 MB cap, not the
 	// local executor's tighter 1 MB limit: a sandboxed Pod justifies the
 	// larger budget the way a container does.
@@ -83,10 +81,8 @@ var errK8sOutputCap = errors.New("output exceeded 10 MB cap")
 // factory under ExecutorConfig.Type == "k8s". See docs/executors/k8s.md for
 // the network/egress posture and the kindnet enforcement caveat.
 type K8sExecutorConfig struct {
-	// Image must ship a POSIX shell at /bin/sh plus `tar`, `ls`, `mkdir`,
-	// and `readlink` on PATH: command execution runs `/bin/sh -c`, file I/O
-	// streams `tar` over the pods/exec subresource, and workspace reads and
-	// writes resolve the real path with `readlink -f` first.
+	// Image is the sandbox image. What it must provide is stated in
+	// docs/executors/image-contract.md.
 	Image        string
 	Namespace    string
 	Kubeconfig   string
@@ -126,8 +122,8 @@ type K8sExecutorConfig struct {
 
 // K8sExecutor implements Executor by running operations inside a sandbox
 // Pod, created on construction and deleted on Close(). Command execution
-// and file I/O both ride the pods/exec subresource — see
-// K8sExecutorConfig.Image for the required shell/tar/ls.
+// and file I/O both ride the pods/exec subresource; the image requirements
+// are in docs/executors/image-contract.md.
 type K8sExecutor struct {
 	podExecCore
 	podUID k8stypes.UID
@@ -202,6 +198,7 @@ func prepareK8sExecutor(cfg K8sExecutorConfig) (k8sRuntimeProfile, []corev1.EnvV
 	// ExtraEnv carries only the sandbox identity and git-proxy environment.
 	identity := cfg.SandboxIdentityToken || len(cfg.ExtraEnv) > 0
 	errs := types.ResourceLimitErrors(cfg.Resources)
+	errs = append(errs, types.ScratchLimitErrors("k8s", cfg.Resources)...)
 	errs = append(errs, types.K8sRuntimeRequirementErrors(cfg.Runtime, cfg.Network, cfg.Resources, identity)...)
 	if len(errs) > 0 {
 		return k8sRuntimeProfile{}, nil, fmt.Errorf("k8s executor: %s", strings.Join(errs, "; "))
@@ -304,6 +301,9 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 	if err := runK8sRuntimeDiagnostics(ctx, cfg.Runtime, profile, &exec.podExecCore); err != nil {
 		return nil, withTeardownErr(classifyK8sStartup(err, types.BuildFailureUnclassified), teardown.run())
 	}
+	if err := exec.prepareScratch(ctx); err != nil {
+		return nil, withTeardownErr(fmt.Errorf("pod %s/%s: %w", cfg.Namespace, podName, err), teardown.run())
+	}
 	return exec, nil
 }
 
@@ -379,20 +379,19 @@ func profilePodAnnotations(profile k8sRuntimeProfile, network *types.NetworkConf
 // k8s-sandbox executors; each sets the RuntimeClass itself. proxyEnv is the
 // already-computed HTTP(S)_PROXY env;
 // extraEnv is appended after it: a sandbox identity token and, when
-// configured, the git-proxy GIT_CONFIG_* pairs.
+// configured, the git-proxy GIT_CONFIG_* pairs. The scratch HOME and TMPDIR
+// come last.
 func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraEnv []EnvPair) corev1.PodSpec {
 	serviceAccount := cfg.ServiceAccountName
 	if serviceAccount == "" {
 		serviceAccount = "default"
 	}
 
-	env := proxyEnv
-	if len(extraEnv) > 0 {
-		env = make([]corev1.EnvVar, 0, len(proxyEnv)+len(extraEnv))
-		env = append(env, proxyEnv...)
-		for _, e := range extraEnv {
-			env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
-		}
+	scratch := scratchEnv()
+	env := make([]corev1.EnvVar, 0, len(proxyEnv)+len(extraEnv)+len(scratch))
+	env = append(env, proxyEnv...)
+	for _, e := range append(slices.Clone(extraEnv), scratch...) {
+		env = append(env, corev1.EnvVar{Name: e.Name, Value: e.Value})
 	}
 
 	volumes := []corev1.Volume{
@@ -400,8 +399,20 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraE
 			Name:         k8sWorkspaceVolume,
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
 		},
+		{
+			// Disk-backed: a size limit on this emptyDir is enforced by
+			// kubelet eviction, and the usage counts against the Pod's
+			// ephemeral storage.
+			Name: k8sScratchVolume,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+				SizeLimit: ptr.To(resource.MustParse(fmt.Sprintf("%dMi", cfg.Resources.EffectiveScratchMB("k8s")))),
+			}},
+		},
 	}
-	mounts := []corev1.VolumeMount{{Name: k8sWorkspaceVolume, MountPath: k8sWorkspace}}
+	mounts := []corev1.VolumeMount{
+		{Name: k8sWorkspaceVolume, MountPath: k8sWorkspace},
+		{Name: k8sScratchVolume, MountPath: sandboxScratchDir},
+	}
 	if cfg.SandboxIdentityToken {
 		// Memory medium keeps the token off node disk; FSGroup below makes
 		// the directory writable by the non-root UID, as for /workspace.
@@ -423,15 +434,15 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraE
 		// ServiceAccountName is caller-provided.
 		AutomountServiceAccountToken: ptr.To(false),
 		NodeSelector:                 cfg.NodeSelector,
-		// FSGroup makes the /workspace emptyDir group-writable for the
-		// non-root UID the agent runs as; otherwise a kubelet-auto-created
-		// workspace dir is root-owned and every WriteFile/mkdir fails EACCES.
+		// FSGroup makes the emptyDir volumes group-writable for the non-root
+		// UID the agent runs as; otherwise a kubelet-auto-created mount dir
+		// is root-owned and every WriteFile/mkdir fails EACCES.
 		SecurityContext: &corev1.PodSecurityContext{
-			FSGroup: ptr.To(k8sRunAsUserUID),
+			FSGroup: ptr.To(sandboxGID),
 		},
-		// An ephemeral, writable workspace: a minimal sandbox image has no
-		// pre-created /workspace, and one auto-created at the mount point
-		// would be root-owned without FSGroup above.
+		// An ephemeral, writable workspace and scratch: a minimal sandbox
+		// image has no pre-created /workspace, and one auto-created at the
+		// mount point would be root-owned without FSGroup above.
 		Volumes: volumes,
 		Containers: []corev1.Container{
 			{
@@ -450,8 +461,10 @@ func buildSandboxPodSpec(cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, extraE
 					RunAsNonRoot: ptr.To(true),
 					// An explicit non-root UID lets RunAsNonRoot be enforced
 					// without requiring the image to declare its own non-root
-					// USER. 65532 matches the distroless convention.
-					RunAsUser:      ptr.To(k8sRunAsUserUID),
+					// USER; an explicit GID keeps the primary group from
+					// defaulting to the image's group or 0.
+					RunAsUser:      ptr.To(sandboxUID),
+					RunAsGroup:     ptr.To(sandboxGID),
 					SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 				},
 			},

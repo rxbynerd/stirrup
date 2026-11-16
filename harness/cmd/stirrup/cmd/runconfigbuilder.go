@@ -257,7 +257,7 @@ func decodeRunConfig(data []byte, source string) (*types.RunConfig, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
-		return nil, parseError(fmt.Errorf("parsing config from %s: %w", source, err))
+		return nil, parseError(fmt.Errorf("parsing config from %s: %w", source, types.ExplainRunConfigDecodeError(err)))
 	}
 	return &cfg, nil
 }

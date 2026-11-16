@@ -40,6 +40,7 @@ require (
 	k8s.io/client-go v0.37.2
 	k8s.io/streaming v0.37.2
 	k8s.io/utils v0.0.0-20260626114624-be93311217bd
+	mvdan.cc/sh/v3 v3.14.1
 )
 
 require (

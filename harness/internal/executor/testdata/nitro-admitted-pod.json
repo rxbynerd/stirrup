@@ -25,6 +25,12 @@
       {
         "name": "workspace",
         "emptyDir": {}
+      },
+      {
+        "name": "scratch",
+        "emptyDir": {
+          "sizeLimit": "1Gi"
+        }
       }
     ],
     "containers": [
@@ -37,6 +43,16 @@
           "sleep infinity"
         ],
         "workingDir": "/workspace",
+        "env": [
+          {
+            "name": "HOME",
+            "value": "/scratch/home"
+          },
+          {
+            "name": "TMPDIR",
+            "value": "/scratch/tmp"
+          }
+        ],
         "resources": {
           "limits": {
             "cpu": "1",
@@ -51,6 +67,10 @@
           {
             "name": "workspace",
             "mountPath": "/workspace"
+          },
+          {
+            "name": "scratch",
+            "mountPath": "/scratch"
           }
         ],
         "terminationMessagePath": "/dev/termination-log",
@@ -63,6 +83,7 @@
             ]
           },
           "runAsUser": 65532,
+          "runAsGroup": 65532,
           "runAsNonRoot": true,
           "allowPrivilegeEscalation": false,
           "seccompProfile": {

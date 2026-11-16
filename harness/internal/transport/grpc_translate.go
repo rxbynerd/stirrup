@@ -126,6 +126,7 @@ func controlEventFromProto(pe *pb.ControlEvent) types.ControlEvent {
 	if pe.Task != nil {
 		e.Task = runconfig.FromProto(pe.Task)
 		e.UnknownTaskFields = unknownRunConfigFields(pe.Task)
+		warnRemovedTaskFields(pe.Task)
 	}
 
 	return e

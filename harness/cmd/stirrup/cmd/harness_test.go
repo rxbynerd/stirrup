@@ -517,6 +517,7 @@ func newTestHarnessCommand() *cobra.Command {
 	f.Bool("debug", false, "")
 	f.Bool("trace-wire", false, "")
 	addTransportTLSFlags(f)
+	addImageAdmissionFlag(f)
 	return cmd
 }
 
@@ -5659,4 +5660,18 @@ func TestApplyOverrides_SameProviderKeepsItsFields(t *testing.T) {
 	must.NoError(applyOverrides(cmd, cfg, nil))
 
 	must.Equal(want, cfg.Provider)
+}
+
+func TestRunHarness_OutputRunConfigIgnoresMalformedImageAllowlist(t *testing.T) {
+	must := require.New(t)
+	t.Setenv("STIRRUP_IMAGE_ALLOWLIST", "ghcr.io/Acme/")
+	outPath := filepath.Join(t.TempDir(), "out.json")
+
+	cmd := newTestHarnessCommand()
+	must.NoError(cmd.Flags().Set("output-runconfig", outPath))
+	must.NoError(cmd.Flags().Set("prompt", "test prompt"))
+
+	must.NoError(runHarness(cmd, nil))
+	_, err := os.Stat(outPath)
+	must.NoError(err)
 }

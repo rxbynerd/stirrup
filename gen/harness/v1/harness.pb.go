@@ -5353,7 +5353,11 @@ type ExecutorConfig struct {
 	// defaults to the current directory. For "container", this is the path
 	// inside the container where the workspace is mounted.
 	Workspace string `protobuf:"bytes,3,opt,name=workspace,proto3" json:"workspace,omitempty"`
-	// For "container": the container image to use (e.g. "ghcr.io/rxbynerd/stirrup:latest").
+	// For "container", "k8s" and "k8s-sandbox": the sandbox image commands run
+	// in (e.g. "ghcr.io/rxbynerd/stirrup-sandbox:latest"). It must meet the
+	// sandbox image contract in docs/executors/image-contract.md; the
+	// distroless harness image ("ghcr.io/rxbynerd/stirrup") has no shell and
+	// cannot serve.
 	Image string `protobuf:"bytes,4,opt,name=image,proto3" json:"image,omitempty"`
 	// For "container": network egress policy. Defaults to no network access.
 	Network *NetworkConfig `protobuf:"bytes,5,opt,name=network,proto3" json:"network,omitempty"`
@@ -5392,13 +5396,6 @@ type ExecutorConfig struct {
 	// network.mode is "allowlist" (the run would otherwise have no route to
 	// the network) and REJECTED in every other mode.
 	K8SEgressProxyUrl string `protobuf:"bytes,13,opt,name=k8s_egress_proxy_url,json=k8sEgressProxyUrl,proto3" json:"k8s_egress_proxy_url,omitempty"`
-	// For "container": path.Match globs constraining which image references
-	// may run, matched against the normalised reference (registry host plus
-	// repo path, tag/digest stripped). "*" does not cross "/", so
-	// "ghcr.io/rxbynerd/*" matches "ghcr.io/rxbynerd/base" but not a deeper
-	// namespace. Empty falls back to the harness's built-in default list.
-	// Rejected for any other executor type.
-	RegistryAllowlist []string `protobuf:"bytes,14,rep,name=registry_allowlist,json=registryAllowlist,proto3" json:"registry_allowlist,omitempty"`
 	// Optional. Destination URI for a tarball of the executor's workspace,
 	// uploaded at the end of every run, whatever its outcome, before the
 	// run's "done" event. Only the "gs://bucket/path" scheme is accepted
@@ -5549,13 +5546,6 @@ func (x *ExecutorConfig) GetK8SEgressProxyUrl() string {
 		return x.K8SEgressProxyUrl
 	}
 	return ""
-}
-
-func (x *ExecutorConfig) GetRegistryAllowlist() []string {
-	if x != nil {
-		return x.RegistryAllowlist
-	}
-	return nil
 }
 
 func (x *ExecutorConfig) GetWorkspaceExportTo() string {
@@ -5898,7 +5888,13 @@ type ResourceLimits struct {
 	// Disk space limit in megabytes.
 	DiskMb int32 `protobuf:"varint,3,opt,name=disk_mb,json=diskMb,proto3" json:"disk_mb,omitempty"`
 	// Maximum number of processes/threads.
-	Pids          int32 `protobuf:"varint,4,opt,name=pids,proto3" json:"pids,omitempty"`
+	Pids int32 `protobuf:"varint,4,opt,name=pids,proto3" json:"pids,omitempty"`
+	// Size cap in megabytes of the sandbox's /scratch directory, which holds
+	// HOME and TMPDIR: a tmpfs on "container", counted against memory_mb,
+	// and a disk-backed emptyDir on "k8s" and "k8s-sandbox", counted against
+	// disk_mb and enforced by eviction. 0 selects 1024 or the limit it is
+	// counted against, whichever is smaller.
+	ScratchMb     int32 `protobuf:"varint,5,opt,name=scratch_mb,json=scratchMb,proto3" json:"scratch_mb,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5957,6 +5953,13 @@ func (x *ResourceLimits) GetDiskMb() int32 {
 func (x *ResourceLimits) GetPids() int32 {
 	if x != nil {
 		return x.Pids
+	}
+	return 0
+}
+
+func (x *ResourceLimits) GetScratchMb() int32 {
+	if x != nil {
+		return x.ScratchMb
 	}
 	return 0
 }
@@ -7659,7 +7662,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x0eclear_at_least\x18\x06 \x01(\x05H\x01R\fclearAtLeast\x88\x01\x01\x12#\n" +
 	"\rexclude_tools\x18\a \x03(\tR\fexcludeToolsB\a\n" +
 	"\x05_keepB\x11\n" +
-	"\x0f_clear_at_least\"\xf9\a\n" +
+	"\x0f_clear_at_least\"\xe4\a\n" +
 	"\x0eExecutorConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12E\n" +
 	"\vvcs_backend\x18\x02 \x01(\v2$.stirrup.harness.v1.VcsBackendConfigR\n" +
@@ -7675,8 +7678,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	" \x01(\tR\rk8sKubeconfig\x12c\n" +
 	"\x11k8s_node_selector\x18\v \x03(\v27.stirrup.harness.v1.ExecutorConfig.K8sNodeSelectorEntryR\x0fk8sNodeSelector\x12.\n" +
 	"\x13k8s_service_account\x18\f \x01(\tR\x11k8sServiceAccount\x12/\n" +
-	"\x14k8s_egress_proxy_url\x18\r \x01(\tR\x11k8sEgressProxyUrl\x12-\n" +
-	"\x12registry_allowlist\x18\x0e \x03(\tR\x11registryAllowlist\x12.\n" +
+	"\x14k8s_egress_proxy_url\x18\r \x01(\tR\x11k8sEgressProxyUrl\x12.\n" +
 	"\x13workspace_export_to\x18\x0f \x01(\tR\x11workspaceExportTo\x12T\n" +
 	"\x10sandbox_identity\x18\x10 \x01(\v2).stirrup.harness.v1.SandboxIdentityConfigR\x0fsandboxIdentity\x12?\n" +
 	"\tgit_proxy\x18\x11 \x01(\v2\".stirrup.harness.v1.GitProxyConfigR\bgitProxy\x12?\n" +
@@ -7684,7 +7686,7 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x14K8sNodeSelectorEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\x1c\n" +
-	"\x1a_workspace_export_required\"d\n" +
+	"\x1a_workspace_export_requiredJ\x04\b\x0e\x10\x0fR\x12registry_allowlist\"d\n" +
 	"\x15SandboxIdentityConfig\x12\x16\n" +
 	"\x06source\x18\x01 \x01(\tR\x06source\x12\x1a\n" +
 	"\baudience\x18\x02 \x01(\tR\baudience\x12\x17\n" +
@@ -7702,12 +7704,14 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x03ref\x18\x04 \x01(\tR\x03ref\"A\n" +
 	"\rNetworkConfig\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x1c\n" +
-	"\tallowlist\x18\x02 \x03(\tR\tallowlist\"n\n" +
+	"\tallowlist\x18\x02 \x03(\tR\tallowlist\"\x8d\x01\n" +
 	"\x0eResourceLimits\x12\x12\n" +
 	"\x04cpus\x18\x01 \x01(\x01R\x04cpus\x12\x1b\n" +
 	"\tmemory_mb\x18\x02 \x01(\x05R\bmemoryMb\x12\x17\n" +
 	"\adisk_mb\x18\x03 \x01(\x05R\x06diskMb\x12\x12\n" +
-	"\x04pids\x18\x04 \x01(\x05R\x04pids\"j\n" +
+	"\x04pids\x18\x04 \x01(\x05R\x04pids\x12\x1d\n" +
+	"\n" +
+	"scratch_mb\x18\x05 \x01(\x05R\tscratchMb\"j\n" +
 	"\x12EditStrategyConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12,\n" +
 	"\x0ffuzzy_threshold\x18\x02 \x01(\x01H\x00R\x0efuzzyThreshold\x88\x01\x01B\x12\n" +

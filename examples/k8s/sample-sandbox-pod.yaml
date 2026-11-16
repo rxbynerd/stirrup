@@ -10,8 +10,8 @@
 # Every field below is cross-checked against k8s.go / k8s_netpol.go. Where the
 # executor derives a value (the Pod name, proxy env, resources, runtimeClassName)
 # the source is called out inline. The shape shown is the network "allowlist"
-# mode (the proxy env vars are present); under mode "none" the env block is empty
-# and a deny-all NetworkPolicy replaces the allowlist policy.
+# mode (the proxy env vars are present); under mode "none" the env block holds
+# only HOME and TMPDIR and a deny-all NetworkPolicy replaces the allowlist policy.
 apiVersion: v1
 kind: Pod
 metadata:
@@ -78,10 +78,10 @@ spec:
   # --k8s-node-selector disktype=ssd the executor would emit:
   #   nodeSelector:
   #     disktype: ssd
-  # Pod-level securityContext. fsGroup=65532 (k8sRunAsUserUID) makes the
-  # /workspace emptyDir (below) group-owned by, and group-writable for, the
-  # non-root UID the agent runs as. Without it a UID-65532 container cannot
-  # write to a workspace directory the runtime auto-creates root-owned.
+  # Pod-level securityContext. fsGroup=65532 (sandboxGID) makes the emptyDir
+  # volumes (below) group-owned by, and group-writable for, the non-root
+  # identity the agent runs as. Without it a UID-65532 container cannot write
+  # to a mount directory the runtime auto-creates root-owned.
   securityContext:
     fsGroup: 65532
   # The executor mounts an ephemeral emptyDir at /workspace rather than relying
@@ -93,6 +93,14 @@ spec:
   volumes:
     - name: workspace
       emptyDir: {}
+    # Always present: the scratch directory that holds HOME and TMPDIR,
+    # outside /workspace, so it is never committed or exported. Disk-backed;
+    # sizeLimit is executor.resources.scratchMb (default 1024 Mi), enforced by
+    # kubelet eviction, and the usage counts against ephemeral-storage
+    # (docs/security.md, "Sandbox identity and scratch").
+    - name: scratch
+      emptyDir:
+        sizeLimit: 1Gi
     # Present ONLY when executor.sandboxIdentity is configured: a memory-backed
     # emptyDir for the sandbox identity token file the harness delivers and
     # refreshes over pods/exec stdin (docs/executors/k8s.md, "Sandbox identity
@@ -106,11 +114,9 @@ spec:
       # file I/O target this container by name over the pods/exec subresource, so
       # the name is load-bearing, not cosmetic.
       name: agent
-      # image from --image / executor.image. MUST ship /bin/sh, tar, ls, mkdir,
-      # and readlink: Exec runs `/bin/sh -c`, file I/O streams tar (reads and
-      # writes resolve the real path with readlink -f first, and writes create
-      # parent directories with mkdir -p), and ListDirectory runs ls.
-      # A shell-less distroless static image will not work.
+      # image from executor.image. It must meet the sandbox image contract
+      # (docs/executors/image-contract.md); a shell-less distroless static
+      # image will not work.
       image: ghcr.io/rxbynerd/stirrup-sandbox:latest
       # The executor holds the container open with a sleep; all real work runs
       # via subsequent exec calls, not as the entrypoint.
@@ -123,17 +129,22 @@ spec:
       volumeMounts:
         - name: workspace
           mountPath: /workspace
+        # The executor creates /scratch/home and /scratch/tmp (mode 0700) as
+        # the sandbox user over pods/exec before the run starts.
+        - name: scratch
+          mountPath: /scratch
         # Present ONLY with executor.sandboxIdentity (see spec.volumes). Outside
         # /workspace, and workspace reads and writes refuse any path that
         # resolves outside it, so read_file cannot reach the token and the
         # file-editing tools cannot overwrite it, even through a symlink.
         - name: sandbox-identity
           mountPath: /run/stirrup/sandbox-identity
-      # env is populated by proxyEnvFor ONLY in network mode "allowlist".
-      # HTTP_PROXY/HTTPS_PROXY are the --k8s-egress-proxy-url value; NO_PROXY is
-      # the fixed loopback set. Each is injected in both cases because git
-      # honours only the lower-case http_proxy for a plain-http proxy URL.
-      # Under mode "none" this whole block is absent.
+      # The proxy variables come from proxyEnvFor ONLY in network mode
+      # "allowlist". HTTP_PROXY/HTTPS_PROXY are the --k8s-egress-proxy-url
+      # value; NO_PROXY is the fixed loopback set. Each is injected in both
+      # cases because git honours only the lower-case http_proxy for a
+      # plain-http proxy URL. HOME and TMPDIR (scratchEnv) are always set and
+      # come last, after any sandbox identity variables.
       env:
         - name: HTTP_PROXY
           value: http://stirrup-egress-proxy.stirrup-sandbox.svc:8080
@@ -147,6 +158,10 @@ spec:
           value: localhost,127.0.0.1,::1
         - name: no_proxy
           value: localhost,127.0.0.1,::1
+        - name: HOME
+          value: /scratch/home
+        - name: TMPDIR
+          value: /scratch/tmp
       # securityContext — every field below is fixed by NewK8sExecutor and does
       # not vary with config. This is the hardened posture the namespace's
       # `restricted` PodSecurity admission also expects.
@@ -156,9 +171,12 @@ spec:
           drop:
             - ALL
         runAsNonRoot: true
-        # 65532 (k8sRunAsUserUID), the distroless "nonroot" UID. An explicit UID
-        # lets runAsNonRoot be enforced without the image declaring its own USER.
+        # 65532:65532 (sandboxUID, sandboxGID), the distroless "nonroot" pair
+        # the container executor also runs as. An explicit UID lets
+        # runAsNonRoot be enforced without the image declaring its own USER;
+        # an explicit GID keeps the primary group from defaulting to 0.
         runAsUser: 65532
+        runAsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       # resources from resourcesToPodResources(executor.resources). OMITTED when

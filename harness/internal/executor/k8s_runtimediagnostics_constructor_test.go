@@ -22,10 +22,11 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-// guestExec serves every pods/exec call with stdout and err, counting calls.
+// guestExec serves every pods/exec call other than the reachability probe
+// and the scratch setup with stdout and err, counting those calls.
 func guestExec(stdout string, err error, calls *int) podExecFunc {
 	return func(_ context.Context, command []string, _ io.Reader, out, _ io.Writer) error {
-		if isExecProbe(command) {
+		if isExecProbe(command) || isScratchSetup(command) {
 			return nil
 		}
 		*calls++
@@ -216,7 +217,7 @@ func TestNewK8sExecutor_DiagnosticsTimeoutWithLiveCallerIsAFailure(t *testing.T)
 	requireTornDown(t, cs)
 }
 
-func TestNewK8sExecutor_RuntimeWithoutDiagnosticsRunsNoExec(t *testing.T) {
+func TestNewK8sExecutor_RuntimeWithoutDiagnosticsRunsNoDiagnosticsExec(t *testing.T) {
 	must := require.New(t)
 	cs := fake.NewClientset()
 	admitPods(cs, nil)

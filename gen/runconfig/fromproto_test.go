@@ -221,6 +221,20 @@ func TestRunConfigFromProto_TranslatesK8sExecutorFields(t *testing.T) {
 	must.Equal("ssd", rc.Executor.K8sNodeSelector["disktype"])
 }
 
+func TestRunConfigFromProto_TranslatesResourceLimits(t *testing.T) {
+	must := require.New(t)
+	pc := &pb.RunConfig{
+		Executor: &pb.ExecutorConfig{
+			Type:      "container",
+			Resources: &pb.ResourceLimits{Cpus: 1.5, MemoryMb: 2048, DiskMb: 4096, Pids: 128, ScratchMb: 768},
+		},
+	}
+
+	rc := runConfigFromProto(pc)
+
+	must.Equal(&types.ResourceLimits{CPUs: 1.5, MemoryMB: 2048, DiskMB: 4096, PIDs: 128, ScratchMB: 768}, rc.Executor.Resources)
+}
+
 // TestRunConfigFromProto_TraceEmitterGCSFieldsPreserved pins that the
 // gcs trace emitter's Bucket and ObjectPrefix survive translation.
 func TestRunConfigFromProto_TraceEmitterGCSFieldsPreserved(t *testing.T) {
@@ -1049,7 +1063,7 @@ func TestRunConfigFromProto_MCPTrustFieldsAbsentWhenNil(t *testing.T) {
 }
 
 // TestRunConfigFromProto_ExecutorSandboxFieldsPreserved pins the executor
-// fields registry pinning, workspace export, k8s egress wiring, and the
+// fields workspace export, k8s egress wiring, and the
 // sandbox identity and git proxy blocks. The values go through the wire
 // format so a field that is never encoded is caught here.
 func TestRunConfigFromProto_ExecutorSandboxFieldsPreserved(t *testing.T) {
@@ -1061,7 +1075,6 @@ func TestRunConfigFromProto_ExecutorSandboxFieldsPreserved(t *testing.T) {
 			Image:             "ghcr.io/rxbynerd/stirrup:latest",
 			K8SNamespace:      "agents",
 			K8SEgressProxyUrl: "http://egress.agents.svc:3128",
-			RegistryAllowlist: []string{"ghcr.io/rxbynerd/*", "docker.io/library/*"},
 			WorkspaceExportTo: "gs://stirrup-workspaces/runs",
 			SandboxIdentity: &pb.SandboxIdentityConfig{
 				Source:   "control-plane",
@@ -1084,7 +1097,6 @@ func TestRunConfigFromProto_ExecutorSandboxFieldsPreserved(t *testing.T) {
 
 	check.Equal("http://egress.agents.svc:3128", ec.K8sEgressProxyURL)
 	check.Equal("gs://stirrup-workspaces/runs", ec.WorkspaceExportTo)
-	check.Equal([]string{"ghcr.io/rxbynerd/*", "docker.io/library/*"}, ec.RegistryAllowlist)
 
 	must.NotNil(ec.SandboxIdentity, "SandboxIdentity nil after translation")
 	check.Equal("control-plane", ec.SandboxIdentity.Source)
@@ -1110,7 +1122,6 @@ func TestRunConfigFromProto_ExecutorSandboxFieldsAbsentStayNil(t *testing.T) {
 
 	check.Nil(ec.SandboxIdentity, "SandboxIdentity should be nil when proto field absent")
 	check.Nil(ec.GitProxy, "GitProxy should be nil when proto field absent")
-	check.Nil(ec.RegistryAllowlist, "RegistryAllowlist should be nil when proto field absent")
 	check.Empty(ec.WorkspaceExportTo, "WorkspaceExportTo should be empty when proto field absent")
 	check.Empty(ec.K8sEgressProxyURL, "K8sEgressProxyURL should be empty when proto field absent")
 }
@@ -1122,9 +1133,8 @@ func TestRunConfigFromProto_ExecutorSlicesNotAliased(t *testing.T) {
 	check := assert.New(t)
 	src := &pb.RunConfig{
 		Executor: &pb.ExecutorConfig{
-			Type:              "container",
-			RegistryAllowlist: []string{"ghcr.io/rxbynerd/*"},
-			SandboxIdentity:   &pb.SandboxIdentityConfig{Source: "control-plane"},
+			Type:            "container",
+			SandboxIdentity: &pb.SandboxIdentityConfig{Source: "control-plane"},
 			GitProxy: &pb.GitProxyConfig{
 				Url:   "https://haybale.internal",
 				Hosts: []string{"github.com"},
@@ -1134,11 +1144,8 @@ func TestRunConfigFromProto_ExecutorSlicesNotAliased(t *testing.T) {
 
 	ec := runConfigFromProto(src).Executor
 
-	src.Executor.RegistryAllowlist[0] = "mutated"
 	src.Executor.GitProxy.Hosts[0] = "mutated"
 
-	check.Equal("ghcr.io/rxbynerd/*", ec.RegistryAllowlist[0],
-		"RegistryAllowlist shares backing array with proto source")
 	check.Equal("github.com", ec.GitProxy.Hosts[0],
 		"GitProxy.Hosts shares backing array with proto source")
 }

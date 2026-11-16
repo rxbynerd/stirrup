@@ -140,7 +140,8 @@ The pieces and their lifecycle:
 - **The sandbox Pod** is created per run with a fixed, config-independent
   hardened `securityContext`: `allowPrivilegeEscalation: false`,
   `capabilities.drop: [ALL]`, `runAsNonRoot: true`, `runAsUser: 65532`
-  (the distroless "nonroot" UID), and `seccompProfile.type:
+  and `runAsGroup: 65532` (the distroless "nonroot" pair, the identity
+  the `container` executor also uses), and `seccompProfile.type:
   RuntimeDefault`. `automountServiceAccountToken` is **always** `false`,
   so the sandbox itself has no Kubernetes API access regardless of the
   ServiceAccount named. For the `k8s` executor, `enableServiceLinks` is
@@ -155,8 +156,14 @@ The pieces and their lifecycle:
   workspace is writable by the non-root UID for *any* image that ships a
   shell — the image need not pre-create a writable `/workspace`, and the
   volume is wiped per Pod. (This mirrors the container executor's writable
-  host bind mount; both hide any content an image bakes at that path.) A
-  `sandboxIdentity`-configured run adds a second, 64 KiB `medium: Memory`
+  host bind mount; both hide any content an image bakes at that path.)
+  A second, disk-backed `emptyDir` at `/scratch`, with a `sizeLimit` of
+  `executor.resources.scratchMb` (default 1024 MiB), holds `HOME`
+  (`/scratch/home`) and `TMPDIR` (`/scratch/tmp`), which the executor
+  sets in the environment and creates before the run starts; it is never
+  committed or exported (see
+  [Sandbox identity and scratch](../security.md#sandbox-identity-and-scratch)). A
+  `sandboxIdentity`-configured run adds a third, 64 KiB `medium: Memory`
   `emptyDir` at `/run/stirrup/sandbox-identity` for the token file the
   harness delivers and refreshes over `pods/exec` stdin — see
   [Sandbox identity token exposure](#sandbox-identity-token-exposure). The
@@ -170,11 +177,11 @@ The pieces and their lifecycle:
   committed into the workspace cannot pull in a file from elsewhere on
   the Pod or redirect a write there (see
   [path traversal prevention](../security.md#path-traversal-prevention));
-  `ListDirectory` runs `ls -A1p`. The image must therefore ship a POSIX
-  shell at `/bin/sh` plus `tar`, `ls`, `mkdir`, and `readlink` on
-  `PATH` — a shell-less distroless static image will not work. Output
-  and file payloads are capped at 10 MB (matching the container
-  executor).
+  `ListDirectory` runs `ls -A1p`. The image must therefore ship a
+  shell and the tools these commands run — a shell-less distroless
+  static image will not work; the full list is the
+  [sandbox image contract](image-contract.md). Output and file payloads
+  are capped at 10 MB (matching the container executor).
 
 - **Egress** is enforced by a per-Pod `NetworkPolicy` the executor
   installs *before* the Pod is created (closing the window in which a
@@ -257,7 +264,8 @@ context deadline exceeded
 ```
 
 Once the Pod is Ready, the `k8s` executor waits for `pods/exec` to
-reach it before using it; the `k8s-sandbox` executor has no such wait. On a node that has just joined the cluster, a Pod can
+reach it before using it, and the `k8s-sandbox` executor runs the same
+wait once its Sandbox is Ready. On a node that has just joined the cluster, a Pod can
 be Ready before the kubelet's serving certificate is issued, and until
 then the API server cannot dial the kubelet, so every `exec` fails.
 *Measured* on the 2026-11-13 EKS run, a new node's certificate request
@@ -292,14 +300,19 @@ unable to upgrade connection: error dialing backend: remote error: tls: internal
 A cancellation or run deadline during the wait fails construction with
 `pod <ns>/<pod> exec reachability wait interrupted: <context error>`. The wait applies
 to every runtime of the `k8s` executor; for `nitro-isolated` it runs before the
-[runtime diagnostics](#runtime-diagnostics).
+[runtime diagnostics](#runtime-diagnostics). After the wait, and after the
+diagnostics where a runtime has them, the executor creates `HOME` and
+`TMPDIR` under `/scratch`; a failure there fails construction with
+`pod <ns>/<pod>: prepare sandbox scratch: ...` and tears the Pod down.
 
-The [`k8s-sandbox`](k8s-agent-sandbox.md) executor shares only the
-5-minute ceiling and the immediate failure on `Forbidden` or
-`Unauthorized`. It waits on the Sandbox's `Ready` condition and has none
-of the Pod states above, no progress lines, no admission check and no
-wait for `exec` to reach the Pod, so a permanently broken image there
-waits the full five minutes.
+The [`k8s-sandbox`](k8s-agent-sandbox.md) executor's readiness wait
+shares only the 5-minute ceiling and the immediate failure on
+`Forbidden` or `Unauthorized`. It waits on the Sandbox's `Ready`
+condition and has none of the Pod states above, no progress lines and
+no admission check, so a permanently broken image there waits the full
+five minutes. It then runs the same `exec` wait (its errors begin
+`sandbox <ns>/<name>` rather than `pod <ns>/<pod>`, and its log lines
+are the ones quoted above) and the same scratch setup.
 
 ### Admission check
 
@@ -808,7 +821,7 @@ flag and field below is verified against
 | CLI flag | RunConfig field | Required | Notes |
 |---|---|---|---|
 | `--executor k8s` | `executor.type: "k8s"` | yes | Selects the executor. |
-| `--image` | `executor.image` | yes for `k8s` | Pod container image. Must ship `/bin/sh`, `tar`, `ls`, `mkdir`, and `readlink`. |
+| `--image` | `executor.image` | yes for `k8s` | Pod container image. Must meet the [sandbox image contract](image-contract.md). |
 | `--k8s-namespace` | `executor.k8sNamespace` | yes for `k8s` | Namespace the sandbox Pod (and its `NetworkPolicy`) is created in. |
 | `--k8s-kubeconfig` | `executor.k8sKubeconfig` | no | Path to a kubeconfig file. Empty prefers in-cluster config, then `$KUBECONFIG`. |
 | `--k8s-node-selector key=value` | `executor.k8sNodeSelector` | no | Repeatable `nodeSelector` constraint, e.g. `--k8s-node-selector disktype=ssd`. Merged with any `nodeSelector` the RuntimeClass contributes. |
@@ -817,6 +830,7 @@ flag and field below is verified against
 | `--container-runtime` | `executor.runtime` | no | Runtime mapped to the Pod `RuntimeClassName`. Closed set: `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh`, `nitro-isolated`. Each value except `nitro-isolated` is also its RuntimeClass name; `nitro-isolated` selects `isolated-sandbox` (see [EKS with Nitro Sandboxes](#eks-with-nitro-sandboxes)). Empty selects the cluster-default RuntimeClass (and logs an isolation warning). |
 | *(RunConfig only)* | `executor.network` | yes for `k8s` | Mode `none` or `allowlist`. A nil network is rejected at config load (fail closed). `nitro-isolated` accepts only `none`. |
 | *(RunConfig only)* | `executor.resources` | no (yes for `nitro-isolated`) | CPU/memory/disk mapped onto the Pod container. See [Resource mapping](#resource-mapping). |
+| `--image-allowlist` / `STIRRUP_IMAGE_ALLOWLIST` | *(deployment, not RunConfig)* | no | The deployment's sandbox image admission policy. When set, `executor.image` must match one of its patterns or the run fails before the Pod or NetworkPolicy is created. `stirrup job` reads only the environment variable. See [Image admission policy](../security.md#image-admission-policy). |
 
 `--container-runtime` is shared with the `container` executor, where it
 names a host OCI runtime. For `k8s` the same field names a runtime that
@@ -838,6 +852,10 @@ only, so the `k8s` values are valid but not offered by completion.
 [`types/runconfig.go`](../../types/runconfig.go)):
 
 - `executor.image` is **required**.
+- `executor.image` must be admitted by the deployment's image admission
+  policy, when one is configured. This check runs while the harness
+  builds the run, after `ValidateRunConfig`, because the policy is not
+  part of the `RunConfig`.
 - `executor.k8sNamespace` is **required**.
 - `executor.workspace` is **rejected** — the Pod workspace is fixed at
   `/workspace`, not a mapped host directory.
@@ -871,6 +889,7 @@ only, so the `k8s` values are valid but not offered by completion.
 | `memoryMb` | `requests.memory` **and** `limits.memory` (Mi). |
 | `diskMb` | `requests.ephemeral-storage` **and** `limits.ephemeral-storage` (Mi). The API server defaults an absent request to the limit ([Kubernetes: requests and limits](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#requests-and-limits); *measured* on the 2026-11-13 EKS run, a Pod submitted with only the limit read back with an equal request), so the admitted Pod carries the request either way, and the scheduler counts it against a node's allocatable ephemeral storage. |
 | `pids` | **Logged and ignored.** Per-Pod PID limits are a kubelet setting (`--pod-max-pids`), not a container resource field. |
+| `scratchMb` | `sizeLimit` (Mi) of the `/scratch` `emptyDir`; unset means 1024, or `diskMb` when that is set and smaller. Not a container resource field: the kubelet enforces it by evicting the Pod, and the usage also counts against `diskMb`, which it must not exceed (see [Sandbox identity and scratch](../security.md#sandbox-identity-and-scratch)). |
 
 A nil or all-zero `resources` block leaves the Pod's requirements empty
 so it inherits namespace defaults. `nitro-isolated` is the exception:
@@ -1387,11 +1406,13 @@ Two RuntimeClass names are refused with a reason after the usual
   nothing declared left the size at 10,367,980 KiB. A declaration of 200 GiB on `m5d.xlarge` did not become
   Ready within 90 s.
 - **Writable paths.** The root filesystem is not writable by the
-  sandbox user (UID 65532); `/tmp` and `/workspace` are, and `HOME` is
-  `/` (*measured*). A toolchain that writes a cache under `HOME`, such
-  as Go's build cache, fails unless its cache directories point under
-  `/workspace`; in the 2026-11-13 EKS run's Go task the agent set
-  `GOCACHE`, `GOPATH` and `HOME` under `/workspace`.
+  sandbox user (UID 65532); `/tmp` and `/workspace` are (*measured* on
+  the 2026-11-13 EKS run, when `HOME` was unset and resolved to `/`).
+  The executor mounts `/scratch` and sets `HOME` and `TMPDIR` under it,
+  as on every runtime (see
+  [Sandbox identity and scratch](../security.md#sandbox-identity-and-scratch)),
+  so a toolchain cache does not need pointing into `/workspace`. That
+  layout and `runAsGroup: 65532` have not been run on EKS.
 - **Memory.** AWS documentation gives a minimum of 256 MiB per sandbox
   ([EC2 Nitro Sandboxes](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html));
   validation does not enforce it. *Measured:* a 256Mi request booted a
@@ -2164,7 +2185,7 @@ and share the `--dry-run-timeout` budget (30 s by default).
 A dry run starts no sandbox, so it does not exercise image pull,
 RuntimeClass admission and scheduling, the [admission check and readiness
 wait](#sandbox-lifecycle), teardown, NetworkPolicy enforcement, or the
-tools inside the image (`/bin/sh`, `tar`, `git`). It
+tools the [image contract](image-contract.md) requires. It
 does not check that `executor.k8sServiceAccount` exists, that
 `executor.k8sNodeSelector` matches a schedulable node, or admission
 controls such as Pod Security, quota and webhooks. The egress proxy URL for
@@ -2202,7 +2223,7 @@ it, the probe uses the same kubeconfig resolution as a run:
 | `pod <ns>/<pod> not ready within 5m0s: ...; last waiting reason CreateContainerConfigError` (or `CreateContainerError`) | The kubelet could not build the container: a missing ConfigMap or Secret, an invalid `securityContext` for the image, or a runtime error. | Read the Pod's Events as above; the `Failed` Event carries the kubelet's message. |
 | `pod <ns>/<pod> not ready within 5m0s: ...; last waiting reason ImagePullBackOff (...)` | The image cannot be pulled (wrong name, missing credentials, registry unreachable). | Check the image reference and pull secret; the waiting message carries the registry's answer. |
 | `pod <ns>/<pod> not ready before the run context ended: <summary>: <context error>` | The run's own deadline or a cancellation ended the wait first. | In `stirrup job` raise `timeout`, which also covers sandbox startup. |
-| `pod <ns>/<pod> not ready: agent container terminated (exit code 128, StartError: ... exec: "/bin/sh": stat /bin/sh: no such file or directory: unknown)` | The image lacks `/bin/sh`. The exit code and wording come from the container runtime; this is containerd with runc. | Use an image shipping `/bin/sh`, `tar`, `ls`, `mkdir`, `readlink`. |
+| `pod <ns>/<pod> not ready: agent container terminated (exit code 128, StartError: ... exec: "/bin/sh": stat /bin/sh: no such file or directory: unknown)` | The image lacks `/bin/sh`. The exit code and wording come from the container runtime; this is containerd with runc. | Use an image that ships `/bin/sh` and meets the [sandbox image contract](image-contract.md). |
 | `pod <ns>/<pod> not ready: agent container cannot start: InvalidImageName (...)` | The image reference cannot be parsed. | Fix the image reference. |
 | `pod <ns>/<pod> not ready: pod phase Failed (...)` | The Pod failed before it was Ready (eviction, `DeadlineExceeded`, a runtime error). | Read the reason in the error; check node pressure and the RuntimeClass handler. |
 | `pod <ns>/<pod> is not reachable for exec within 1m0s: <last error>` | The Pod was Ready, but for a minute the API server could not dial the kubelet on its node (the last error contains `error dialing backend`) or every attempt timed out. On a new node this is the window before the kubelet's serving certificate is issued; it outlasted the wait. | Check that the node's `kubernetes.io/kubelet-serving` certificate request was approved (`kubectl get csr`) and that `kubectl exec` reaches other Pods on that node. See [Readiness](#readiness). |
@@ -2237,7 +2258,7 @@ defaulting to the kind-friendly values when a variable is unset:
 | `STIRRUP_TEST_NAMESPACE` | `default` | Sandbox namespace (use `stirrup-sandbox` for the restricted-PSS path). |
 | `STIRRUP_TEST_RUNTIME_CLASS` | *(empty)* | `executor.runtime` value for the generic tests (`gvisor` on GKE Sandbox — a no-RuntimeClass Pod is unschedulable on a fully tainted cluster). Runtime values equal RuntimeClass names except `nitro-isolated`, which the generic tests do not support; use `STIRRUP_TEST_NITRO_ISOLATED`. |
 | `STIRRUP_TEST_RUNTIME_CLASSES` | `,runc,gvisor` | Comma-separated `executor.runtime` values for `TestK8sRuntimeClass_Admitted` (e.g. `gvisor` alone on GKE). |
-| `STIRRUP_TEST_NITRO_ISOLATED` | *(unset → skip)* | Set to run the Nitro group on an EKS cluster with Nitro Sandboxes, pinned by `STIRRUP_TEST_NITRO_INSTANCE_TYPE` and `STIRRUP_TEST_NITRO_ARCH`. In `TestK8sNitroIsolated_EndToEnd` the Pod passes the whole-Pod admission check and the runtime diagnostics, then the group runs the generic exec, timeout, process-tree kill, output-cap, file round-trip, writable-workspace and teardown checks, probes for a guest network with `wget` (an image without `wget` fails the probe), and logs the workspace capacity. Once the Pod is constructed, the subtests share a fresh context sized from the sum of their timeouts (including `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT`), and the Pod's lifetime is the readiness ceiling plus the one-minute exec-reachability bound plus that sum; the group logs the budget when it starts. With the defaults its bounds add up to about 20 minutes, so run it with `-timeout 30m` as in the example below. `TestK8sNitroIsolated_DiskMbBoundsTheGuestDisk` declares `diskMb: 1024` and checks that the workspace is no larger than that and more than three quarters of it, that a write beyond it fails with `No space left on device`, and that the sandbox stays usable afterwards. Both skip everywhere else; both passed on the 2026-11-13 EKS run (see [Status](#status)). |
+| `STIRRUP_TEST_NITRO_ISOLATED` | *(unset → skip)* | Set to run the Nitro group on an EKS cluster with Nitro Sandboxes, pinned by `STIRRUP_TEST_NITRO_INSTANCE_TYPE` and `STIRRUP_TEST_NITRO_ARCH`. In `TestK8sNitroIsolated_EndToEnd` the Pod passes the whole-Pod admission check and the runtime diagnostics, then the group runs the generic exec, timeout, process-tree kill, output-cap, file round-trip, writable-workspace, scratch and teardown checks, probes for a guest network with `wget` (an image without `wget` fails the probe), and logs the workspace capacity. Once the Pod is constructed, the subtests share a fresh context sized from the sum of their timeouts (including `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT`), and the Pod's lifetime is the readiness ceiling plus the one-minute exec-reachability bound plus that sum; the group logs the budget when it starts. With the defaults its bounds add up to about 20 minutes, so run it with `-timeout 30m` as in the example below. `TestK8sNitroIsolated_DiskMbBoundsTheGuestDisk` declares `diskMb: 1024` and checks that the workspace is no larger than that and more than three quarters of it, that a write beyond it fails with `No space left on device`, and that the sandbox stays usable afterwards. Both skip everywhere else; both passed on the 2026-11-13 EKS run (see [Status](#status)). |
 | `STIRRUP_TEST_NITRO_INSTANCE_TYPE` | `m5d.xlarge` | `node.kubernetes.io/instance-type` node selector for the Nitro group; pick a type from the [tested recipe](#tested-recipe). |
 | `STIRRUP_TEST_NITRO_ARCH` | `amd64` | `kubernetes.io/arch` node selector for the Nitro group. On `arm64` `TestK8sNitroIsolated_EndToEnd` fails its runtime diagnostics by design. |
 | `STIRRUP_TEST_NITRO_SOAK` | *(unset → skip)* | Duration (for example `75m`) for which `TestK8sNitroIsolated_Soak` holds one sandbox open, running a command every 30 seconds and a file round trip every three minutes; also needs `STIRRUP_TEST_NITRO_ISOLATED`. Pass a `-timeout` above the duration. |

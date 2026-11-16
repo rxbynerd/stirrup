@@ -166,7 +166,9 @@ to make a feature easier:
   - `git`, `prompt` and `workspaceexport` never touch the host;
   - HarnessEvents and tool results pass their byte bounds;
   - the proto mirror is complete;
-  - every run outcome is classified in `types/evaloutcome.go`.
+  - every run outcome is classified in `types/evaloutcome.go`;
+  - every command a run puts in the sandbox is in the image contract,
+    `docs/executors/image-contract.md`, which carries a version.
 
   A failure names the bypass. Route the new code through the seam
   rather than extending an allow-list; an allow-list entry needs a

@@ -20,6 +20,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/core"
 	"github.com/rxbynerd/stirrup/harness/internal/debugbuild"
+	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/types"
 )
@@ -682,7 +683,7 @@ func loadRunConfigFile(path string) (*types.RunConfig, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
-		return nil, parseError(fmt.Errorf("parsing config file %q: %w", path, err))
+		return nil, parseError(fmt.Errorf("parsing config file %q: %w", path, types.ExplainRunConfigDecodeError(err)))
 	}
 	return &cfg, nil
 }
@@ -768,6 +769,7 @@ func init() {
 	f.Bool("debug", false, "Disable redaction/scrubbing of trace and recording output (debug builds only). Requires a binary built with -tags stirrupdebug; hard-errors otherwise. CLI-only — never representable in a RunConfig, so a control-plane submission cannot request it. See docs/security.md#debug-builds.")
 	addTransportTLSFlags(f)
 	addTraceParentFlags(f)
+	addImageAdmissionFlag(f)
 	f.Bool("trace-wire", false, "Dump raw, unredacted provider wire request/response to stderr (debug builds only). Requires a binary built with -tags stirrupdebug; hard-errors otherwise. Bedrock traffic is not tapped (AWS SDK, no raw *http.Client seam). CLI-only — never representable in a RunConfig. See docs/security.md#debug-builds.")
 
 	// --output-runconfig accepts a path or "-" for stdout. The .json
@@ -1526,8 +1528,14 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if dryRun {
+		imageAdmission, err := resolveImageAdmissionPolicy(f, os.Getenv)
+		if err != nil {
+			return err
+		}
 		outPath, _ := f.GetString("output-runconfig")
-		return runDryRun(cmd, cfg, dryRunOptionsFromFlags(f), outputMode, outPath)
+		dryRunOpts := dryRunOptionsFromFlags(f)
+		dryRunOpts.ImageAdmission = imageAdmission
+		return runDryRun(cmd, cfg, dryRunOpts, outputMode, outPath)
 	}
 
 	// Config capture: write the validated RunConfig and exit without
@@ -1535,6 +1543,11 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	// never writes on a validation failure.
 	if outPath, _ := f.GetString("output-runconfig"); outPath != "" {
 		return writeOutputRunConfig(outPath, cfg)
+	}
+
+	imageAdmission, err := resolveImageAdmissionPolicy(f, os.Getenv)
+	if err != nil {
+		return err
 	}
 
 	// Safe to read raw: PreRunE already rejected an explicitly-set flag on
@@ -1556,6 +1569,7 @@ func runHarness(cmd *cobra.Command, args []string) error {
 		transportTLS:           tlsCreds,
 		traceParent:            traceParent,
 		traceState:             traceState,
+		imageAdmission:         imageAdmission,
 	})
 }
 
@@ -1979,6 +1993,7 @@ type runOptions struct {
 	transportTLS           credentials.TransportCredentials
 	traceParent            string
 	traceState             string
+	imageAdmission         executor.ImageAdmissionPolicy
 }
 
 // apiKeyRefHint names --api-key-ref when the top-level provider's key
@@ -2035,6 +2050,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 		core.WithWireTrace(opts.wireTrace),
 		core.WithSessionBudget(runTimeout+cliSessionBudget(runTimeout, graceSecs)),
 		core.WithTransportTLS(opts.transportTLS),
+		core.WithImageAdmission(opts.imageAdmission),
 	)
 	if err != nil {
 		return fmt.Errorf("building harness: %w%s", err, apiKeyRefHint(err, config, opts.apiKeyRefFlagGiven))

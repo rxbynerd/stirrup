@@ -49,6 +49,9 @@ func reachableExec(context.Context, []string, io.Reader, io.Writer, io.Writer) e
 // isExecProbe reports whether command is the constructor's reachability probe.
 func isExecProbe(command []string) bool { return slices.Equal(execProbeCommand, command) }
 
+// isScratchSetup reports whether command is the constructor's scratch setup.
+func isScratchSetup(command []string) bool { return slices.Equal(scratchSetupCommand(), command) }
+
 // syncBuffer is a goroutine-safe log sink.
 type syncBuffer struct {
 	mu  sync.Mutex

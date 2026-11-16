@@ -286,7 +286,7 @@ contract.
 | `sandbox_platform` | The cluster or container engine refused or could not serve a sandbox request: RBAC, a missing namespace or RuntimeClass, a quota, an unreachable engine. | Treat the cluster as misconfigured; retrying elsewhere may succeed. |
 | `admission_mismatch` | Admission changed the sandbox Pod in a way the executor's runtime does not accept. | Fix the cluster's admission policy. |
 | `runtime_diagnostic_failed` | The sandbox's runtime diagnostics found it was not isolated as its runtime requires. | Treat the node pool as misconfigured; do not retry on it. |
-| `sandbox_image` | The sandbox image could not be pulled or was not allowed, or its container exited on its own before it was ready. | Fix the image reference, its registry credentials or the image itself. |
+| `sandbox_image` | The sandbox image could not be pulled or was not allowed, or its container exited on its own before it was ready. | Fix the image reference, its registry credentials or the image itself, or admit it in the deployment's [image admission policy](security.md#image-admission-policy). |
 | `sandbox_not_ready` | The sandbox did not become ready or reachable for commands, for example within the readiness timeout, or the runtime diagnostics could not run. | Usually capacity or a slow node; retrying may succeed. |
 | `control_stream_lost` | The control stream ended during construction. Sent best-effort on a stream already found lost. | `done.stop_reason` (`control_stream_lost`) is authoritative. |
 | `interrupted` | A shutdown signal (SIGTERM or SIGINT) cut construction short, whatever was running. | The Pod was being stopped; nothing in the task is implicated. |
@@ -650,7 +650,11 @@ container instead of the harness host.
 ```
 
 - The container is hardened unconditionally: `CapDrop ALL`,
-  `no-new-privileges`, a read-only rootfs, and the nobody uid.
+  `no-new-privileges`, a read-only rootfs, and the unprivileged
+  `65532:65532` identity. `HOME` and `TMPDIR` sit in a writable,
+  executable `/scratch` directory that is never committed or exported,
+  sized by `resources.scratchMb`
+  ([Sandbox identity and scratch](security.md#sandbox-identity-and-scratch)).
   `runtime: "runsc"` (gVisor) adds a kernel boundary when that OCI
   runtime is installed on the host.
 - Sandbox executors require an explicit `network` block. Use
@@ -1650,7 +1654,7 @@ topology):
 
 Everything else on `RunConfig` is expressible in a
 `task_assignment`, including the executor's
-`registryAllowlist`, `workspaceExportTo`, `k8sEgressProxyUrl`,
+`workspaceExportTo`, `k8sEgressProxyUrl`,
 `sandboxIdentity`, and `gitProxy` blocks, plus `resultSink`,
 `toolChoiceEscalation`, `correlation`, `observability.logsExport`,
 `observability.serviceName`, `tools.profile`, `tools.commandOutput`,
@@ -1658,6 +1662,13 @@ and the `traceEmitter` fields
 `metricsTemporality`, `captureContentMaxBytes`, `platform`,
 `platformOptions`, and `archive` (apart from its `credential`). The
 fields in the table are also left out of `ready.config_fields`.
+
+The sandbox image admission policy is not a `RunConfig` field. The
+deployment sets it in the harness's environment
+(`STIRRUP_IMAGE_ALLOWLIST` in the Job template), so a `task_assignment`
+cannot widen it. A task whose `executor.image` the policy refuses fails
+with a build error before any sandbox is created. See
+[Image admission policy](security.md#image-admission-policy).
 
 When a field in this table becomes load-bearing for a control plane,
 the project invariant is that it ships with its proto mirror and

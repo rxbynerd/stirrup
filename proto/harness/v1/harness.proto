@@ -2367,7 +2367,11 @@ message ExecutorConfig {
   // inside the container where the workspace is mounted.
   string workspace = 3;
 
-  // For "container": the container image to use (e.g. "ghcr.io/rxbynerd/stirrup:latest").
+  // For "container", "k8s" and "k8s-sandbox": the sandbox image commands run
+  // in (e.g. "ghcr.io/rxbynerd/stirrup-sandbox:latest"). It must meet the
+  // sandbox image contract in docs/executors/image-contract.md; the
+  // distroless harness image ("ghcr.io/rxbynerd/stirrup") has no shell and
+  // cannot serve.
   string image = 4;
 
   // For "container": network egress policy. Defaults to no network access.
@@ -2416,13 +2420,11 @@ message ExecutorConfig {
   // the network) and REJECTED in every other mode.
   string k8s_egress_proxy_url = 13;
 
-  // For "container": path.Match globs constraining which image references
-  // may run, matched against the normalised reference (registry host plus
-  // repo path, tag/digest stripped). "*" does not cross "/", so
-  // "ghcr.io/rxbynerd/*" matches "ghcr.io/rxbynerd/base" but not a deeper
-  // namespace. Empty falls back to the harness's built-in default list.
-  // Rejected for any other executor type.
-  repeated string registry_allowlist = 14;
+  // The sandbox image admission policy is deployment configuration, set by
+  // the harness's --image-allowlist flag or STIRRUP_IMAGE_ALLOWLIST, not a
+  // RunConfig field.
+  reserved 14;
+  reserved "registry_allowlist";
 
   // Optional. Destination URI for a tarball of the executor's workspace,
   // uploaded at the end of every run, whatever its outcome, before the
@@ -2558,6 +2560,13 @@ message ResourceLimits {
 
   // Maximum number of processes/threads.
   int32 pids = 4;
+
+  // Size cap in megabytes of the sandbox's /scratch directory, which holds
+  // HOME and TMPDIR: a tmpfs on "container", counted against memory_mb,
+  // and a disk-backed emptyDir on "k8s" and "k8s-sandbox", counted against
+  // disk_mb and enforced by eviction. 0 selects 1024 or the limit it is
+  // counted against, whichever is smaller.
+  int32 scratch_mb = 5;
 }
 
 // ---------------------------------------------------------------------------

@@ -480,6 +480,12 @@ func TestK8sExec_WorkspaceWritableAsSandboxUID(t *testing.T) {
 	assertWorkspaceWritableAsSandboxUID(t, context.Background(), newTestK8sExecutor(t))
 }
 
+// TestK8sExec_ScratchUsable verifies HOME and TMPDIR in the scratch volume
+// belong to the sandbox user and group and that scratch is executable.
+func TestK8sExec_ScratchUsable(t *testing.T) {
+	assertSandboxScratchUsable(t, context.Background(), newTestK8sExecutor(t))
+}
+
 func assertWorkspaceWritableAsSandboxUID(t *testing.T, ctx context.Context, exec podCommandRunner) {
 	t.Helper()
 	must := require.New(t)
@@ -487,7 +493,7 @@ func assertWorkspaceWritableAsSandboxUID(t *testing.T, ctx context.Context, exec
 	res, err := exec.Exec(ctx, "id -u && : > /workspace/.stirrup-write-probe && rm /workspace/.stirrup-write-probe", 30*time.Second)
 	must.NoError(err, "Exec")
 	check.Equal(0, res.ExitCode, "stderr %q", res.Stderr)
-	check.Equal(fmt.Sprintf("%d\n", k8sRunAsUserUID), res.Stdout)
+	check.Equal(fmt.Sprintf("%d\n", sandboxUID), res.Stdout)
 }
 
 // TestK8sReadFile_Missing verifies a missing path maps to fs.ErrNotExist so
@@ -1143,7 +1149,7 @@ func createStandInOwnerPod(t *testing.T, ctx context.Context, clientset kubernet
 			AutomountServiceAccountToken: ptr.To(false),
 			SecurityContext: &corev1.PodSecurityContext{
 				RunAsNonRoot:   ptr.To(true),
-				RunAsUser:      ptr.To(k8sRunAsUserUID),
+				RunAsUser:      ptr.To(sandboxUID),
 				SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 			},
 			Containers: []corev1.Container{{

@@ -106,12 +106,20 @@ The provisioning sequence
    Sandbox not Ready, and the run fails only at the 5-minute ceiling
    with `sandbox <ns>/<name> not ready: <wait error>`. The backing Pod's
    labels and RuntimeClass are not compared with what was submitted;
-   they rest on the controller and the GKE admission policy. The `k8s`
-   executor's wait for `exec` to reach a Ready Pod (see
-   [Readiness](k8s.md#readiness)) is not applied here.
+   they rest on the controller and the GKE admission policy.
 4. **Resolve the backing Pod and bind.** The Pod name is read from the
    Sandbox status; on the cold-create path it equals the Sandbox name.
    Command execution and file I/O then ride the shared `pods/exec` core.
+5. **Wait for `exec` and prepare scratch.** The executor runs the `k8s`
+   executor's one-minute wait for `exec` to reach the Pod (see
+   [Readiness](k8s.md#readiness)), then creates `HOME` and `TMPDIR`
+   under `/scratch` as the sandbox user (see
+   [Sandbox identity and scratch](../security.md#sandbox-identity-and-scratch)).
+   A failure fails construction with
+   `sandbox <ns>/<name> is not reachable for exec within 1m0s: ...`,
+   `sandbox <ns>/<name> exec reachability wait interrupted: ...` or
+   `sandbox <ns>/<name>: prepare sandbox scratch: ...`, and tears down
+   through `Close`.
 
 A construction failure before the Sandbox create is submitted deletes
 the `NetworkPolicy` directly. Every Sandbox create error is followed by
@@ -345,7 +353,10 @@ the `k8s` executor uses — `--k8s-namespace`, `--k8s-kubeconfig`,
 `--k8s-node-selector`, `--k8s-service-account`, `--k8s-egress-proxy-url`,
 and the shared `image`/`network`/`resources` surface — with their meaning
 unchanged. See the [configuration reference in
-`k8s.md`](k8s.md#configuration-reference) for each field.
+`k8s.md`](k8s.md#configuration-reference) for each field. The
+deployment's [image admission policy](../security.md#image-admission-policy)
+applies to `executor.image` as it does for `k8s`, before the Sandbox is
+created.
 
 The one difference is the runtime field. The `k8s-sandbox` executor is
 **gVisor-only**: leave `--container-runtime` / `executor.runtime` empty,
@@ -393,7 +404,8 @@ The suite reuses the shared `STIRRUP_TEST_*` variables documented in
 | `STIRRUP_TEST_EGRESS_PROXY_URL` | Allowlist-mode proxy URL. |
 | `STIRRUP_TEST_ENFORCE_EGRESS` | *(unset → skip)* Set to run `TestAgentSandbox_AllowlistEnforced`; skipped otherwise so a non-enforcing CNI never produces a false negative. |
 
-`TestAgentSandbox_Lifecycle` provisions a gVisor sandbox, asserts gVisor
+`TestAgentSandbox_Lifecycle` provisions a gVisor sandbox, checks the
+scratch `HOME` and `TMPDIR` and the 65532:65532 identity, asserts gVisor
 is in force (`uname -r` contains `4.4.0`), round-trips a file under
 `/workspace`, and — after `Close()` — asserts the Sandbox CR, the backing
 Pod, and the per-Pod `NetworkPolicy` are all gone.

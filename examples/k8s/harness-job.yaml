@@ -50,6 +50,12 @@ spec:
             - --config
             - /etc/stirrup/run.json
           env:
+            # Sandbox image admission policy: executor.image must match a
+            # pattern. A trailing "/" admits every repository below that
+            # prefix. Replace it with the registries the deployment's sandbox
+            # images come from (docs/security.md#image-admission-policy).
+            - name: STIRRUP_IMAGE_ALLOWLIST
+              value: ghcr.io/rxbynerd/
             - name: STIRRUP_POD_NAME
               valueFrom:
                 fieldRef:

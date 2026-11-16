@@ -226,7 +226,7 @@ func TestNewK8sExecutor_WaitsForExecBeforeReturning(t *testing.T) {
 	exec, err := newFakeK8sExecutorWithExec(context.Background(), cs, constructorCfg(""), scriptedExec(&calls, errKubeletUnreachable, nil))
 
 	must.NoError(err)
-	must.Equal(2, calls)
+	must.Equal(3, calls, "two probes, then the scratch setup")
 	must.Empty(podDeletes(cs))
 	must.NoError(exec.Close())
 }
@@ -280,7 +280,7 @@ func TestNewK8sExecutor_NitroDiagnosticsRunAfterExecIsReachable(t *testing.T) {
 		switch len(commands) {
 		case 1:
 			return errKubeletUnreachable
-		case 2:
+		case 2, 4:
 			return nil
 		default:
 			_, err := io.WriteString(out, isolatedGuestDump)
@@ -291,10 +291,11 @@ func TestNewK8sExecutor_NitroDiagnosticsRunAfterExecIsReachable(t *testing.T) {
 	exec, err := newFakeK8sExecutorWithExec(context.Background(), cs, cfg, execFn)
 
 	must.NoError(err)
-	must.Len(commands, 3)
+	must.Len(commands, 4)
 	must.True(isExecProbe(commands[0]))
 	must.True(isExecProbe(commands[1]))
 	must.False(isExecProbe(commands[2]), "the diagnostics follow the probe")
+	must.True(isScratchSetup(commands[3]), "the scratch setup follows the diagnostics")
 	must.Len(recorder.runtimeDiagnostics, 1)
 	must.True(recorder.runtimeDiagnostics[0].passed)
 	must.NoError(exec.Close())

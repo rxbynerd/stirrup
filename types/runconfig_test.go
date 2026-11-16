@@ -2614,6 +2614,37 @@ func TestValidateRunConfig_ResourceLimits(t *testing.T) {
 			wantErr:     true,
 			errContains: "executor.resources.pids must not be negative",
 		},
+		{
+			name:        "negative scratchMb rejected (container)",
+			execType:    "container",
+			resources:   &ResourceLimits{ScratchMB: -1},
+			image:       "img",
+			wantErr:     true,
+			errContains: "executor.resources.scratchMb must not be negative (got -1)",
+		},
+		{
+			name:      "scratchMb equal to memoryMb valid (container)",
+			execType:  "container",
+			resources: &ResourceLimits{MemoryMB: 1024, ScratchMB: 1024},
+			image:     "img",
+		},
+		{
+			name:        "scratchMb above memoryMb rejected (container)",
+			execType:    "container",
+			resources:   &ResourceLimits{MemoryMB: 512, ScratchMB: 1024},
+			image:       "img",
+			wantErr:     true,
+			errContains: `executor.resources.scratchMb (1024) must not exceed executor.resources.memoryMb (512) for executor.type="container"`,
+		},
+		{
+			name:        "scratchMb above diskMb rejected (k8s-sandbox)",
+			execType:    "k8s-sandbox",
+			resources:   &ResourceLimits{DiskMB: 512, ScratchMB: 1024},
+			image:       "img",
+			k8sNS:       "ns",
+			wantErr:     true,
+			errContains: `executor.resources.scratchMb (1024) must not exceed executor.resources.diskMb (512) for executor.type="k8s-sandbox"`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2636,6 +2667,70 @@ func TestValidateRunConfig_ResourceLimits(t *testing.T) {
 			must.NoError(err)
 		})
 	}
+}
+
+func TestScratchLimitErrors_ChecksTheLimitEachExecutorChargesScratchTo(t *testing.T) {
+	cases := []struct {
+		name     string
+		execType string
+		r        *ResourceLimits
+		wantErr  bool
+	}{
+		{name: "nil resources", execType: "container", r: nil},
+		{name: "unset scratch ignores a small memory limit", execType: "container", r: &ResourceLimits{MemoryMB: 256}},
+		{name: "container without a memory limit", execType: "container", r: &ResourceLimits{ScratchMB: 1 << 20}},
+		{name: "container above memory", execType: "container", r: &ResourceLimits{MemoryMB: 512, ScratchMB: 513}, wantErr: true},
+		{name: "container ignores the disk limit", execType: "container", r: &ResourceLimits{DiskMB: 512, ScratchMB: 1024}},
+		{name: "k8s above disk", execType: "k8s", r: &ResourceLimits{DiskMB: 512, ScratchMB: 513}, wantErr: true},
+		{name: "k8s ignores the memory limit", execType: "k8s", r: &ResourceLimits{MemoryMB: 512, ScratchMB: 1024}},
+		{name: "k8s-sandbox above disk", execType: "k8s-sandbox", r: &ResourceLimits{DiskMB: 512, ScratchMB: 513}, wantErr: true},
+		{name: "local has no scratch", execType: "local", r: &ResourceLimits{MemoryMB: 1, DiskMB: 1, ScratchMB: 1024}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			check := assert.New(t)
+			errs := ScratchLimitErrors(tc.execType, tc.r)
+			if tc.wantErr {
+				check.Len(errs, 1)
+				return
+			}
+			check.Empty(errs)
+		})
+	}
+}
+
+func TestResourceLimits_EffectiveScratchMB_DefaultCappedAtTheChargedLimit(t *testing.T) {
+	cases := []struct {
+		name     string
+		execType string
+		r        *ResourceLimits
+		want     int
+	}{
+		{name: "nil resources", execType: "container", r: nil, want: DefaultScratchMB},
+		{name: "unset", execType: "container", r: &ResourceLimits{}, want: DefaultScratchMB},
+		{name: "negative", execType: "container", r: &ResourceLimits{ScratchMB: -1}, want: DefaultScratchMB},
+		{name: "explicit", execType: "container", r: &ResourceLimits{ScratchMB: 4096}, want: 4096},
+		{name: "container default capped at memory", execType: "container", r: &ResourceLimits{MemoryMB: 256}, want: 256},
+		{name: "container default ignores disk", execType: "container", r: &ResourceLimits{DiskMB: 256}, want: DefaultScratchMB},
+		{name: "k8s default capped at disk", execType: "k8s", r: &ResourceLimits{DiskMB: 512}, want: 512},
+		{name: "k8s-sandbox default ignores memory", execType: "k8s-sandbox", r: &ResourceLimits{MemoryMB: 256}, want: DefaultScratchMB},
+		{name: "large limit keeps the default", execType: "k8s", r: &ResourceLimits{DiskMB: 8192}, want: DefaultScratchMB},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			check := assert.New(t)
+			check.Equal(tc.want, tc.r.EffectiveScratchMB(tc.execType))
+		})
+	}
+}
+
+func TestResourceLimitErrors_RejectsSizesAboveTheBound(t *testing.T) {
+	check := assert.New(t)
+	errs := ResourceLimitErrors(&ResourceLimits{MemoryMB: MaxResourceMB + 1, DiskMB: MaxResourceMB, ScratchMB: 1 << 44})
+	check.Equal([]string{
+		"executor.resources.memoryMb must not exceed 1048576 (got 1048577)",
+		"executor.resources.scratchMb must not exceed 1048576 (got 17592186044416)",
+	}, errs)
 }
 
 func TestValidateRunConfig_APIKeyHeader_Rejected(t *testing.T) {
@@ -2668,53 +2763,6 @@ func TestValidateRunConfig_ExecutorRuntimeRejectsUnknown(t *testing.T) {
 	must.Error(err)
 	must.ErrorContains(err, "executor.runtime")
 	must.ErrorContains(err, "foo")
-}
-
-func TestValidateRunConfig_RegistryAllowlistAcceptsValidGlobs(t *testing.T) {
-	must := require.New(t)
-	c := validConfig()
-	c.Executor = ExecutorConfig{
-		Type:              "container",
-		Image:             "ghcr.io/stirrup/base:latest",
-		RegistryAllowlist: []string{"ghcr.io/stirrup/*", "docker.io/library/*", "registry.internal:5000/team/*"},
-	}
-	must.NoError(ValidateRunConfig(c))
-}
-
-func TestValidateRunConfig_RegistryAllowlistRejectsBadGlob(t *testing.T) {
-	must := require.New(t)
-	c := validConfig()
-	c.Executor = ExecutorConfig{
-		Type:              "container",
-		Image:             "ghcr.io/stirrup/base:latest",
-		RegistryAllowlist: []string{"ghcr.io/stirrup/["},
-	}
-	err := ValidateRunConfig(c)
-	must.ErrorContains(err, "registryAllowlist")
-}
-
-func TestValidateRunConfig_RegistryAllowlistRejectsEmptyEntry(t *testing.T) {
-	must := require.New(t)
-	c := validConfig()
-	c.Executor = ExecutorConfig{
-		Type:              "container",
-		Image:             "ghcr.io/stirrup/base:latest",
-		RegistryAllowlist: []string{""},
-	}
-	err := ValidateRunConfig(c)
-	must.ErrorContains(err, "registryAllowlist")
-}
-
-func TestValidateRunConfig_RegistryAllowlistRequiresContainerExecutor(t *testing.T) {
-	must := require.New(t)
-	c := validConfig()
-	c.Executor = ExecutorConfig{
-		Type:              "local",
-		RegistryAllowlist: []string{"ghcr.io/stirrup/*"},
-	}
-	err := ValidateRunConfig(c)
-	must.ErrorContains(err, "registryAllowlist")
-	must.ErrorContains(err, "container")
 }
 
 // --- PermissionPolicyConfig.Type policy-engine ---
@@ -7873,10 +7921,10 @@ func TestValidateRunConfig_NoneExecutorRejectsWorkspaceExportTo(t *testing.T) {
 // rejection validateNoneExecutor enforces: every container/k8s/api-only
 // field on ExecutorConfig is rejected outright when Type == "none", since
 // the none executor has no execution surface to apply any of them to.
-// Runtime and RegistryAllowlist are deliberately NOT in this table — they
-// are covered by TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce,
-// which pins that validateExecutorRuntime/validateExecutorRegistryAllowlist
-// (not validateNoneExecutor) reject them for "none", exactly once each.
+// Runtime is deliberately NOT in this table — it is covered by
+// TestValidateRunConfig_NoneExecutorRuntimeRejectedOnce, which pins that
+// validateExecutorRuntime (not validateNoneExecutor) rejects it for "none",
+// exactly once.
 func TestValidateRunConfig_NoneExecutorRejectsExecutionOnlyFields(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -7907,31 +7955,19 @@ func TestValidateRunConfig_NoneExecutorRejectsExecutionOnlyFields(t *testing.T) 
 	}
 }
 
-// TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce pins
-// that Runtime and RegistryAllowlist are rejected for executor.type="none" by the
-// generic validateExecutorRuntime / validateExecutorRegistryAllowlist validators,
-// not validateNoneExecutor — so setting either produces exactly one error, not two.
-func TestValidateRunConfig_NoneExecutorRuntimeAndRegistryAllowlistRejectedOnce(t *testing.T) {
-	t.Run("runtime", func(t *testing.T) {
-		must := require.New(t)
-		c := validConfig()
-		c.Executor = ExecutorConfig{Type: "none", Runtime: "runc"}
-		err := ValidateRunConfig(c)
-		must.Error(err)
-		want := `executor.runtime is only valid when executor.type is "container", "k8s", or "k8s-sandbox"`
-		must.Equal(1, strings.Count(err.Error(), want), "error: %v", err)
-		must.NotContains(err.Error(), `executor.runtime is not valid for executor.type="none"`, "no duplicate none-specific error")
-	})
-	t.Run("registryAllowlist", func(t *testing.T) {
-		must := require.New(t)
-		c := validConfig()
-		c.Executor = ExecutorConfig{Type: "none", RegistryAllowlist: []string{"ghcr.io/*"}}
-		err := ValidateRunConfig(c)
-		must.Error(err)
-		want := `executor.registryAllowlist is only valid when executor.type is "container"`
-		must.Equal(1, strings.Count(err.Error(), want), "error: %v", err)
-		must.NotContains(err.Error(), `executor.registryAllowlist is not valid for executor.type="none"`, "no duplicate none-specific error")
-	})
+// TestValidateRunConfig_NoneExecutorRuntimeRejectedOnce pins that Runtime is
+// rejected for executor.type="none" by the generic validateExecutorRuntime
+// validator, not validateNoneExecutor — so setting it produces exactly one
+// error, not two.
+func TestValidateRunConfig_NoneExecutorRuntimeRejectedOnce(t *testing.T) {
+	must := require.New(t)
+	c := validConfig()
+	c.Executor = ExecutorConfig{Type: "none", Runtime: "runc"}
+	err := ValidateRunConfig(c)
+	must.Error(err)
+	want := `executor.runtime is only valid when executor.type is "container", "k8s", or "k8s-sandbox"`
+	must.Equal(1, strings.Count(err.Error(), want), "error: %v", err)
+	must.NotContains(err.Error(), `executor.runtime is not valid for executor.type="none"`, "no duplicate none-specific error")
 }
 
 func TestValidateRunConfig_NoneExecutorRejectsDeterministicGit(t *testing.T) {
@@ -8311,6 +8347,27 @@ func TestValidateRunConfig_GitProxyURLValidation(t *testing.T) {
 				return
 			}
 			must.ErrorContains(err, tc.wantErr)
+		})
+	}
+}
+
+func TestValidateRunConfig_SandboxIdentityEnvVarRejectsScratchVariables(t *testing.T) {
+	for _, name := range []string{"HOME", "TMPDIR"} {
+		t.Run("sandboxIdentity "+name, func(t *testing.T) {
+			must := require.New(t)
+			c := sandboxIdentityValidConfig()
+			c.Executor.GitProxy = nil
+			c.Executor.SandboxIdentity.EnvVar = name
+
+			must.ErrorContains(ValidateRunConfig(c), fmt.Sprintf("executor.sandboxIdentity.envVar %q is reserved", name))
+		})
+		t.Run("gitProxy "+name, func(t *testing.T) {
+			must := require.New(t)
+			c := sandboxIdentityValidConfig()
+			c.Executor.SandboxIdentity.EnvVar = name
+			c.Executor.GitProxy.TokenEnvVar = name
+
+			must.ErrorContains(ValidateRunConfig(c), fmt.Sprintf("executor.gitProxy.tokenEnvVar %q is reserved", name))
 		})
 	}
 }

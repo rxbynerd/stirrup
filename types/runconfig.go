@@ -1069,14 +1069,6 @@ type ExecutorConfig struct {
 	// k8s-sandbox: gVisor-only).
 	Runtime string `json:"runtime,omitempty"`
 
-	// RegistryAllowlist constrains which container image references the
-	// container executor may run: path.Match globs over the normalised
-	// reference (registry host + repo path, tag/digest stripped). Empty
-	// falls back to the built-in default. "*" does not cross "/" —
-	// "ghcr.io/rxbynerd/*" matches "ghcr.io/rxbynerd/base" but not a
-	// deeper namespace. Only meaningful for executor.type == "container".
-	RegistryAllowlist []string `json:"registryAllowlist,omitempty"`
-
 	// WorkspaceExportTo, when set, instructs the harness to tarball the
 	// executor's workspace at the end of every run, before "done",
 	// archived inside the executor's own boundary, and upload it to the
@@ -1130,6 +1122,37 @@ type ResourceLimits struct {
 	MemoryMB int     `json:"memoryMb"`
 	DiskMB   int     `json:"diskMb"`
 	PIDs     int     `json:"pids"`
+	// ScratchMB caps the sandbox's scratch directory, which holds HOME and
+	// TMPDIR; zero selects the default EffectiveScratchMB describes.
+	ScratchMB int `json:"scratchMb,omitempty"`
+}
+
+// DefaultScratchMB is the scratch size a sandbox gets when
+// executor.resources.scratchMb is unset and the limit its executor charges
+// scratch against (see ScratchLimitErrors) is unset or larger.
+const DefaultScratchMB = 1024
+
+// EffectiveScratchMB is the scratch size for executorType: ScratchMB when
+// positive, otherwise DefaultScratchMB capped at memoryMb on "container"
+// and at diskMb on "k8s" and "k8s-sandbox" when that limit is set.
+func (r *ResourceLimits) EffectiveScratchMB(executorType string) int {
+	if r == nil {
+		return DefaultScratchMB
+	}
+	if r.ScratchMB > 0 {
+		return r.ScratchMB
+	}
+	charged := 0
+	switch {
+	case executorType == "container":
+		charged = r.MemoryMB
+	case IsK8sFamily(executorType):
+		charged = r.DiskMB
+	}
+	if charged > 0 {
+		return min(DefaultScratchMB, charged)
+	}
+	return DefaultScratchMB
 }
 
 // DefaultSandboxIdentityEnvVar is the variable a sandbox identity token is
@@ -2798,12 +2821,12 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateContextStrategyBudget(config.ContextStrategy, &errs)
 	validateClearToolResults(config.ContextStrategy, &errs)
 	validateOptionalType("executor", config.Executor.Type, validExecutorTypes, &errs)
-	validateExecutorRegistryAllowlist(config.Executor, &errs)
 	validateExecutorRuntime(config.Executor, &errs)
 	validateK8sExecutor(config.Executor, &errs)
 	validateNoneExecutor(config.Executor, &errs)
 	validateVcsBackend(config.Executor.VcsBackend, &errs)
 	errs = append(errs, ResourceLimitErrors(config.Executor.Resources)...)
+	errs = append(errs, ScratchLimitErrors(config.Executor.Type, config.Executor.Resources)...)
 	validateSandboxIdentity(config, &errs)
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
 	validateEditStrategyFuzzyThreshold(config.EditStrategy, &errs)
@@ -6416,6 +6439,17 @@ var sandboxIdentityCapableExecutors = map[string]bool{
 // charset check rather than a semantic denylist.
 var posixEnvVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+// validateSandboxEnvVarNotReserved rejects a token variable named after one
+// the sandboxing executors set themselves: their HOME and TMPDIR come last
+// in the sandbox environment, so a token under either name would never be
+// delivered.
+func validateSandboxEnvVarNotReserved(field, name string, errs *[]string) {
+	if name == "HOME" || name == "TMPDIR" {
+		*errs = append(*errs, fmt.Sprintf(
+			"%s %q is reserved: the sandboxing executors set it to a directory under /scratch", field, name))
+	}
+}
+
 // validateSandboxIdentity enforces the cross-field invariants on
 // ExecutorConfig.SandboxIdentity and .GitProxy. Every rule below is gated
 // on their presence, so a config with neither set validates cleanly
@@ -6451,6 +6485,7 @@ func validateSandboxIdentity(config *RunConfig, errs *[]string) {
 			*errs = append(*errs, fmt.Sprintf(
 				"executor.sandboxIdentity.envVar %q must be a valid POSIX environment variable name", si.EnvVar))
 		}
+		validateSandboxEnvVarNotReserved("executor.sandboxIdentity.envVar", si.EnvVar, errs)
 	}
 
 	if gp != nil {
@@ -6471,6 +6506,7 @@ func validateSandboxIdentity(config *RunConfig, errs *[]string) {
 			*errs = append(*errs, fmt.Sprintf(
 				"executor.gitProxy.tokenEnvVar %q must be a valid POSIX environment variable name", gp.TokenEnvVar))
 		}
+		validateSandboxEnvVarNotReserved("executor.gitProxy.tokenEnvVar", gp.TokenEnvVar, errs)
 
 		if si == nil {
 			// v1's only token source is control-plane issuance via
@@ -6576,16 +6612,51 @@ func ResourceLimitErrors(r *ResourceLimits) []string {
 	case r.CPUs < 0:
 		errs = append(errs, fmt.Sprintf("executor.resources.cpus must not be negative (got %v)", r.CPUs))
 	}
-	if r.MemoryMB < 0 {
-		errs = append(errs, fmt.Sprintf("executor.resources.memoryMb must not be negative (got %d)", r.MemoryMB))
-	}
-	if r.DiskMB < 0 {
-		errs = append(errs, fmt.Sprintf("executor.resources.diskMb must not be negative (got %d)", r.DiskMB))
-	}
+	errs = append(errs, sizeLimitErrors("memoryMb", r.MemoryMB)...)
+	errs = append(errs, sizeLimitErrors("diskMb", r.DiskMB)...)
 	if r.PIDs < 0 {
 		errs = append(errs, fmt.Sprintf("executor.resources.pids must not be negative (got %d)", r.PIDs))
 	}
+	errs = append(errs, sizeLimitErrors("scratchMb", r.ScratchMB)...)
 	return errs
+}
+
+// MaxResourceMB bounds every MiB-valued resource limit (1 TiB). The
+// executors convert a limit to bytes, and a larger value would overflow
+// into a negative or zero size, which the engines read as no limit.
+const MaxResourceMB = 1 << 20
+
+func sizeLimitErrors(field string, mb int) []string {
+	switch {
+	case mb < 0:
+		return []string{fmt.Sprintf("executor.resources.%s must not be negative (got %d)", field, mb)}
+	case mb > MaxResourceMB:
+		return []string{fmt.Sprintf("executor.resources.%s must not exceed %d (got %d)", field, MaxResourceMB, mb)}
+	}
+	return nil
+}
+
+// ScratchLimitErrors returns a message when an explicit scratchMb exceeds
+// the limit its executor charges scratch against: memoryMb on "container",
+// whose scratch is a tmpfs, and diskMb on "k8s" and "k8s-sandbox", whose
+// scratch emptyDir counts against the Pod's ephemeral storage. The run hits
+// that limit first, so a larger cap would only mislead. An unset scratchMb,
+// an unset limit and every other executor type yield none.
+func ScratchLimitErrors(executorType string, r *ResourceLimits) []string {
+	if r == nil || r.ScratchMB <= 0 {
+		return nil
+	}
+	switch {
+	case executorType == "container" && r.MemoryMB > 0 && r.ScratchMB > r.MemoryMB:
+		return []string{fmt.Sprintf(
+			"executor.resources.scratchMb (%d) must not exceed executor.resources.memoryMb (%d) for executor.type=%q; the scratch tmpfs counts against the memory limit",
+			r.ScratchMB, r.MemoryMB, executorType)}
+	case IsK8sFamily(executorType) && r.DiskMB > 0 && r.ScratchMB > r.DiskMB:
+		return []string{fmt.Sprintf(
+			"executor.resources.scratchMb (%d) must not exceed executor.resources.diskMb (%d) for executor.type=%q; the scratch emptyDir counts against the Pod's ephemeral storage",
+			r.ScratchMB, r.DiskMB, executorType)}
+	}
+	return nil
 }
 
 // ExportRequired reports whether a failed workspace export fails the
@@ -6656,31 +6727,6 @@ func validateVcsBackend(cfg *VcsBackendConfig, errs *[]string) {
 	validateRequiredType("executor.vcsBackend", cfg.Type, validVcsBackendTypes, errs)
 }
 
-// validateExecutorRegistryAllowlist checks the optional
-// Executor.RegistryAllowlist: every entry must be a syntactically valid glob
-// and the field is only meaningful for the container executor. An empty list
-// is valid — the executor falls back to its built-in default — so this only
-// rejects malformed patterns and misplacement on a non-container executor.
-// The matcher is path.Match, identical to the runtime enforcement path in the
-// executor, so a pattern that validates here behaves the same when enforced.
-func validateExecutorRegistryAllowlist(cfg ExecutorConfig, errs *[]string) {
-	if len(cfg.RegistryAllowlist) == 0 {
-		return
-	}
-	if cfg.Type != "container" && cfg.Type != "" {
-		*errs = append(*errs, "executor.registryAllowlist is only valid when executor.type is \"container\"")
-	}
-	for _, pattern := range cfg.RegistryAllowlist {
-		if pattern == "" {
-			*errs = append(*errs, "executor.registryAllowlist entries must be non-empty")
-			continue
-		}
-		if _, err := path.Match(pattern, ""); err != nil {
-			*errs = append(*errs, fmt.Sprintf("executor.registryAllowlist pattern %q is not a valid glob: %v", pattern, err))
-		}
-	}
-}
-
 // validateNoneExecutor rejects every container/k8s/api-only field on
 // ExecutorConfig when Type == "none". The none executor
 // (harness/internal/executor/none.go) has no execution surface at all, so
@@ -6690,11 +6736,10 @@ func validateExecutorRegistryAllowlist(cfg ExecutorConfig, errs *[]string) {
 // them. Scoped to "none" only — the sibling validators above already
 // police these fields for "container" and the k8s family.
 //
-// Runtime and RegistryAllowlist are deliberately absent from this list:
-// validateExecutorRuntime and validateExecutorRegistryAllowlist already
-// reject both for any Type outside their own applicable set (which does
-// not include "none"), so adding them here would produce two error
-// strings for the same misconfiguration.
+// Runtime is deliberately absent from this list: validateExecutorRuntime
+// already rejects it for any Type outside its applicable set (which does
+// not include "none"), so adding it here would produce two error strings
+// for the same misconfiguration.
 func validateNoneExecutor(cfg ExecutorConfig, errs *[]string) {
 	if cfg.Type != "none" {
 		return

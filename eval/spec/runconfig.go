@@ -179,10 +179,11 @@ type networkSpec struct {
 }
 
 type resourceLimitsSpec struct {
-	CPUs     float64 `hcl:"cpus"`
-	MemoryMB int     `hcl:"memory_mb"`
-	DiskMB   int     `hcl:"disk_mb"`
-	PIDs     int     `hcl:"pids"`
+	CPUs      float64 `hcl:"cpus"`
+	MemoryMB  int     `hcl:"memory_mb"`
+	DiskMB    int     `hcl:"disk_mb"`
+	PIDs      int     `hcl:"pids"`
+	ScratchMB int     `hcl:"scratch_mb,optional"`
 }
 
 type editStrategySpec struct {
@@ -719,10 +720,11 @@ func executorSpecToType(s *executorSpec) types.ExecutorConfig {
 	}
 	if s.Resources != nil {
 		out.Resources = &types.ResourceLimits{
-			CPUs:     s.Resources.CPUs,
-			MemoryMB: s.Resources.MemoryMB,
-			DiskMB:   s.Resources.DiskMB,
-			PIDs:     s.Resources.PIDs,
+			CPUs:      s.Resources.CPUs,
+			MemoryMB:  s.Resources.MemoryMB,
+			DiskMB:    s.Resources.DiskMB,
+			PIDs:      s.Resources.PIDs,
+			ScratchMB: s.Resources.ScratchMB,
 		}
 	}
 	return out

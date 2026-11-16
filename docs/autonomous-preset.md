@@ -15,12 +15,12 @@ hosts, prompt) are replaced per deployment; the safeguards are kept.
 | Setting | Value | Purpose |
 |---|---|---|
 | `executor.type`, `executor.runtime` | `container`, `runsc` | Ring 1: agent commands run in a gVisor-isolated container, not on the harness host. |
-| `executor.image` | `ghcr.io/rxbynerd/stirrup-sandbox` | The sandbox image, which ships the shell, `tar` and `git` the executor needs. The harness image (`ghcr.io/rxbynerd/stirrup`) is distroless and cannot serve as a sandbox. |
+| `executor.image` | `ghcr.io/rxbynerd/stirrup-sandbox` | The sandbox image, which meets the [sandbox image contract](executors/image-contract.md). The harness image (`ghcr.io/rxbynerd/stirrup`) is distroless and cannot serve as a sandbox. |
 | `executor.network` | `allowlist` with package-proxy hosts | Ring 2: egress limited to named hosts. |
 | `permissionPolicy` | `policy-engine` over [`autonomous-allow-list.cedar`](../examples/policies/autonomous-allow-list.cedar), fallback `deny-all` | Ring 3: only the listed tools run, and destructive shell patterns are forbidden. |
 | `ruleOfTwo.enforce` | `true` | Ring 4: Rule of Two enforcement, which rejects and gates combinations of untrusted input, sensitive data and external communication that lack operator approval. |
 | `codeScanner` | `patterns` | Ring 5: post-edit static scan. |
-| `verifier` | `test-runner` | Checks the work after each turn. The command is a placeholder (`go test ./...`) that must be replaced with the repository's own check; a verifier that cannot fail gives no assurance. |
+| `verifier` | `test-runner` | Checks the work after each turn. The command is a placeholder (`go test ./...`) that must be replaced with the repository's own check; a verifier that cannot fail gives no assurance. The command runs inside the sandbox, and `stirrup-sandbox` carries no language toolchain, so the placeholder fails there with exit 127 (command not found). A deployment that verifies with a toolchain builds its own image from the reference image, adds the toolchain, and sets `executor.image` to it. |
 | `gitStrategy` | `deterministic` | Commits the result on a `stirrup/<run>` branch as the handoff artifact. Requires an executor with exec, so it cannot be paired with `api` or `none`. |
 | `resultSink` | `stdout-json` | Writes the `RunResult` to stdout as a `STIRRUP_RESULT` line. |
 | `executor.workspaceExportTo` | `gs://` URI | Archives the workspace at the end of the run so the outcome survives the sandbox. |

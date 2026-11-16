@@ -298,6 +298,25 @@ Both recipes type commands into the session's active pane, so run them
 while it is idle. End the session with
 `tmux kill-session -t '=stirrup-keys'` when the probes are done.
 
+## The sandbox image contract
+
+[`docs/executors/image-contract.md`](docs/executors/image-contract.md)
+states everything the `container`, `k8s` and `k8s-sandbox` executors need
+from the sandbox image, under a contract version. When a change makes an
+executor, a tool or a git operation start needing something new from the
+image, update the document and bump the contract version in the same PR.
+The new requirement can be a command, a flag a command must accept, a
+path, or a different image metadata behaviour. A change that stops needing something edits the
+document without a bump.
+
+Two tests enforce this. `harness/internal/executor/imagecontract_test.go`
+parses the executors' sandbox scripts and fails when one runs a command
+the document does not list, and `harness/internal/invariants/imagecontract_test.go`
+fails when a new place runs a command in the sandbox. A failure means the
+contract has changed or a new site needs a decision; the failure message
+names the files to update. The tests recognise command names only, so a
+new flag on a listed command is still the author's to notice.
+
 ## Touching the safety rings
 
 If you change anything under `harness/internal/permission/`,
