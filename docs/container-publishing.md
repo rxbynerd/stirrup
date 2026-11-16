@@ -35,9 +35,11 @@ it adds no Artifact Analysis scan cost. It never overwrites a
 `:sha-<7>` tag: that tag is pushed by the first build of a commit,
 which records its digest as an `image-digest/<image>` commit status,
 and every later build of the same commit leaves it alone. Version tags
-(`:vX.Y.Z`) are immutable too: `release.yml` reuses an existing
-version tag's digest instead of rebuilding it, so a base-image fix for
-a released version ships in the next release. The scheduled
+(`:vX.Y.Z`) are immutable too: `release.yml` never rebuilds an existing
+version tag (it reuses the digest only when both registries serve it
+and it carries the release's provenance attestation, and fails
+otherwise), so a base-image fix for a released version ships in the
+next release. The scheduled
 `image-pins.yml` workflow fails if the digest behind either kind of
 tag changes; the tag table and the verification commands are in
 [`deployment.md`](deployment.md#container-images).
@@ -438,7 +440,7 @@ The Phase 2 steps in `release.yml::publish-container` (in order):
    attestation written by buildx is for cosign/syft consumers walking
    the SLSA chain off the registry directly; it does *not* substitute
    for `sbom load`, and it is not the GitHub build-provenance
-   attestation that `actions/attest` stores for
+   attestation that `_sign-release.yml` stores for
    `gh attestation verify` (see
    [`deployment.md`](deployment.md#verify-what-you-run)).
 2. **`google-github-actions/setup-gcloud`** installs the `gcloud`

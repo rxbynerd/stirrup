@@ -453,18 +453,21 @@ git tag -a v1.2.3 -m "Release notes"
 git push origin v1.2.3
 ```
 
-To retry a run that failed part-way, re-run the failed jobs from the
-run page, or dispatch the workflow on the tag's own ref:
+To retry a run that failed part-way, re-run its failed jobs from the run
+page. A dispatch on the tag's own ref also works:
 
 ```sh
 gh workflow run release.yml --ref v1.2.3 -f tag=v1.2.3
 ```
 
 A dispatch from any other ref is rejected, so every signature and
-attestation for a release names the tagged workflow file. A re-run
-never rebuilds an image whose version tag already exists: it reuses the
-published digest after checking that the image was built from the
-tagged commit and that Artifact Registry serves the same digest.
+attestation for a release comes from the tagged workflow files. A re-run
+never rebuilds an image whose version tag already exists. It reuses the
+published digest only when GHCR and Artifact Registry both serve it and
+it already carries this release's provenance attestation; otherwise the
+job fails, and the fix is to re-run only the failed jobs of the
+original run or to cut a new version. A release whose `SHA256SUMS` is
+already published is never overwritten with different bytes.
 
 The workflow:
 
@@ -473,12 +476,13 @@ The workflow:
    `linux/{amd64,arm64}` and `darwin/{amd64,arm64}` in parallel, and
    checks that the linux/amd64 binary reports the release version.
 3. Generates SPDX and CycloneDX SBOMs.
-4. Publishes both images, checks that the harness image reports the
-   release version, and attests their build provenance.
-5. Writes `IMAGE_DIGESTS` (one `<image>:<tag>@<digest>` line per
-   image) and a `SHA256SUMS` manifest over every asset, signs
-   `SHA256SUMS` with keyless cosign (`SHA256SUMS.sigstore.json`), and
-   attests the build provenance of every asset it lists.
+4. Publishes both images and checks that the harness image reports the
+   release version.
+5. In the reusable `_sign-release.yml` workflow, writes
+   `IMAGE_DIGESTS` (one `<image>:<tag>@<digest>` line per image) and a
+   `SHA256SUMS` manifest over every asset, signs `SHA256SUMS` with
+   keyless cosign (`SHA256SUMS.sigstore.json`), and attests the build
+   provenance of every asset it lists and of both images.
 6. Tags the `types` and `gen` Go modules (`types/vX.Y.Z`,
    `gen/vX.Y.Z`) at the release commit and checks that both resolve
    through `proxy.golang.org`.
@@ -502,12 +506,26 @@ imported (the embedding API is covered in
 
 Every release can be checked by anyone with `cosign` (v3) and the
 GitHub CLI (`gh`; the flags below are those of gh 2.103), without
-access to the project. The commands below use `v1.2.3`; substitute the release being
-deployed. A signature or attestation proves where an artefact came
-from: that this repository's `release.yml`, running on GitHub-hosted
-runners for that tag, produced exactly these bytes. It says nothing
-about whether the artefact is safe to run. Reviewing the release, the
-[deployment posture](safety-rings.md) and the
+access to the project. The commands below use `v1.2.3`; substitute the
+release being deployed.
+
+Signatures and attestations are made only by
+`.github/workflows/_sign-release.yml`, a reusable workflow the release
+calls, on a GitHub-hosted runner. Its certificate identity is
+
+```text
+https://github.com/rxbynerd/stirrup/.github/workflows/_sign-release.yml@refs/tags/v1.2.3
+```
+
+with OIDC issuer `https://token.actions.githubusercontent.com`. No other
+job in a release run can obtain a certificate with that identity, and
+the commands below accept no other.
+
+A passing check proves origin: this repository's release workflow, run
+for that tag, signed or attested exactly these bytes. It does not prove
+the artefact is safe to run, that the tagged commit was reviewed, or
+that the build itself was free of compromise. Reviewing the release,
+the [deployment posture](safety-rings.md) and the
 [vulnerability findings](container-publishing.md#phase-3--vulnerability-gating-on-releases)
 remains the operator's job.
 
@@ -517,29 +535,28 @@ remains the operator's job.
 ```sh
 cosign verify-blob \
   --bundle SHA256SUMS.sigstore.json \
-  --certificate-identity https://github.com/rxbynerd/stirrup/.github/workflows/release.yml@refs/tags/v1.2.3 \
+  --certificate-identity https://github.com/rxbynerd/stirrup/.github/workflows/_sign-release.yml@refs/tags/v1.2.3 \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   SHA256SUMS
 ```
 
-The certificate identity is exact: it names the workflow file and the
-tag, so a signature made by any other workflow, branch or tag fails.
+The certificate identity is matched exactly, so a signature made by any
+other workflow, branch or tag fails.
 
 **Release archive.** With the archive in the same directory as the
-verified `SHA256SUMS`:
+verified `SHA256SUMS`, check its line:
 
 ```sh
-sha256sum --check --ignore-missing SHA256SUMS
+grep '  stirrup-v1.2.3-linux-amd64.tar.gz$' SHA256SUMS | sha256sum --check -
 ```
 
-(`shasum -a 256 --check --ignore-missing SHA256SUMS` where
-`sha256sum` is not installed.) The
+(`shasum -a 256 --check -` where `sha256sum` is not installed.) The
 archive also carries its own provenance attestation:
 
 ```sh
 gh attestation verify stirrup-v1.2.3-linux-amd64.tar.gz \
   --repo rxbynerd/stirrup \
-  --signer-workflow rxbynerd/stirrup/.github/workflows/release.yml \
+  --cert-identity https://github.com/rxbynerd/stirrup/.github/workflows/_sign-release.yml@refs/tags/v1.2.3 \
   --source-ref refs/tags/v1.2.3 \
   --deny-self-hosted-runners
 ```
@@ -548,18 +565,18 @@ gh attestation verify stirrup-v1.2.3-linux-amd64.tar.gz \
 verified `SHA256SUMS`) and verify each image by digest:
 
 ```sh
-grep 'IMAGE_DIGESTS$' SHA256SUMS | sha256sum --check -
+grep '  IMAGE_DIGESTS$' SHA256SUMS | sha256sum --check -
 cat IMAGE_DIGESTS
 
 gh attestation verify oci://ghcr.io/rxbynerd/stirrup@sha256:<digest> \
   --repo rxbynerd/stirrup \
-  --signer-workflow rxbynerd/stirrup/.github/workflows/release.yml \
+  --cert-identity https://github.com/rxbynerd/stirrup/.github/workflows/_sign-release.yml@refs/tags/v1.2.3 \
   --source-ref refs/tags/v1.2.3 \
   --deny-self-hosted-runners
 
 gh attestation verify oci://ghcr.io/rxbynerd/stirrup-sandbox@sha256:<digest> \
   --repo rxbynerd/stirrup \
-  --signer-workflow rxbynerd/stirrup/.github/workflows/release.yml \
+  --cert-identity https://github.com/rxbynerd/stirrup/.github/workflows/_sign-release.yml@refs/tags/v1.2.3 \
   --source-ref refs/tags/v1.2.3 \
   --deny-self-hosted-runners
 ```
