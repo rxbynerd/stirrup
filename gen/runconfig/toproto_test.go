@@ -42,7 +42,9 @@ func TestToProto_RejectsFieldsWithNoWireField(t *testing.T) {
 			rc.TraceEmitter.Archive = &types.TraceArchiveConfig{Type: "gcs", Credential: &types.CredentialConfig{Type: "gcp-workload-identity"}}
 		}},
 	}
+	covered := map[string]bool{}
 	for _, tc := range cases {
+		covered[tc.path] = true
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			rc := &types.RunConfig{RunID: "r"}
@@ -52,6 +54,9 @@ func TestToProto_RejectsFieldsWithNoWireField(t *testing.T) {
 			must.ErrorContains(err, tc.path+":")
 			must.Nil(pc)
 		})
+	}
+	for _, path := range notOnWirePaths {
+		assert.New(t).True(covered[path], "no rejection case for %q", path)
 	}
 }
 
