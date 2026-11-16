@@ -1024,7 +1024,7 @@ receipt. The block has no CLI flag: it is set through `--config` or a
 | Field | Notes |
 |---|---|
 | `urlRef` | Required. A `secret://` reference that resolves, in the harness's own environment, to the destination URL. An inline URL is rejected. |
-| `headers` | Optional, at most 32, each value at most 8 KiB. Sent on the `PUT`. A value is plaintext or a `secret://` reference. A name that conventionally carries a credential must be a reference: `Authorization`, `Authentication`, `Cookie`, `Token`, `ApiKey`, `Api-Key`, and any name ending in `-token`, `-key`, `-apikey`, `-auth`, `-secret`, `-signature`, `-password` or `-credential` (underscores read as hyphens). `Host`, `Content-Length`, `Transfer-Encoding` and the hop-by-hop headers belong to the HTTP client and are rejected. A `Content-Type` entry replaces the harness's own. |
+| `headers` | Optional, at most 32, each value at most 8 KiB. Sent on the `PUT`. A value is plaintext or a `secret://` reference. A name that conventionally carries a credential must be a reference: `Authorization`, `Authentication`, `Cookie`, `Token`, `ApiKey`, `Api-Key`, `Key`, `Secret`, `Signature`, `Password`, `Credential`, `Session`, and any name ending in `-token`, `-key`, `-apikey`, `-auth`, `-secret`, `-signature`, `-password` or `-credential` (underscores read as hyphens). `Host`, `Content-Length`, `Transfer-Encoding` and the hop-by-hop headers belong to the HTTP client and are rejected. A `Content-Type` entry replaces the harness's own. |
 
 **The URL is a capability.** Whoever holds a presigned URL can write the
 object, so the URL is handled like an API key: it never appears in

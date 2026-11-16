@@ -58,6 +58,12 @@ var httpsPutCredentialHeaderNames = map[string]bool{
 	"token":          true,
 	"apikey":         true,
 	"api-key":        true,
+	"key":            true,
+	"secret":         true,
+	"signature":      true,
+	"password":       true,
+	"credential":     true,
+	"session":        true,
 }
 
 var httpsPutCredentialHeaderSuffixes = []string{

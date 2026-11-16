@@ -744,7 +744,10 @@ The filter blocks:
 
 A successful `run_command` therefore cannot leak the harness's
 own credentials, even by accident, even if the model asks the
-shell to print them.
+shell to print them. A file-backed `secret://file://` reference is not
+covered: the agent can read or replace the file, and a replaced HTTPS
+PUT destination file redirects the upload
+([`configuration.md`](configuration.md#https-put-destinations)).
 
 ## Container hardening
 

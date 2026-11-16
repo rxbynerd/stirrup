@@ -77,7 +77,7 @@ func TestValidateHTTPSPutConfig_RejectsBadHeaders(t *testing.T) {
 }
 
 func TestValidateHTTPSPutConfig_RequiresSecretReferenceForCredentialHeaders(t *testing.T) {
-	for _, name := range []string{"Authorization", "cookie", "X-Api-Key", "x_api_key", "apikey", "Token", "X-Auth", "x-upload-auth", "Authentication", "x-amz-security-token", "x-amz-server-side-encryption-customer-key", "X-Upload-Signature"} {
+	for _, name := range []string{"Authorization", "cookie", "X-Api-Key", "x_api_key", "apikey", "Token", "X-Auth", "x-upload-auth", "Authentication", "x-amz-security-token", "x-amz-server-side-encryption-customer-key", "X-Upload-Signature", "Signature", "secret", "Password", "Key", "Credential", "Session"} {
 		t.Run(name, func(t *testing.T) {
 			must := require.New(t)
 			errs := validateHTTPSPut(&HTTPSPutConfig{URLRef: "secret://U", Headers: map[string]string{name: "plaintext-credential"}})
