@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -22,10 +23,17 @@ import (
 )
 
 // fakeAgentSandbox is a fake cluster for the k8s-sandbox executor: a typed
-// clientset for the NetworkPolicy and a dynamic client for the Sandbox.
+// clientset for the NetworkPolicy and the backing Pod, and a dynamic client
+// for the Sandbox.
 type fakeAgentSandbox struct {
 	cs  *fake.Clientset
 	dyn *dynamicfake.FakeDynamicClient
+	// execFn serves the constructor's pods/exec calls; nil means reachableExec.
+	execFn podExecFunc
+	// mutatePod, when set, rewrites the backing Pod admitSandboxes creates.
+	mutatePod func(*corev1.Pod)
+	// orphanPod keeps the backing Pod when its Sandbox is removed.
+	orphanPod bool
 	// lingering records how teardown treated a Sandbox that stays, marked
 	// for deletion, for a number of reads after its delete.
 	terminating        bool
@@ -42,8 +50,10 @@ func newFakeAgentSandbox(t *testing.T) *fakeAgentSandbox {
 	}
 }
 
-// admitSandboxes reports every created Sandbox Ready after mutate, if any,
-// rewrites it.
+// admitSandboxes stands in for the Agent Sandbox controller: every created
+// Sandbox is reported Ready after mutate, if any, rewrites it, and gets a
+// Ready backing Pod built from its podTemplate. Removing the Sandbox removes
+// the Pod unless orphanPod is set.
 func (f *fakeAgentSandbox) admitSandboxes(mutate func(obj *metav1unstructured.Unstructured)) {
 	f.dyn.PrependReactor("create", "sandboxes", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		obj := action.(clienttesting.CreateAction).GetObject().(*metav1unstructured.Unstructured)
@@ -51,8 +61,50 @@ func (f *fakeAgentSandbox) admitSandboxes(mutate func(obj *metav1unstructured.Un
 		if mutate != nil {
 			mutate(obj)
 		}
+		if err := f.createBackingPod(obj); err != nil {
+			return true, nil, err
+		}
 		return false, nil, nil
 	})
+	f.dyn.PrependReactor("delete", "sandboxes", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		f.removeBackingPod(action.GetNamespace(), action.(clienttesting.DeleteAction).GetName())
+		return false, nil, nil
+	})
+}
+
+// createBackingPod adds the Pod the Sandbox's podTemplate describes, Running
+// with the agent container Ready, then applies mutatePod.
+func (f *fakeAgentSandbox) createBackingPod(sandbox *metav1unstructured.Unstructured) error {
+	raw, found, err := metav1unstructured.NestedFieldNoCopy(sandbox.Object, "spec", "podTemplate")
+	if err != nil || !found {
+		return fmt.Errorf("sandbox has no podTemplate (found %v): %w", found, err)
+	}
+	rawTemplate, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Errorf("sandbox podTemplate is %T", raw)
+	}
+	var template corev1.PodTemplateSpec
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(rawTemplate, &template); err != nil {
+		return err
+	}
+	pod := &corev1.Pod{ObjectMeta: template.ObjectMeta, Spec: template.Spec}
+	pod.Name = sandbox.GetName()
+	pod.Namespace = sandbox.GetNamespace()
+	pod.UID = "uid-backing"
+	pod.Status = corev1.PodStatus{
+		Phase:             corev1.PodRunning,
+		ContainerStatuses: []corev1.ContainerStatus{{Name: k8sAgentContainer, Ready: true}},
+	}
+	if f.mutatePod != nil {
+		f.mutatePod(pod)
+	}
+	return f.cs.Tracker().Add(pod)
+}
+
+func (f *fakeAgentSandbox) removeBackingPod(namespace, name string) {
+	if !f.orphanPod {
+		_ = f.cs.Tracker().Delete(podsResource, namespace, name)
+	}
 }
 
 // lingerOnDelete makes a Sandbox delete set its deletion timestamp; the
@@ -86,6 +138,7 @@ func (f *fakeAgentSandbox) lingerOnDelete(t *testing.T, reads int) {
 		if err := f.dyn.Tracker().Delete(sandboxGVR, get.GetNamespace(), get.GetName()); err != nil && !apierrors.IsNotFound(err) {
 			return true, nil, err
 		}
+		f.removeBackingPod(get.GetNamespace(), get.GetName())
 		f.released = true
 		return false, nil, nil
 	})
@@ -106,7 +159,11 @@ func (f *fakeAgentSandbox) build(t *testing.T, timing k8sTiming) (*AgentSandboxE
 		Network:   &types.NetworkConfig{Mode: "none"},
 		Lifecycle: Lifecycle{RunID: testK8sRunID},
 	}
-	exec, err := newAgentSandboxExecutor(context.Background(), cfg, nil, f.cs, f.dyn, nil, timing, logger)
+	execFn := f.execFn
+	if execFn == nil {
+		execFn = reachableExec
+	}
+	exec, err := newAgentSandboxExecutor(context.Background(), cfg, nil, f.cs, f.dyn, nil, execFn, timing, logger)
 	return exec, logs, err
 }
 
@@ -217,15 +274,6 @@ func TestNewAgentSandboxExecutor_RollsBackThroughClose(t *testing.T) {
 	})
 }
 
-// backingPodNamed returns a running Pod standing in for the controller-created
-// Pod behind the named Sandbox.
-func backingPodNamed(name string) *corev1.Pod {
-	pod := readyPod("uid-backing")
-	pod.Name = name
-	pod.Labels = podLabels(name, testK8sRunID)
-	return pod
-}
-
 func TestAgentSandboxExecutor_CloseRetainsPolicy(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -288,8 +336,8 @@ func TestAgentSandboxExecutor_CloseRetainsPolicy(t *testing.T) {
 		},
 		{
 			name: "backing pod remains after the sandbox is gone",
-			arrange: func(t *testing.T, f *fakeAgentSandbox, name string) {
-				require.New(t).NoError(f.cs.Tracker().Add(backingPodNamed(name)))
+			arrange: func(_ *testing.T, f *fakeAgentSandbox, _ string) {
+				f.orphanPod = true
 			},
 			wantErr: "pod termination not confirmed within the 100ms teardown bound",
 		},
@@ -342,7 +390,7 @@ func TestAgentSandboxExecutor_CloseWaitsForTheBackingPod(t *testing.T) {
 	exec, _, err := f.build(t, fastK8sTiming)
 	must.NoError(err)
 	name := f.sandboxName(t)
-	must.NoError(f.cs.Tracker().Add(backingPodNamed(name)))
+	f.orphanPod = true
 
 	readsLeft, released, policyDeletedEarly := 3, false, false
 	f.cs.PrependReactor("get", "pods", func(action clienttesting.Action) (bool, runtime.Object, error) {
@@ -457,7 +505,7 @@ func TestNewAgentSandboxExecutor_RejectsNonGVisorRuntimeBeforeAnyClusterCall(t *
 			}
 			logger, _ := testLogger()
 
-			_, err := newAgentSandboxExecutor(context.Background(), cfg, nil, f.cs, f.dyn, nil, fastK8sTiming, logger)
+			_, err := newAgentSandboxExecutor(context.Background(), cfg, nil, f.cs, f.dyn, nil, reachableExec, fastK8sTiming, logger)
 
 			must.ErrorContains(err, `executor.runtime must be "gvisor" or empty (got "`+runtime+`")`)
 			must.Empty(f.cs.Actions(), "a rejected runtime reached the cluster")
