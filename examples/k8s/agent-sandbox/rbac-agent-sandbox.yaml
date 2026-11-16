@@ -15,9 +15,9 @@
 #                                        Pod's create/delete via the Sandbox CR)
 #   (no sandboxes verb)                sandboxes: create, get, delete
 #   pods/exec: create                  pods/exec: create        (unchanged)
-#   networkpolicies: create, delete,   networkpolicies: create, delete (no
-#     patch                              patch: this executor attaches no owner
-#                                        references)
+#   networkpolicies: create, delete,   networkpolicies: create, delete, and get
+#     patch, and get (standing           (standing policy); no patch, because this
+#     policy)                            executor attaches no owner references
 #
 # The verbs below are derived from the executor's calls in
 # harness/internal/executor/agentsandbox.go (Sandbox create/get/delete via the
@@ -43,6 +43,10 @@
 #                              both verbs construction fails fail-closed, because
 #                              a Pod whose egress cannot be confined must never be
 #                              created.
+#                    get     — on the standing default-deny policy by name
+#                              only; `stirrup --dry-run` reads it to confirm it
+#                              exists. Optional: without it the dry run reports
+#                              the check as not checked.
 #
 # The Role is intentionally namespaced (not a ClusterRole): the orchestrator
 # operates within a single sandbox namespace. Bind one Role per namespace if
@@ -97,6 +101,13 @@ rules:
     verbs:
       - create
       - delete
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+    resourceNames:
+      - stirrup-sandbox-default-deny-egress
+    verbs:
+      - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

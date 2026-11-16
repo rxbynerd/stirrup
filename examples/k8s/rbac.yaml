@@ -30,6 +30,10 @@
 #                                   policy a dead harness leaves behind is
 #                                   garbage-collected. Without it the run is
 #                                   unaffected and such a policy stays.
+#                         get     — on the standing default-deny policy by name
+#                                   only; `stirrup --dry-run` reads it to confirm
+#                                   it exists. Optional: without it the dry run
+#                                   reports the check as not checked.
 #
 #   These verbs cover every NetworkPolicy in the namespace, including the
 #   standing default-deny (sandbox-egress-default-deny.yaml); RBAC cannot name
@@ -81,6 +85,13 @@ rules:
       - create
       - delete
       - patch
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+    resourceNames:
+      - stirrup-sandbox-default-deny-egress
+    verbs:
+      - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
