@@ -4,10 +4,11 @@
 # check-image-pins.sh compares against the registry.
 #
 #   commit-tag.sh check <image> <commit>
-#       Prints GITHUB_OUTPUT lines: publish=true when the tag is absent,
-#       publish=false when it exists. An existing tag with no recorded
-#       digest also prints unrecorded=<digest>, so the caller records the
-#       digest the registry serves now. A failed lookup exits 1.
+#       Prints GITHUB_OUTPUT lines: publish=true when the tag is absent
+#       and unrecorded, publish=false when it exists. An existing tag
+#       with no recorded digest also prints unrecorded=<digest>, so the
+#       caller records the digest the registry serves now. A recorded
+#       tag missing from the registry, or a failed lookup, exits 1.
 #   commit-tag.sh record <image> <commit> <digest>
 #       Writes the commit status.
 #
@@ -48,7 +49,15 @@ case "$command" in
           echo "unrecorded=${digest}"
         fi
         ;;
-      3) echo "publish=true" ;;
+      3)
+        recorded=$(gh api --paginate "repos/${REPO}/commits/${commit}/statuses" \
+          --jq ".[] | select(.context == \"${context}\") | .description")
+        if [ -n "$recorded" ]; then
+          echo "::error::${image}:${tag} is recorded as $(head -n 1 <<<"$recorded") but is missing from the registry; it is not pushed again." >&2
+          exit 1
+        fi
+        echo "publish=true"
+        ;;
       *) exit 1 ;;
     esac
     ;;
