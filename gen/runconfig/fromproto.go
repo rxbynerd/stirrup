@@ -4,6 +4,8 @@ package runconfig
 
 import (
 	"encoding/json"
+	"maps"
+	"slices"
 
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/structpb"
@@ -14,8 +16,9 @@ import (
 
 // FromProto translates a wire RunConfig into types.RunConfig, as the
 // harness does for every task_assignment. It returns nil for a nil
-// message. Transport.Type is always "grpc": the message reached the
-// harness over the gRPC control stream.
+// message, and the result shares no slice, map or pointer with pc.
+// Transport.Type is always "grpc": the message reached the harness over
+// the gRPC control stream.
 func FromProto(pc *pb.RunConfig) *types.RunConfig {
 	if pc == nil {
 		return nil
@@ -54,9 +57,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 		v := int(*pc.MaxTokenBudget)
 		rc.MaxTokenBudget = &v
 	}
-	if pc.Temperature != nil {
-		rc.Temperature = pc.Temperature
-	}
+	rc.Temperature = clonePtr(pc.Temperature)
 	rc.ReasoningEffort = pc.ReasoningEffort
 	rc.ReasoningSummary = pc.ReasoningSummary
 	if pc.Timeout != nil {
@@ -97,9 +98,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	}
 	if pc.EditStrategy != nil {
 		rc.EditStrategy = types.EditStrategyConfig{Type: pc.EditStrategy.Type}
-		if pc.EditStrategy.FuzzyThreshold != nil {
-			rc.EditStrategy.FuzzyThreshold = pc.EditStrategy.FuzzyThreshold
-		}
+		rc.EditStrategy.FuzzyThreshold = clonePtr(pc.EditStrategy.FuzzyThreshold)
 	}
 	if pc.Verifier != nil {
 		rc.Verifier = verifierConfigFromProto(pc.Verifier)
@@ -115,7 +114,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	if pc.RuleOfTwo != nil {
 		// Enforce is `optional bool`; preserve unset/false so the validator
 		// applies the secure default (enforce) when omitted.
-		rc.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: pc.RuleOfTwo.Enforce}
+		rc.RuleOfTwo = &types.RuleOfTwoConfig{Enforce: clonePtr(pc.RuleOfTwo.Enforce)}
 		// Runtime keeps the same nil-vs-present distinction: absent stays
 		// nil so the factory's default arming applies.
 		if pc.RuleOfTwo.Runtime != nil {
@@ -135,7 +134,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 	if pc.CodeScanner != nil {
 		rc.CodeScanner = &types.CodeScannerConfig{
 			Type:              pc.CodeScanner.Type,
-			Scanners:          pc.CodeScanner.Scanners,
+			Scanners:          slices.Clone(pc.CodeScanner.Scanners),
 			BlockOnWarn:       pc.CodeScanner.BlockOnWarn,
 			SemgrepConfigPath: pc.CodeScanner.SemgrepConfigPath,
 		}
@@ -153,13 +152,13 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			MetricsEndpoint:        pc.TraceEmitter.MetricsEndpoint,
 			MetricsTemporality:     pc.TraceEmitter.MetricsTemporality,
 			Protocol:               pc.TraceEmitter.Protocol,
-			Headers:                pc.TraceEmitter.Headers,
+			Headers:                maps.Clone(pc.TraceEmitter.Headers),
 			Bucket:                 pc.TraceEmitter.Bucket,
 			ObjectPrefix:           pc.TraceEmitter.ObjectPrefix,
 			CaptureContent:         pc.TraceEmitter.CaptureContent,
 			CaptureContentMaxBytes: int(pc.TraceEmitter.CaptureContentMaxBytes),
 			Platform:               pc.TraceEmitter.Platform,
-			PlatformOptions:        pc.TraceEmitter.PlatformOptions,
+			PlatformOptions:        maps.Clone(pc.TraceEmitter.PlatformOptions),
 		}
 		if archive := pc.TraceEmitter.GetArchive(); archive != nil {
 			rc.TraceEmitter.Archive = &types.TraceArchiveConfig{
@@ -420,14 +419,14 @@ func modelRouterConfigFromProto(pc *pb.ModelRouterConfig) types.ModelRouterConfi
 		Type:                    pc.Type,
 		Provider:                pc.Provider,
 		Model:                   pc.Model,
-		ModeModels:              pc.ModeModels,
+		ModeModels:              maps.Clone(pc.ModeModels),
 		CheapProvider:           pc.CheapProvider,
 		CheapModel:              pc.CheapModel,
 		ExpensiveProvider:       pc.ExpensiveProvider,
 		ExpensiveModel:          pc.ExpensiveModel,
 		ExpensiveTurnThreshold:  int(pc.ExpensiveTurnThreshold),
 		ExpensiveTokenThreshold: int(pc.ExpensiveTokenThreshold),
-		CheapStopReasons:        pc.CheapStopReasons,
+		CheapStopReasons:        slices.Clone(pc.CheapStopReasons),
 	}
 }
 
@@ -440,7 +439,7 @@ func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 		Runtime:           pc.Runtime,
 		K8sNamespace:      pc.K8SNamespace,
 		K8sKubeconfig:     pc.K8SKubeconfig,
-		K8sNodeSelector:   pc.K8SNodeSelector,
+		K8sNodeSelector:   maps.Clone(pc.K8SNodeSelector),
 		K8sServiceAccount: pc.K8SServiceAccount,
 		K8sEgressProxyURL: pc.K8SEgressProxyUrl,
 		WorkspaceExportTo: pc.WorkspaceExportTo,
@@ -478,7 +477,7 @@ func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 	if pc.Network != nil {
 		ec.Network = &types.NetworkConfig{
 			Mode:      pc.Network.Mode,
-			Allowlist: pc.Network.Allowlist,
+			Allowlist: slices.Clone(pc.Network.Allowlist),
 		}
 	}
 	if pc.Resources != nil {
@@ -600,7 +599,7 @@ func dynamicContextFromProto(pc map[string]*pb.DynamicContextValue) map[string]t
 
 func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 	tc := types.ToolsConfig{
-		BuiltIn:        pc.BuiltIn,
+		BuiltIn:        slices.Clone(pc.BuiltIn),
 		MaxResultBytes: int(pc.MaxResultBytes),
 		Profile:        pc.GetProfile(),
 	}
@@ -622,8 +621,8 @@ func toolsConfigFromProto(pc *pb.ToolsConfig) types.ToolsConfig {
 			Name:            srv.Name,
 			URI:             srv.Uri,
 			APIKeyRef:       srv.ApiKeyRef,
-			AllowedTools:    srv.AllowedTools,
-			AllowedMCPHosts: srv.AllowedMcpHosts,
+			AllowedTools:    slices.Clone(srv.AllowedTools),
+			AllowedMCPHosts: slices.Clone(srv.AllowedMcpHosts),
 			Optional:        srv.Optional,
 		})
 	}

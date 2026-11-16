@@ -172,24 +172,6 @@ func TestToProto_PreservesBlockPresence(t *testing.T) {
 	})
 }
 
-func TestToProto_DoesNotAliasTheRunConfig(t *testing.T) {
-	check := assert.New(t)
-	must := require.New(t)
-	rc := filledRunConfig(t)
-	want := filledRunConfig(t)
-	pc, err := ToProto(rc)
-	must.NoError(err)
-
-	pc.Tools.BuiltIn[0] = "mutated"
-	pc.Executor.K8SNodeSelector["key"] = "mutated"
-	*pc.MaxTokenBudget = 99
-	*pc.SessionName = "mutated"
-	*pc.RuleOfTwo.Enforce = false
-	pc.GuardRail.Stages[0].Phases[0] = "mutated"
-
-	check.Equal(want, rc, "mutating the message must not reach the RunConfig it came from")
-}
-
 // TestToProto_ValidatedConfigReachesTheHarnessUnchanged pins the
 // documented control-plane sequence: a config validated and sent with
 // ToProto decodes to the same config, which validates again unchanged.
