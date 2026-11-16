@@ -233,7 +233,7 @@ Quick map for "I need to change X" lookups:
 | OTLP exporter construction (endpoint, TLS, headers, HTTP client, per signal) | `harness/internal/observability/otlp/` |
 | Observability platform profiles (`traceEmitter.platform`) and their precedence rules | `harness/internal/observability/platform/` (the only Go package outside `types/` that may name a vendor; a source-scan test enforces it); wiring in `core/factory.go::resolveTelemetry` (operator doc: `docs/observability-cloud.md#platform-profiles`) |
 | Build errors a control plane sees (`HostFileError` collapse for host-file fields) | `harness/internal/core/builderrors.go`, `harness/cmd/stirrup/cmd/job.go::controlPlaneBuildError` (operator doc: `docs/integration-guide.md#stream-lifecycle`) |
-| Result sink (RunResult payload) | `harness/internal/resultsink/` |
+| Result sink (RunResult payload; `https-put` sink in `httpsput.go`) | `harness/internal/resultsink/` |
 | Workspace export (`gs://` and HTTPS PUT) | `harness/internal/workspaceexport/` |
 | HTTPS PUT destinations (`httpsPut` blocks: secret-reference URL, upload client, origin-only errors) | `harness/internal/httpsput/`, config type and validation in `types/httpsput.go`, construction-time resolve in `core/httpsput.go` (operator doc: `docs/configuration.md#https-put-destinations`) |
 | `RunConfig` validation | `types/runconfig.go` |

@@ -1558,8 +1558,8 @@ Four independent channels; use the ones the topology supports:
 
 | Channel | Carries | Topology |
 |---|---|---|
-| `done` event | Outcome in `stop_reason`; run summary, including the trace reference, in `trace` | gRPC. The primary terminal signal for a control plane, sent after the git handoff, workspace export, trace upload, and any `gcs` or `gcp-pubsub` result delivery. |
-| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage (with cache and reasoning breakdown, see [`trace-inspection.md`](trace-inspection.md#token-usage)), duration, `finalAssistantText` (capped at 128 KiB by default), verifier verdict, command-output archive pointer, `traceReference` | Any (`resultSink.type: "stdout-json"`); `--output json` is the CLI equivalent. The line lands on process stdout, so a job control plane must collect Pod logs if it needs this detail. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. Setting `resultSink.type` to `gcp-pubsub` or `gcs` instead delivers the same JSON as one Pub/Sub message or one GCS object per run, with bounded retry. A delivery that still fails is reported as a `warning` starting `result sink:` before `done` (see [`configuration.md`](configuration.md#delivery)). |
+| `done` event | Outcome in `stop_reason`; run summary, including the trace reference, in `trace` | gRPC. The primary terminal signal for a control plane, sent after the git handoff, workspace export, trace upload, and any `gcs`, `gcp-pubsub` or `https-put` result delivery. |
+| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage (with cache and reasoning breakdown, see [`trace-inspection.md`](trace-inspection.md#token-usage)), duration, `finalAssistantText` (capped at 128 KiB by default), verifier verdict, command-output archive pointer, `traceReference` | Any (`resultSink.type: "stdout-json"`); `--output json` is the CLI equivalent. The line lands on process stdout, so a job control plane must collect Pod logs if it needs this detail. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. Setting `resultSink.type` to `gcp-pubsub` or `gcs` instead delivers the same JSON as one Pub/Sub message or one GCS object per run, with bounded retry; `https-put` delivers it with one HTTP `PUT` to a URL supplied as a secret reference, for a control plane outside Google Cloud. A delivery that still fails is reported as a `warning` starting `result sink:` before `done` (see [`configuration.md`](configuration.md#delivery)). |
 | Trace emitter | Full event-by-event record (`jsonl` file, `gcs` object `gs://bucket/prefix/<runId>.jsonl`, or `otel` spans/metrics) | Any. JSONL schema: [`trace-inspection.md`](trace-inspection.md). Production builds embed a `Redact()`-ed `RunConfig`; debug builds can explicitly relax trace redaction. |
 | Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`) or to an HTTPS URL with one `PUT` (`executor.workspaceExportHttpsPut`) | Any. Required by default: a failed export turns a successful run into `handoff_failed`; `executor.workspaceExportRequired: false` only records it. |
 
@@ -1611,6 +1611,12 @@ harness that predates the field ignores it without notice, so confirm
 `ready.config_fields` before relying on it. Field rules, timeouts and
 follow-up behaviour:
 [`configuration.md`](configuration.md#https-put-destinations).
+
+The run's `RunResult` can travel the same way: set `resultSink` to
+`{"type": "https-put", "httpsPut": {"urlRef": "secret://…"}}` with a
+second upload URL, and confirm `resultSink.httpsPut.urlRef` is in
+`ready.config_fields`. Delivery and retry rules:
+[`configuration.md`](configuration.md#delivery).
 
 ### Linking a run to the control plane's own page
 

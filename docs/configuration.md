@@ -839,6 +839,7 @@ end-of-run. There is no CLI flag; the block is set in the `RunConfig`
 | `stdout-json` | One `STIRRUP_RESULT <json>` line on stdout (see [Run output](#run-output)). | — |
 | `gcs` | One object, `gs://{bucket}/{objectPrefix}{runId}.result.json`, holding the `RunResult` JSON. | `bucket` (required), `objectPrefix`, `credential` |
 | `gcp-pubsub` | One Pub/Sub message whose data is the `RunResult` JSON. | `topic` (required), `attributes`, `orderingKey`, `credential` |
+| `https-put` | One HTTP `PUT` of the `RunResult` JSON to the URL `httpsPut.urlRef` resolves to: a presigned object-store URL or an endpoint the control plane serves. | `httpsPut` (required) |
 
 `maxFinalAssistantTextBytes` applies to every type. Every other field
 is rejected on a type that does not use it.
@@ -858,9 +859,18 @@ is rejected on a type that does not use it.
 }
 ```
 
-The `gcs` and `gcp-pubsub` sinks deliver the same JSON document as
-`stdout-json`, without the `STIRRUP_RESULT ` sentinel and without the
-250 KiB line cap, which exists only for log transports.
+```json
+{
+  "resultSink": {
+    "type": "https-put",
+    "httpsPut": { "urlRef": "secret://file:///var/run/stirrup/result-url" }
+  }
+}
+```
+
+The `gcs`, `gcp-pubsub` and `https-put` sinks deliver the same JSON
+document as `stdout-json`, without the `STIRRUP_RESULT ` sentinel and
+without the 250 KiB line cap, which exists only for log transports.
 
 #### Field rules
 
@@ -868,6 +878,10 @@ Validation checks each field's shape, so a malformed value fails at
 boot rather than after the run's work is done. Whether the bucket or
 topic exists and whether the credential may write to it are only
 discovered at delivery; `--dry-run` does not probe the result sink.
+An `https-put` sink's URL reference is resolved and checked when the
+harness is constructed, so a reference that is unset or resolves to an
+unusable URL also fails at boot; whether the URL accepts the upload is
+discovered at delivery.
 
 - `bucket` must pass the same shape check as `traceEmitter.bucket`.
   `objectPrefix` must be valid UTF-8 of at most 883 bytes, so the
@@ -897,6 +911,10 @@ discovered at delivery; `--dry-run` does not probe the result sink.
   `gcs` trace emitter. The service account needs
   `roles/storage.objectCreator` on the bucket for `gcs`, or
   `roles/pubsub.publisher` on the topic for `gcp-pubsub`.
+- `httpsPut` follows the rules in
+  [HTTPS PUT destinations](#https-put-destinations): `urlRef` is a
+  `secret://` reference, never an inline URL, and `headers` may add
+  what the destination requires. The sink takes no `credential`.
 
 `maxFinalAssistantTextBytes` has no upper bound. Pub/Sub rejects a
 publish request over 10 MB, and the message data is base64-encoded,
@@ -904,8 +922,8 @@ so a cap above about 7 MB can make a `gcp-pubsub` delivery fail.
 
 #### Delivery
 
-`stirrup harness` and `stirrup job` deliver to a `gcs` or
-`gcp-pubsub` sink after the run's trace is finished and before its
+`stirrup harness` and `stirrup job` deliver to a `gcs`, `gcp-pubsub`
+or `https-put` sink after the run's trace is finished and before its
 `done` event, for the primary run and every follow-up run. The Go
 embedding API (`harnessapi`) does not deliver to these sinks.
 
@@ -914,9 +932,11 @@ attempt is bounded at 30 s and the whole delivery at 60 s, so `done`
 can be held back by up to a minute. Transport errors, credential
 errors, and HTTP 408, 429 and 5xx responses are retried. Pub/Sub 409
 (`ABORTED`) and 499 (`CANCELLED`) are retried too, matching Google's
-Pub/Sub client libraries. Other statuses fail at once. Each retried
-attempt is logged at warn level, and a success is logged at info level
-with the object URI or the Pub/Sub message ID.
+Pub/Sub client libraries. Other statuses fail at once, as does an
+`https-put` reference that does not resolve to a usable URL. Each
+retried attempt is logged at warn level, and a success is logged at
+info level with the object URI, the Pub/Sub message ID, or the
+`https-put` destination's origin.
 
 If every attempt fails, the harness logs the error and sends a
 `warning` event whose message starts `result sink:`, ahead of the
@@ -943,10 +963,26 @@ A `gcp-pubsub` retry after a lost acknowledgement publishes the same
 message again, so delivery is at-least-once. A repeat carries the
 same data as the original.
 
+The `https-put` sink names one object rather than one per run ID. Every
+run in a session, follow-ups included, uploads to the URL the reference
+resolves to when that run ends, so a control plane that wants each
+run's result replaces the referenced value between runs (see
+[Follow-up runs and HTTPS PUT](#follow-up-runs-and-https-put)). Whether
+an upload may replace an existing object is the destination's decision.
+To make it create-only, as the `gcs` sink is, add the store's
+conditional header to `httpsPut.headers`, for example
+`"If-None-Match": "*"` on Amazon S3 or Azure Blob Storage; a presigned
+URL must have been signed for that header where the store requires it.
+A retry after an attempt that was sent but not answered can then be
+refused with `412`, and the failure message says the object is probably
+this run's result but cannot be confirmed.
+
 #### Trust boundary
 
 These sinks are only as trustworthy as the isolation between the agent
-and the credential they use. With the `local` executor, or any
+and the credential they use. For `https-put` the credential is the URL
+itself, held in the variable or file its reference names, which the
+`local` executor's commands can read. With the `local` executor, or any
 sandbox that can reach the metadata server or a `gcp-default` key
 file, the agent's commands can obtain the same credential. They can
 then create an object under the run's name before the harness does,
@@ -1004,11 +1040,16 @@ An `httpsPut` block names a destination the harness uploads one object
 to with a single HTTP `PUT`: a presigned object-store URL (Amazon S3,
 Cloudflare R2, Google Cloud Storage, Azure Blob Storage) or an endpoint
 the control plane serves itself. No cloud credential travels and no
-vendor SDK is involved. `executor.workspaceExportHttpsPut` uses it for
-the workspace tarball; it is mutually exclusive with
-`executor.workspaceExportTo`, shares its executor restriction and
-`executor.workspaceExportRequired` policy, and produces the same
-receipt. The block has no CLI flag: it is set through `--config` or a
+vendor SDK is involved. Two surfaces take the block:
+
+- `executor.workspaceExportHttpsPut` uploads the workspace tarball. It
+  is mutually exclusive with `executor.workspaceExportTo`, shares its
+  executor restriction and `executor.workspaceExportRequired` policy,
+  and produces the same receipt.
+- `resultSink.httpsPut`, with `resultSink.type: "https-put"`, uploads
+  the `RunResult` JSON (see [Result sinks](#result-sinks)).
+
+The block has no CLI flag: it is set through `--config` or a
 `task_assignment`.
 
 ```json
@@ -1057,7 +1098,8 @@ valid.
 
 **The request** is one `PUT` whose body is the object, with
 `Content-Length` set and a `Content-Type` of `application/gzip` for a
-workspace tarball. Any `2xx` response is success. The client follows no
+workspace tarball or `application/json` for a `RunResult`. Any `2xx`
+response is success. The client follows no
 redirect (a `3xx` is a failure), uses no proxy, and refuses to connect
 to a cloud metadata address: any link-local address (such as
 `169.254.169.254`), AWS's IPv6 service range `fd00:ec2::/32`, Alibaba
@@ -1067,7 +1109,9 @@ plane's endpoint is commonly in-cluster. Each upload uses its own connection. Th
 30 s to connect, 10 s for the TLS handshake and 60 s for the response
 headers once the body is sent. A workspace upload
 is bounded at 5 minutes overall, the same budget the whole workspace
-handoff has, and the tarball at 1 GiB. The upload is attempted once.
+handoff has, and the tarball at 1 GiB. The upload is attempted once. A
+`RunResult` upload is bounded at 30 s per attempt and retried as
+[Delivery](#delivery) describes.
 
 Under `--dry-run` the destination is resolved and checked but not
 contacted.
@@ -1097,7 +1141,8 @@ referenced value (for example the mounted file) between runs; when the
 value is unchanged, a follow-up's upload replaces the earlier object, or
 is refused if the store or URL forbids a second write, which fails a
 required export. Each run's receipt carries the SHA-256 of what it
-uploaded.
+uploaded. The `https-put` result sink behaves the same way: one
+object, uploaded to by every run.
 
 ### Dry-run
 

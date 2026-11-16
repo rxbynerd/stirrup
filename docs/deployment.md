@@ -221,7 +221,7 @@ IMDS, GitHub Actions OIDC). See
    `resultSink` after `done`. The workspace export, when
    `executor.workspaceExportTo` or `executor.workspaceExportHttpsPut`
    is set, has already run before `done`,
-   and so has delivery to a `gcs` or `gcp-pubsub` sink; if that
+   and so has delivery to a `gcs`, `gcp-pubsub` or `https-put` sink; if that
    delivery still fails after its retries, the harness sends a
    `warning` starting `result sink:` ahead of `done` (see
    [`configuration.md`](configuration.md#delivery)). Every run —
