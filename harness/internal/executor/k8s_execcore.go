@@ -90,7 +90,7 @@ func (e *podExecCore) prepareScratch(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, e.fileIOBound())
 	defer cancel()
 
-	stderr := writeCapBuffer{limit: k8sClusterTextMax * 4}
+	stderr := writeCapBuffer{limit: 64 << 10}
 	if err := e.streamExec(ctx, scratchSetupCommand(), nil, io.Discard, &stderr); err != nil {
 		if code, ok := extractExitCode(err); ok && code != 0 {
 			return fmt.Errorf("prepare sandbox scratch: exit %d: %s", code, clusterText(strings.TrimSpace(stderr.String())))

@@ -232,6 +232,9 @@ func TestNewAgentSandboxExecutor_RollsBackThroughClose(t *testing.T) {
 		var commands [][]string
 		f.execFn = func(_ context.Context, command []string, _ io.Reader, _, stderr io.Writer) error {
 			commands = append(commands, command)
+			if isExecProbe(command) {
+				return nil
+			}
 			_, _ = io.WriteString(stderr, "mkdir: can't create directory '/scratch/home': File exists\n")
 			return utilexec.CodeExitError{Err: errors.New("command terminated with exit code 1"), Code: 1}
 		}
@@ -239,7 +242,7 @@ func TestNewAgentSandboxExecutor_RollsBackThroughClose(t *testing.T) {
 		_, _, err := f.build(t, fastK8sTiming)
 
 		must.ErrorContains(err, "prepare sandbox scratch: exit 1: mkdir: can't create directory '/scratch/home': File exists")
-		must.Equal([][]string{scratchSetupCommand()}, commands)
+		must.Equal([][]string{execProbeCommand, scratchSetupCommand()}, commands, "the reachability probe precedes the scratch setup")
 		f.requireSandboxRemovedThenPolicy(t, f.sandboxName(t))
 	})
 }
