@@ -169,3 +169,74 @@ func TestRunJob_BuildFailureStopsHeartbeatsBeforeErrorAndDone(t *testing.T) {
 	phases := phaseSequence(events)
 	must.Equal(types.SessionPhaseConstructing, phases[len(phases)-1].Phase)
 }
+
+func TestRunJob_SuccessfulSessionEndsWithDone(t *testing.T) {
+	must := require.New(t)
+	useTempMarkerPaths(t)
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	t.Setenv("CONTROL_PLANE_SESSION_ID", "")
+	provider, _ := startOpenAIStub(t)
+	srv := newScriptedControlPlane(followUpJobConfig(t, provider.URL, 30, 0), func(int) *pb.ControlEvent { return nil })
+	serveControlPlane(t, srv)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runJob(jobCmd, nil) }()
+	must.Equal("success", srv.waitDone(t, "the run"))
+	awaitRunJob(t, errCh)
+
+	events := srv.events()
+	must.Equal("done", events[len(events)-1].GetType(), "done is the last event; got %v", eventTypes(events))
+	must.Equal([]types.SessionPhase{
+		{Phase: types.SessionPhaseConstructing},
+		{Phase: types.SessionPhaseConstructing, Step: types.SessionStepRunSetup},
+		{Phase: types.SessionPhaseRunning},
+		{Phase: types.SessionPhasePostRun},
+	}, phaseSequence(events)[1:], "phases after the assignment wait")
+}
+
+func TestRunJob_FollowUpWindowReportsIdlePhaseBetweenRuns(t *testing.T) {
+	must := require.New(t)
+	useTempMarkerPaths(t)
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	t.Setenv("CONTROL_PLANE_SESSION_ID", "")
+	provider, _ := startOpenAIStub(t)
+	srv := newScriptedControlPlane(followUpJobConfig(t, provider.URL, 30, 1), func(n int) *pb.ControlEvent {
+		if n == 0 {
+			return &pb.ControlEvent{Type: "user_response", UserResponse: "again"}
+		}
+		return nil
+	})
+	serveControlPlane(t, srv)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runJob(jobCmd, nil) }()
+	must.Equal("success", srv.waitDone(t, "the primary run"))
+	must.Equal("success", srv.waitDone(t, "the follow-up run"))
+	awaitRunJob(t, errCh)
+
+	events := srv.events()
+	var afterDone []string
+	dones := 0
+	for _, ev := range events {
+		if dones == 2 {
+			afterDone = append(afterDone, ev.GetType()+":"+ev.GetSessionPhase().GetPhase())
+		}
+		if ev.GetType() == "done" {
+			dones++
+		}
+	}
+	must.Equal([]string{"heartbeat:" + types.SessionPhaseIdleFollowUp}, afterDone,
+		"only the idle window's heartbeat follows the last done until the window closes")
+	idle := types.SessionPhase{Phase: types.SessionPhaseIdleFollowUp}
+	must.Equal(2, countPhaseChanges(phaseSequence(events), idle), "the window opens after each run")
+}
+
+func countPhaseChanges(phases []types.SessionPhase, want types.SessionPhase) int {
+	n := 0
+	for _, p := range phases {
+		if p == want {
+			n++
+		}
+	}
+	return n
+}

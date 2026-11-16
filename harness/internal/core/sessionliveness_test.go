@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -284,4 +285,88 @@ func TestLoopRun_SessionHeartbeatCoversEveryStalledPhase(t *testing.T) {
 	}
 	events := rec.snapshot()
 	must.Equal("done", events[len(events)-1].Type, "no heartbeat follows done while the session is paused")
+}
+
+func (r *recordingLiveness) snapshot() []types.SessionPhase {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]types.SessionPhase(nil), r.phases...)
+}
+
+func TestRunFollowUpLoop_SessionLivenessReportsIdleWindowAndFollowUpRun(t *testing.T) {
+	must := require.New(t)
+	loop, tr := buildFollowUpTestLoop(t)
+	liveness := &recordingLiveness{}
+	loop.Liveness = liveness
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ran := make(chan struct{}, 1)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		RunFollowUpLoop(ctx, loop, buildTestConfig(), 30, FollowUpOptions{
+			OnRunComplete: func(*types.RunConfig, *types.RunTrace, error) { ran <- struct{}{} },
+		})
+	}()
+	must.Eventually(func() bool { return len(liveness.snapshot()) > 0 }, 5*time.Second, time.Millisecond)
+	tr.FireControl(types.ControlEvent{Type: "user_response", UserResponse: "again"})
+	select {
+	case <-ran:
+	case <-time.After(5 * time.Second):
+		must.FailNow("follow-up run did not complete")
+	}
+	must.Eventually(func() bool { return len(liveness.snapshot()) >= 5 }, 5*time.Second, time.Millisecond)
+	cancel()
+	<-done
+
+	idle := types.SessionPhase{Phase: types.SessionPhaseIdleFollowUp}
+	must.Equal([]types.SessionPhase{
+		idle,
+		{Phase: types.SessionPhaseConstructing, Step: types.SessionStepRunSetup},
+		{Phase: types.SessionPhaseRunning},
+		{Phase: types.SessionPhasePostRun},
+		idle,
+	}, liveness.snapshot(), "the window reopens after the follow-up run")
+}
+
+func TestRunFollowUpLoop_SessionLivenessReportsNothingWithoutWindow(t *testing.T) {
+	must := require.New(t)
+	loop, _ := buildFollowUpTestLoop(t)
+	liveness := &recordingLiveness{}
+	loop.Liveness = liveness
+
+	RunFollowUpLoop(context.Background(), loop, buildTestConfig(), 0, FollowUpOptions{})
+
+	must.Empty(liveness.snapshot(), "no idle phase is reported when no window opens")
+}
+
+// TestRunFollowUpLoop_SessionHeartbeatCoversStalledIdleWindow requires
+// heartbeats through an idle follow-up window and none after it closes.
+func TestRunFollowUpLoop_SessionHeartbeatCoversStalledIdleWindow(t *testing.T) {
+	must := require.New(t)
+	loop, _ := buildFollowUpTestLoop(t)
+	rec := &recordingTransport{}
+	loop.Transport = rec
+	h := StartSessionHeartbeat(rec, testLivenessInterval, types.SessionPhase{Phase: types.SessionPhasePostRun}, nil)
+	h.Pause()
+	loop.Liveness = h
+
+	RunFollowUpLoop(context.Background(), loop, buildTestConfig(), 1, FollowUpOptions{})
+	h.Stop()
+
+	idle := types.SessionPhase{Phase: types.SessionPhaseIdleFollowUp}
+	must.GreaterOrEqual(countPhase(rec.heartbeatPhases(), idle), 3, "heartbeats during the idle window")
+}
+
+func TestSessionHeartbeat_LogsOnlyTheFirstFailure(t *testing.T) {
+	must := require.New(t)
+	tr := &failingTransport{}
+	logs := newLevelCounter("transport emit failed")
+
+	h := StartSessionHeartbeat(tr, time.Millisecond, types.SessionPhase{Phase: types.SessionPhaseRunning}, slog.New(logs))
+	must.Eventually(func() bool { return tr.attempts.Load() >= 5 }, 5*time.Second, time.Millisecond, "heartbeat did not tick")
+	h.Stop()
+
+	must.Equal(1, logs.count(slog.LevelWarn), "heartbeat failure log records")
 }
