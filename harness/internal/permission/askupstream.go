@@ -3,6 +3,7 @@ package permission
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -52,6 +53,13 @@ type AskUpstreamPolicy struct {
 	// pending-channel map and the request-ID counter.
 	correlator *transport.Correlator
 }
+
+// inputTooLargeForApprovalReason denies a call whose input exceeds
+// transport.MaxRequestInputBytes. The request is never sent: a truncated
+// input could be approved without the control plane seeing all of it.
+var inputTooLargeForApprovalReason = fmt.Sprintf(
+	"tool input exceeds the %d-byte limit for upstream approval; the control plane cannot review it",
+	transport.MaxRequestInputBytes)
 
 type permissionResponse struct {
 	allowed bool
@@ -117,7 +125,8 @@ func (p *AskUpstreamPolicy) AddApprovalTool(name string) {
 // Check implements PermissionPolicy. Tools that do not require upstream
 // approval are auto-allowed. Approval-required tools emit a
 // permission_request event via Transport and block until the control plane
-// responds or the context is cancelled.
+// responds or the context is cancelled. A call whose input the transport
+// refuses as too large is denied.
 func (p *AskUpstreamPolicy) Check(ctx context.Context, tool types.ToolDefinition, input json.RawMessage) (*PermissionResult, error) {
 	p.mu.Lock()
 	required := p.approvalTools[tool.Name]
@@ -143,6 +152,9 @@ func (p *AskUpstreamPolicy) Check(ctx context.Context, tool types.ToolDefinition
 			Input:     input,
 		})
 	})
+	if errors.Is(err, transport.ErrRequestInputTooLarge) {
+		return &PermissionResult{Allowed: false, Reason: inputTooLargeForApprovalReason}, nil
+	}
 	if err != nil {
 		// Surface a domain-specific error message while preserving the
 		// underlying cause (timeout, ctx, emit failure) for callers that

@@ -971,6 +971,17 @@ than 1 KiB comes back shortened and does not match the one sent.
 most 256 entries, each capped like a name field, and
 `tools_loaded.input` is capped like a `tool_call` input.
 
+**Request inputs are bounded, never truncated.** The control plane
+acts on the exact `input` of a `permission_request` or
+`tool_result_request`, so the harness refuses to send one over
+256 KiB rather than cutting it. An oversized `permission_request` is
+denied without being sent, and the model sees `Permission denied:`
+with the reason. An oversized `tool_result_request` fails that tool
+call with `input_too_large`. A `batch_submission` input (the whole
+provider request) is bounded at 3 MiB, under grpc-go's 4 MiB default
+receive limit; a larger submission fails the model call without being
+sent. In each case the stream stays open.
+
 <a id="secrets-on-the-stream"></a>**Secrets.** Every text field is scrubbed of recognised secret formats
 before it is sent. `text_delta` and `thinking_delta` fragments are not
 the provider's deltas and have no stable size or count: concatenated

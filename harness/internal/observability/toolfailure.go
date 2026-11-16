@@ -60,8 +60,9 @@ const (
 	// Handler nor an AsyncHandler; indicates a registry misconfiguration.
 	ToolFailureHandlerMissing ToolFailureCategory = "handler_missing"
 
-	// ToolFailureAsyncPreflight — the AsyncHandler preflight errored
-	// before the loop emitted tool_result_request.
+	// ToolFailureAsyncPreflight — the AsyncHandler preflight errored, or
+	// the transport refused the call's input as too large, so no
+	// tool_result_request was sent.
 	ToolFailureAsyncPreflight ToolFailureCategory = "async_preflight_error"
 
 	// ToolFailureAsyncTransport — async tool dispatch attempted with no

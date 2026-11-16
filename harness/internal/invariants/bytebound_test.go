@@ -3,6 +3,7 @@ package invariants
 import (
 	"go/ast"
 	"go/token"
+	"path"
 	"strconv"
 	"strings"
 	"testing"
@@ -79,6 +80,112 @@ func TestHarnessEvents_PassTheByteBound(t *testing.T) {
 		check.True(boundBefore(encl.decl, call.Pos()), "%s: %s runs before boundEventFields in %s", where, name, encl.site())
 	})
 	check.Positive(conversions, "no harnessEventToProto or Send call found; the check would be vacuous")
+}
+
+// TestHarnessEvents_EveryInputCarryingTypeIsBounded pins that every
+// HarnessEvent type the harness builds with an Input field has a case in
+// boundEventFields, which caps the input or refuses an oversized one, so
+// a new request or tool event cannot carry an unbounded input to the
+// control plane.
+func TestHarnessEvents_EveryInputCarryingTypeIsBounded(t *testing.T) {
+	check := assert.New(t)
+	fset := token.NewFileSet()
+	files := parseProductionTree(t, fset, "harness")
+
+	handled := boundEventFieldsCases(t, files)
+	consts := packageStringConsts(files)
+
+	producers := 0
+	for i := range files {
+		sf := &files[i]
+		typesName := importName(sf.file, "github.com/rxbynerd/stirrup/types")
+		ast.Inspect(sf.file, func(n ast.Node) bool {
+			lit, ok := n.(*ast.CompositeLit)
+			if !ok || !isPkgSelector(lit.Type, typesName, "HarnessEvent") || fieldValue(lit, "Input") == nil {
+				return true
+			}
+			producers++
+			where := position(fset, lit.Pos())
+			typ, resolved := stringValue(fieldValue(lit, "Type"), consts[path.Dir(sf.path)])
+			if !check.True(resolved, "%s: HarnessEvent with Input has a Type the check cannot resolve to a string constant", where) {
+				return true
+			}
+			check.True(handled[typ], "%s: %q events carry Input but boundEventFields has no case for them", where, typ)
+			return true
+		})
+	}
+	check.Positive(producers, "no HarnessEvent literal sets Input; the check would be vacuous")
+}
+
+// boundEventFieldsCases returns the string literals of the case clauses
+// in boundEventFields.
+func boundEventFieldsCases(t *testing.T, files []sourceFile) map[string]bool {
+	t.Helper()
+	fd := findFunc(t, files, "harness/internal/transport/eventbound.go", "boundEventFields")
+	cases := map[string]bool{}
+	ast.Inspect(fd.decl.Body, func(n ast.Node) bool {
+		clause, ok := n.(*ast.CaseClause)
+		if !ok {
+			return true
+		}
+		for _, expr := range clause.List {
+			if s, ok := stringValue(expr, nil); ok {
+				cases[s] = true
+			}
+		}
+		return true
+	})
+	assert.NotEmpty(t, cases, "boundEventFields has no string cases; the check would be vacuous")
+	return cases
+}
+
+// packageStringConsts maps each package directory to its string constants.
+func packageStringConsts(files []sourceFile) map[string]map[string]string {
+	out := map[string]map[string]string{}
+	for _, sf := range files {
+		dir := path.Dir(sf.path)
+		for _, decl := range sf.file.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok || gd.Tok != token.CONST {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				vs, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, name := range vs.Names {
+					if i >= len(vs.Values) {
+						continue
+					}
+					if s, ok := stringValue(vs.Values[i], nil); ok {
+						if out[dir] == nil {
+							out[dir] = map[string]string{}
+						}
+						out[dir][name.Name] = s
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// stringValue resolves expr to a string: a string literal, or an
+// identifier naming one of consts.
+func stringValue(expr ast.Expr, consts map[string]string) (string, bool) {
+	switch e := expr.(type) {
+	case *ast.BasicLit:
+		if e.Kind != token.STRING {
+			return "", false
+		}
+		s, err := strconv.Unquote(e.Value)
+		return s, err == nil
+	case *ast.Ident:
+		s, ok := consts[e.Name]
+		return s, ok
+	}
+	return "", false
 }
 
 // takesHarnessEvent reports whether fd's only parameter is a

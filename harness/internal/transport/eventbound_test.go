@@ -39,7 +39,7 @@ func TestBoundEventFields_CapsUserMessageAndThinkingText(t *testing.T) {
 		t.Run(typ, func(t *testing.T) {
 			must := require.New(t)
 			ev := types.HarnessEvent{Type: typ, Source: types.UserMessageSourceInitialPrompt, Text: big}
-			boundEventFields(&ev)
+			must.NoError(boundEventFields(&ev))
 			must.LessOrEqual(len(ev.Text), maxEventFieldBytes)
 			must.True(utf8.ValidString(ev.Text), "capped text must be valid UTF-8")
 			must.True(strings.HasSuffix(ev.Text, truncationMarkerSuffix(len(big))), "marker must name the original size")
@@ -47,7 +47,7 @@ func TestBoundEventFields_CapsUserMessageAndThinkingText(t *testing.T) {
 	}
 
 	delta := types.HarnessEvent{Type: "text_delta", Text: big}
-	boundEventFields(&delta)
+	must.NoError(boundEventFields(&delta))
 	must.Equal(big, delta.Text, "text_delta text must not be capped")
 }
 
@@ -136,7 +136,7 @@ func TestBoundEventFields_CapsIdentifiers(t *testing.T) {
 	} {
 		t.Run(ev.Type, func(t *testing.T) {
 			must := require.New(t)
-			boundEventFields(&ev)
+			must.NoError(boundEventFields(&ev))
 			for field, got := range map[string]string{
 				"id": ev.ID, "name": ev.Name, "tool_use_id": ev.ToolUseID, "request_id": ev.RequestID, "tool_name": ev.ToolName,
 			} {
@@ -148,22 +148,22 @@ func TestBoundEventFields_CapsIdentifiers(t *testing.T) {
 
 	call := types.HarnessEvent{Type: "tool_call", ID: big}
 	result := types.HarnessEvent{Type: "tool_result", ToolUseID: big}
-	boundEventFields(&call)
-	boundEventFields(&result)
+	must.NoError(boundEventFields(&call))
+	must.NoError(boundEventFields(&result))
 	must.Equal(call.ID, result.ToolUseID, "capped tool_result tool_use_id must match capped tool_call id")
 
 	done := types.HarnessEvent{Type: "done", StopReason: big}
-	boundEventFields(&done)
+	must.NoError(boundEventFields(&done))
 	must.LessOrEqual(len(done.StopReason), maxEventIdentifierBytes, "done stop_reason must be capped")
 
 	bigMessage := strings.Repeat("m", 6<<20)
 	warning := types.HarnessEvent{Type: "warning", Message: bigMessage}
-	boundEventFields(&warning)
+	must.NoError(boundEventFields(&warning))
 	must.LessOrEqual(len(warning.Message), maxEventFieldBytes)
 	must.True(strings.HasSuffix(warning.Message, truncationMarkerSuffix(len(bigMessage))), "warning message must carry the truncation marker")
 
 	short := types.HarnessEvent{Type: "tool_call", ID: "tc1", Name: "read_file"}
-	boundEventFields(&short)
+	must.NoError(boundEventFields(&short))
 	must.Equal("tc1", short.ID, "identifier under the cap must not be altered")
 	must.Equal("read_file", short.Name, "identifier under the cap must not be altered")
 }
@@ -176,7 +176,7 @@ func TestBoundEventFields_CapsToolsLoaded(t *testing.T) {
 			tools[i] = fmt.Sprintf("mcp_server_tool_%d", i)
 		}
 		ev := types.HarnessEvent{Type: "tools_loaded", Tools: tools}
-		boundEventFields(&ev)
+		must.NoError(boundEventFields(&ev))
 		must.Len(ev.Tools, maxEventToolEntries)
 		must.Equal(tools[:maxEventToolEntries], ev.Tools)
 	})
@@ -185,7 +185,7 @@ func TestBoundEventFields_CapsToolsLoaded(t *testing.T) {
 		must := require.New(t)
 		big := strings.Repeat("é", maxEventIdentifierBytes)
 		ev := types.HarnessEvent{Type: "tools_loaded", Name: big, Source: big, Tools: []string{"read_file", big}}
-		boundEventFields(&ev)
+		must.NoError(boundEventFields(&ev))
 		must.Equal("read_file", ev.Tools[0], "an entry under the cap is not altered")
 		for field, got := range map[string]string{"tools[1]": ev.Tools[1], "name": ev.Name, "source": ev.Source} {
 			must.LessOrEqual(len(got), maxEventIdentifierBytes, "%s is over the identifier cap", field)
@@ -197,7 +197,7 @@ func TestBoundEventFields_CapsToolsLoaded(t *testing.T) {
 		must := require.New(t)
 		input := json.RawMessage(`{"query":"` + strings.Repeat("a", maxEventFieldBytes) + `"}`)
 		ev := types.HarnessEvent{Type: "tools_loaded", Input: input}
-		boundEventFields(&ev)
+		must.NoError(boundEventFields(&ev))
 		must.LessOrEqual(len(ev.Input), maxEventFieldBytes)
 		must.True(json.Valid(ev.Input), "tools_loaded input must remain valid JSON")
 	})
@@ -205,10 +205,52 @@ func TestBoundEventFields_CapsToolsLoaded(t *testing.T) {
 	t.Run("nil tool list stays nil", func(t *testing.T) {
 		must := require.New(t)
 		ev := types.HarnessEvent{Type: "tools_loaded", Source: types.ToolsLoadedSourceHarness}
-		boundEventFields(&ev)
+		must.NoError(boundEventFields(&ev))
 		must.Nil(ev.Tools)
 		must.Equal("harness", ev.Source)
 	})
+}
+
+func TestBoundEventFields_RequestInputAtBoundPassesUnchanged_OverBoundRefused(t *testing.T) {
+	for typ, limit := range map[string]int{
+		"permission_request":  MaxRequestInputBytes,
+		"tool_result_request": MaxRequestInputBytes,
+		"batch_submission":    MaxBatchSubmissionInputBytes,
+	} {
+		t.Run(typ, func(t *testing.T) {
+			must := require.New(t)
+			atBound := json.RawMessage(`"` + strings.Repeat("a", limit-2) + `"`)
+			ev := types.HarnessEvent{Type: typ, RequestID: "r-1", Input: atBound}
+			must.NoError(boundEventFields(&ev))
+			must.Equal(atBound, ev.Input, "input at the bound must pass through unchanged")
+
+			over := json.RawMessage(`"` + strings.Repeat("a", limit-1) + `"`)
+			ev = types.HarnessEvent{Type: typ, RequestID: "r-2", Input: over}
+			err := boundEventFields(&ev)
+			must.ErrorIs(err, ErrRequestInputTooLarge)
+			must.ErrorContains(err, typ)
+		})
+	}
+}
+
+func TestGRPCTransport_OversizedRequestInputIsNotSent(t *testing.T) {
+	must := require.New(t)
+	srv := newTestServer()
+	tr, _, cleanup := setupTestTransport(t, srv)
+	defer cleanup()
+
+	big := json.RawMessage(`{"content":"` + strings.Repeat("x", MaxRequestInputBytes) + `"}`)
+	for _, typ := range []string{"permission_request", "tool_result_request"} {
+		err := tr.Emit(types.HarnessEvent{Type: typ, RequestID: "r-" + typ, ToolName: "write_file", Input: big})
+		must.ErrorIs(err, ErrRequestInputTooLarge, "emit %s", typ)
+	}
+	must.NoError(tr.Emit(types.HarnessEvent{Type: "text_delta", Text: "after"}))
+
+	_ = tr.stream.CloseSend()
+	must.Eventually(func() bool { return len(srv.getReceived()) >= 1 }, 5*time.Second, 10*time.Millisecond)
+	received := srv.getReceived()
+	must.Len(received, 1, "a refused request event must not reach the control plane")
+	must.Equal("after", received[0].Text, "the stream must stay usable after a refusal")
 }
 
 func TestGRPCTransport_OversizedIdentifiersDoNotEndStream(t *testing.T) {
