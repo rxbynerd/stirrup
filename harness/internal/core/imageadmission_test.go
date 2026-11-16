@@ -48,7 +48,7 @@ func TestAdmitExecutorImage_EveryImageExecutorIsChecked(t *testing.T) {
 func TestAdmitExecutorImage_OtherExecutorsAreNotChecked(t *testing.T) {
 	policy := mustImagePolicy(t, "us-docker.pkg.dev/acme/")
 	for _, executorType := range []string{"", "local", "api", "none"} {
-		t.Run(executorType, func(t *testing.T) {
+		t.Run("type="+executorType, func(t *testing.T) {
 			must := require.New(t)
 			var buf bytes.Buffer
 			sec := security.NewSecurityLogger(&buf, "run")

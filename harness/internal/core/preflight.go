@@ -464,19 +464,15 @@ func preflightImageAdmission(
 	warn func(string, error),
 	fail func(string, error, string),
 ) {
-	if !executorStartsImage(cfg.Type) || cfg.Image == "" {
-		return
-	}
-	if err := policy.Admit(cfg.Image); err != nil {
+	verdict, err := judgeExecutorImage(cfg, policy)
+	switch verdict {
+	case imageDenied, imageMalformed:
 		fail("image-admission", err, "the deployment's image admission policy (--image-allowlist or STIRRUP_IMAGE_ALLOWLIST) must admit executor.image")
-		return
-	}
-	switch {
-	case policy.Configured():
+	case imageAdmitted:
 		ok("image-admission", "executor.image admitted by the image admission policy")
-	case executor.ImageDigestPinned(cfg.Image):
+	case imagePinnedUnconfigured:
 		ok("image-admission", "no image admission policy configured; executor.image is pinned by digest")
-	default:
+	case imageUnpinnedUnconfigured:
 		warn("image-admission", errors.New("no image admission policy is configured and executor.image is not pinned by digest"))
 	}
 }
