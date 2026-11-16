@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -183,6 +184,11 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("interrupted before receiving task assignment")
 	}
 	config := assignment.Task
+	if len(assignment.UnknownTaskFields) > 0 {
+		rejectErr := unknownTaskFieldsError(assignment.UnknownTaskFields)
+		emitTerminalFailure(tp, rejectErr, "error")
+		return rejectErr
+	}
 
 	// The wall-clock budget covers component construction plus the
 	// primary run. Follow-up runs derive their own budget from the
@@ -333,4 +339,22 @@ func emitTerminalFailure(tp transport.Transport, cause error, stopReason string)
 	if err := tp.Emit(types.HarnessEvent{Type: "done", StopReason: stopReason}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to send done event: %v\n", err)
 	}
+}
+
+// maxListedUnknownFields bounds how many unknown fields a rejection names.
+const maxListedUnknownFields = 16
+
+// unknownTaskFieldsError is the rejection of a task_assignment whose
+// RunConfig carries fields this harness does not know. Running it would
+// silently drop them, and a dropped field may be one that restricts the
+// run.
+func unknownTaskFieldsError(fields []string) error {
+	listed := fields
+	more := ""
+	if len(listed) > maxListedUnknownFields {
+		listed = listed[:maxListedUnknownFields]
+		more = fmt.Sprintf(", and %d more", len(fields)-maxListedUnknownFields)
+	}
+	return fmt.Errorf("task_assignment rejected: the RunConfig sets fields this harness does not know (%s%s); send only the fields listed in ready.config_fields",
+		strings.Join(listed, ", "), more)
 }

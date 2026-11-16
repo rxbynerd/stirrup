@@ -13,7 +13,8 @@ import "google/protobuf/struct.proto";
 //   2. Harness sends a HarnessEvent with type "ready" (includes harness_version
 //      and capabilities).
 //   3. Control plane sends a ControlEvent with type "task_assignment" containing
-//      a RunConfig in the task field.
+//      a RunConfig in the task field. A RunConfig that sets a field this
+//      harness's schema does not carry is rejected (see ControlEvent.task).
 //   4. Harness sends "run_started", then streams the run's live transcript
 //      (user_message, turn_started, text_delta, thinking_delta, tool_call,
 //      tool_result, turn_committed) interleaved with heartbeat, warning,
@@ -436,8 +437,8 @@ message HarnessEvent {
   // `stirrup job` sends. Below a listed path that has no listed paths
   // under it, such as a Struct field, the value is data and is not
   // checked against the list. Any other RunConfig field the list omits
-  // is unknown to this harness and is dropped from a task_assignment
-  // without notice.
+  // is unknown to this harness; a task_assignment that sets one is
+  // rejected (see ControlEvent.task).
   repeated string config_fields = 28;
 
   // The build version as a Semantic Versioning 2.0.0 string without the
@@ -573,6 +574,14 @@ message ControlEvent {
 
   // The run configuration. Set on "task_assignment" events only. This is the
   // composition root that drives all harness behaviour for the run.
+  //
+  // A harness advertising the "strict_task_assignment" capability rejects a
+  // RunConfig that carries a field its compiled-in schema does not, at any
+  // depth, including inside repeated fields and map values: before building
+  // any component it sends an "error" naming each such field's number and
+  // message path, then "done" with stop_reason "error" and no trace, and
+  // exits non-zero. A harness without the capability drops such fields
+  // without notice.
   RunConfig task = 2;
 
   // Free-text operator input. Set on "user_response" events. Queued and

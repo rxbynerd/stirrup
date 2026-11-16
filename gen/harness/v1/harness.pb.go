@@ -398,8 +398,8 @@ type HarnessEvent struct {
 	// `stirrup job` sends. Below a listed path that has no listed paths
 	// under it, such as a Struct field, the value is data and is not
 	// checked against the list. Any other RunConfig field the list omits
-	// is unknown to this harness and is dropped from a task_assignment
-	// without notice.
+	// is unknown to this harness; a task_assignment that sets one is
+	// rejected (see ControlEvent.task).
 	ConfigFields []string `protobuf:"bytes,28,rep,name=config_fields,json=configFields,proto3" json:"config_fields,omitempty"`
 	// The build version as a Semantic Versioning 2.0.0 string without the
 	// tag's leading "v", such as "0.1.0" or "0.1.0-rc.1". Set on "ready"
@@ -822,6 +822,14 @@ type ControlEvent struct {
 	Type string `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
 	// The run configuration. Set on "task_assignment" events only. This is the
 	// composition root that drives all harness behaviour for the run.
+	//
+	// A harness advertising the "strict_task_assignment" capability rejects a
+	// RunConfig that carries a field its compiled-in schema does not, at any
+	// depth, including inside repeated fields and map values: before building
+	// any component it sends an "error" naming each such field's number and
+	// message path, then "done" with stop_reason "error" and no trace, and
+	// exits non-zero. A harness without the capability drops such fields
+	// without notice.
 	Task *RunConfig `protobuf:"bytes,2,opt,name=task,proto3" json:"task,omitempty"`
 	// Free-text operator input. Set on "user_response" events. Queued and
 	// injected at the active run's next turn boundary, or the prompt of the

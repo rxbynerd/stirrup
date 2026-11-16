@@ -120,6 +120,7 @@ func controlEventFromProto(pe *pb.ControlEvent) types.ControlEvent {
 	if pe.Task != nil {
 		rc := runConfigFromProto(pe.Task)
 		e.Task = &rc
+		e.UnknownTaskFields = unknownRunConfigFields(pe.Task)
 	}
 
 	return e
