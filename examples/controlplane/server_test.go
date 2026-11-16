@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -109,6 +110,47 @@ func TestHandle_RendersLiveTranscriptEvents(t *testing.T) {
 		check.Contains(errOut.String(), want)
 	}
 	check.NotContains(errOut.String(), "not handled", "a live transcript event was reported as unhandled")
+}
+
+func TestPhaseTracker_ReportsEachPhaseChangeOnce(t *testing.T) {
+	must := require.New(t)
+	var tracker phaseTracker
+	start := time.Unix(0, 0)
+
+	line, changed := tracker.observe(nil, start)
+	must.False(changed, "a heartbeat without a phase is ignored")
+	must.Empty(line)
+
+	line, changed = tracker.observe(&harnessv1.SessionPhase{Phase: "constructing", Step: "sandbox_ready"}, start)
+	must.True(changed)
+	must.Equal("constructing/sandbox_ready", line)
+
+	line, changed = tracker.observe(&harnessv1.SessionPhase{Phase: "constructing", Step: "sandbox_ready"}, start.Add(time.Second))
+	must.False(changed, "a repeated phase is not a change")
+	must.Equal("constructing/sandbox_ready +1s", line)
+
+	line, changed = tracker.observe(&harnessv1.SessionPhase{Phase: "running"}, start.Add(90*time.Second))
+	must.True(changed)
+	must.Equal("running (constructing/sandbox_ready took 1m30s)", line)
+}
+
+func TestHandle_ReportsSessionPhases(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
+	srv, _, errOut := testServer(t, permissionDeny, "")
+	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
+		{Type: "ready", HarnessVersion: "v1", Capabilities: []string{"session_liveness"}},
+		{Type: "heartbeat", SessionPhase: &harnessv1.SessionPhase{Phase: "awaiting_assignment"}},
+		{Type: "heartbeat", SessionPhase: &harnessv1.SessionPhase{Phase: "constructing"}},
+		{Type: "heartbeat", SessionPhase: &harnessv1.SessionPhase{Phase: "constructing"}},
+		{Type: "done", StopReason: "success"},
+	}}
+
+	_, err := srv.handle(context.Background(), stream)
+	must.NoError(err)
+	check.Contains(errOut.String(), "[phase] awaiting_assignment\n")
+	check.Equal(1, strings.Count(errOut.String(), "[phase] constructing"), "each phase change is reported once")
+	check.Contains(errOut.String(), "[heartbeat] constructing +")
 }
 
 func TestHandle_DoneOutcomeDecidesSuccess(t *testing.T) {

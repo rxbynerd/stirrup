@@ -117,6 +117,7 @@ expect() {
         exit 1
     fi
 }
+expect "[phase] running (constructing/run_setup took "
 case "$scenario" in
     followup)
         if [[ "$(grep -c '^\[run_started\]' "$cp_log")" -ne 2 ]]; then
@@ -124,6 +125,7 @@ case "$scenario" in
             exit 1
         fi
         expect "[user_message] followup_prompt: Say it again."
+        expect "[phase] idle_followup (post_run took "
         ;;
     abandoned-turn)
         expect "[turn_abandoned] 0 empty_response"

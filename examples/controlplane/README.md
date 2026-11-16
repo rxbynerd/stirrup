@@ -60,7 +60,13 @@ live transcript: the user-role messages the harness appends, turn boundaries
 with token usage (including turns reported as abandoned, with the reason),
 reasoning text, each tool call and result with its outcome and duration, and,
 under lazy tool loading, each search that loads tools as
-`[tools_loaded] <source> <search tool> <tool IDs>`.
+`[tools_loaded] <source> <search tool> <tool IDs>`. A harness advertising
+`session_liveness` names the session's phase on every heartbeat. A change is
+printed as `[phase] <phase>[/<step>] (<previous> took <duration>)`, for
+example `[phase] running (constructing/sandbox_ready took 41.2s)`, and a
+heartbeat within a phase as `[heartbeat] <phase>[/<step>] +<duration>`. The
+example does not reap a silent harness; see
+[Detecting a stalled or orphaned run](../../docs/integration-guide.md#detecting-a-stalled-or-orphaned-run).
 
 Model and tool output is untrusted, so control characters, ANSI escape
 sequences and bidirectional formatting characters are printed as escapes
