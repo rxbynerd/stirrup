@@ -247,11 +247,8 @@ jobs:
         with:
           ref: ${{ needs.validate-tag.outputs.sha }}
 
-      # SHA-pinned to v0.24.0. SHA verified via the GitHub API on
-      # 2026-05-02 (`gh api repos/anchore/sbom-action/git/refs/tags/v0.24.0`,
-      # which also matches the v0 floating tag's current target). Pinning
-      # to an immutable commit defends against an upstream tag being
-      # silently retargeted to attacker-controlled code.
+      # Pinning to an immutable commit defends against an upstream tag
+      # being silently retargeted to attacker-controlled code.
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
@@ -384,25 +381,16 @@ jobs:
         id: sha
         run: echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
 
-      # SHA-pinned to v3.7.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/docker/setup-qemu-action/git/refs/tags/v3.7.0`,
-      # which also matches the v3 floating tag's current target).
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
-      # SHA-pinned to v4.0.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/docker/setup-buildx-action/git/refs/tags/v4.0.0`,
-      # which also matches the v4 floating tag's current target). Pinned
-      # for the same reason as gcp-auth: this action runs inside the
-      # job that holds a live GAR access token; a retargeted floating
-      # tag could exfiltrate it.
+      # Pinned for the same reason as gcp-auth: this action runs
+      # inside the job that holds a live GAR access token; a
+      # retargeted floating tag could exfiltrate it.
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      # SHA-pinned to v4.1.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/docker/login-action/git/refs/tags/v4.1.0`,
-      # which also matches the v4 floating tag's current target). This
-      # action receives the GHCR/GAR credentials as `password:` —
+      # This action receives the GHCR/GAR credentials as `password:` —
       # downstream consumer of the token gcp-auth mints; pinning to an
       # immutable commit is non-negotiable here too.
       - name: Log in to GitHub Container Registry
@@ -412,12 +400,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # SHA-pinned to v3.0.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/google-github-actions/auth/git/refs/tags/v3.0.0`,
-      # which also matches the v3 floating tag's current target). This
-      # action mints a Google access token from the GHA OIDC JWT and is
-      # the trust hinge for GAR push — pinning to an immutable commit is
-      # non-negotiable.
+      # This action mints a Google access token from the GHA OIDC JWT
+      # and is the trust hinge for GAR push — pinning to an immutable
+      # commit is non-negotiable.
       #
       # `service_account` + `token_format: access_token` instructs the
       # action to exchange the federated GHA OIDC JWT for a short-lived
@@ -465,12 +450,10 @@ jobs:
           digest=$(scripts/release/existing-release-image.sh "$GHCR_IMAGE" "$GAR_IMAGE_REF" "$TAG" "$GITHUB_SHA")
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
-      # SHA-pinned to v6.0.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/docker/metadata-action/git/refs/tags/v6.0.0`,
-      # which also matches the v6 floating tag's current target). Pinned
-      # for the same reason as login-action: runs inside the credentialled
-      # publish job and constructs the tag list that build-push-action
-      # consumes — a retargeted tag could redirect pushes.
+      # Pinned for the same reason as login-action: runs inside the
+      # credentialled publish job and constructs the tag list that
+      # build-push-action consumes — a retargeted tag could redirect
+      # pushes.
       - name: Generate image metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
@@ -487,10 +470,7 @@ jobs:
             type=semver,pattern=v{{major}}.{{minor}}
             type=raw,value=latest,enable=${{ !contains(needs.validate-tag.outputs.tag, '-') }}
 
-      # SHA-pinned to v7.1.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/docker/build-push-action/git/refs/tags/v7.1.0`,
-      # which also matches the v7 floating tag's current target). This
-      # action performs the actual push using the live GHCR + GAR
+      # This action performs the actual push using the live GHCR + GAR
       # credentials; pinning to an immutable commit is non-negotiable
       # here for the same reason as gcp-auth and login-action.
       #
@@ -567,23 +547,20 @@ jobs:
             exit 1
           fi
 
-      # SHA-pinned to v3.0.1. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/google-github-actions/setup-gcloud/git/refs/tags/v3.0.1`,
-      # which also matches the v3 floating tag's current target).
-      # google-github-actions/auth only writes credentials; this action
-      # installs the `gcloud` CLI on PATH so the `sbom load` steps
-      # below can invoke it. Installed AFTER the push so a failed push
-      # short-circuits before we pay the install cost on the common
-      # path. The CLI inherits the access_token minted by the earlier
-      # gcp-auth step automatically — no separate `gcloud auth`
-      # invocation is needed.
+      # google-github-actions/auth only writes credentials; this
+      # action installs the `gcloud` CLI on PATH so the `sbom load`
+      # steps below can invoke it. Installed AFTER the push so a
+      # failed push short-circuits before we pay the install cost on
+      # the common path. The CLI inherits the access_token minted by
+      # the earlier gcp-auth step automatically — no separate `gcloud
+      # auth` invocation is needed.
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
         # `project_id:` here is preferred over passing `--project` on
         # every individual `gcloud` call: it makes the active project
         # self-documenting and breaks the implicit dependency on
         # CLOUDSDK_CORE_PROJECT being propagated from the gcp-auth
-        # step's `project_id:` (line ~343). If a future edit to
+        # step's `project_id:`. If a future edit to
         # gcp-auth removes that field for any reason, the
         # `gcloud artifacts sbom load` calls below would otherwise
         # silently target whatever project gcloud infers.
@@ -598,11 +575,8 @@ jobs:
           project_id: ${{ vars.GCP_PROJECT_ID }}
           version: '>= 502.0.0'
 
-      # SHA-pinned to v0.24.0. Same SHA as the source-tree SBOM job
-      # above; verified via the GitHub API on 2026-05-02 (`gh api
-      # repos/anchore/sbom-action/git/refs/tags/v0.24.0`). Pinning to
-      # an immutable commit defends against an upstream tag being
-      # silently retargeted to attacker-controlled code.
+      # Pinning to an immutable commit defends against an upstream tag
+      # being silently retargeted to attacker-controlled code.
       #
       # Unlike the source-tree SBOM (which uses `path: .` and
       # describes the Go module graph), the image SBOM uses `image:`
@@ -715,7 +689,7 @@ jobs:
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
@@ -1277,12 +1251,9 @@ jobs:
           set -euo pipefail
           scripts/release/tag-go-modules.sh "$TAG" "$(git rev-parse HEAD)" types gen
 
-      # SHA-pinned to v3.0.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/softprops/action-gh-release/git/refs/tags/v3.0.0`,
-      # which also matches the v3 floating tag's current target). This
-      # action runs with the job-scoped `contents: write` token, making
-      # it the highest-trust step in the workflow — pinning to an
-      # immutable commit is non-negotiable here.
+      # This action runs with the job-scoped `contents: write` token,
+      # making it the highest-trust step in the workflow — pinning to
+      # an immutable commit is non-negotiable here.
       - name: Create GitHub Release
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
