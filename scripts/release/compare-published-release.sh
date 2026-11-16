@@ -37,7 +37,15 @@ if [ "$rc" -ne 0 ]; then
   echo "::error::looking up the release for ${tag} failed (HTTP ${status:-none}): $(head -c 300 "$workdir/stderr")" >&2
   exit 1
 fi
+if [ "$status" != 200 ]; then
+  echo "::error::looking up the release for ${tag} returned HTTP ${status:-none}" >&2
+  exit 1
+fi
 awk 'body { print } /^\r?$/ { body = 1 }' "$workdir/response" >"$workdir/release.json"
+if ! jq -e '.assets | type == "array"' "$workdir/release.json" >/dev/null 2>&1; then
+  echo "::error::the release lookup for ${tag} returned no assets list" >&2
+  exit 1
+fi
 jq -r '.assets[].name' "$workdir/release.json" >"$workdir/published-names"
 
 if ! grep -qx SHA256SUMS "$workdir/published-names"; then

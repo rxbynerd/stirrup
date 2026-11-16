@@ -1248,6 +1248,13 @@ jobs:
         run: |
           set -euo pipefail
           action=$(scripts/release/compare-published-release.sh "$TAG" release)
+          case "$action" in
+            upload | keep) ;;
+            *)
+              echo "::error::unexpected comparison result '${action}'"
+              exit 1
+              ;;
+          esac
           echo "action=${action}" >> "$GITHUB_OUTPUT"
 
       # types/ and gen/ are the modules a control plane imports. Both

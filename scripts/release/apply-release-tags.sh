@@ -24,13 +24,19 @@ set -euo pipefail
 }
 ghcr=$1 mirror=$2 digest=$3 tag=$4 commit=$5
 shift 5
-readonly REPO=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must be <owner>/<repo>}
+: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must be <owner>/<repo>}"
 registry=$(cd "$(dirname "$0")" && pwd)/registry.sh
 
 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || {
   echo "::error::'${digest}' is not a sha256 digest" >&2
   exit 1
 }
+for moving in "$@"; do
+  if [[ "$moving" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ || "$moving" == sha-* ]]; then
+    echo "::error::'${moving}' has the shape of an immutable tag and cannot be moved" >&2
+    exit 1
+  fi
+done
 
 # as_registry <image> <command>... runs registry.sh with the credentials
 # for <image>'s registry.
@@ -64,12 +70,7 @@ for image in "$ghcr" "$mirror"; do
   esac
 done
 
-if ! gh attestation verify "oci://${ghcr}@${digest}" \
-  --repo "$REPO" \
-  --cert-identity "https://github.com/${REPO}/.github/workflows/_sign-release.yml@refs/tags/${tag}" \
-  --source-ref "refs/tags/${tag}" \
-  --source-digest "$commit" \
-  --deny-self-hosted-runners </dev/null >/dev/null; then
+if ! "$(dirname "$registry")/verify-image-attestation.sh" "$ghcr" "$digest" "$tag" "$commit"; then
   echo "::error::${ghcr}@${digest} has no verifiable provenance attestation from the release signing workflow for ${tag} at ${commit}; nothing was tagged. After an API error, re-run this job." >&2
   exit 1
 fi

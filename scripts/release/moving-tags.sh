@@ -16,7 +16,11 @@ set -euo pipefail
 tag=$1
 readonly STABLE='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 
-[[ "$tag" =~ $STABLE ]] || exit 0
+# Drain stdin before exiting, so the writer is not killed by SIGPIPE.
+[[ "$tag" =~ $STABLE ]] || {
+  cat >/dev/null
+  exit 0
+}
 major=${BASH_REMATCH[1]} minor=${BASH_REMATCH[2]} patch=${BASH_REMATCH[3]}
 
 newest_line=true
