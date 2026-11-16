@@ -181,3 +181,46 @@ func TestPhoenix_DecorationCopiesTheAttributeSlice(t *testing.T) {
 	must.Len(got, 1, "the span's own attributes must keep their length")
 	must.Equal(backing[0], got[0], "the span's own attributes must stay unchanged")
 }
+
+func TestPhoenix_RunSpanTagsCarryAgentAndMode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mode string
+		want []string
+	}{
+		{name: "with mode", mode: "planning", want: []string{"stirrup", "planning"}},
+		{name: "without mode", mode: "", want: []string{"stirrup"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			spans := exportThroughPhoenix(t, func(tr oteltrace.Tracer) {
+				ctx, root := tr.Start(context.Background(), "invoke_agent stirrup", oteltrace.WithAttributes(
+					attribute.String("gen_ai.operation.name", "invoke_agent"),
+					attribute.String("gen_ai.agent.name", "stirrup"),
+					attribute.String("run.mode", tc.mode),
+				))
+				_, sub := tr.Start(ctx, "invoke_agent stirrup.subagent", oteltrace.WithAttributes(
+					attribute.String("gen_ai.operation.name", "invoke_agent"),
+					attribute.String("gen_ai.agent.name", "stirrup.subagent"),
+				))
+				sub.End()
+				root.End()
+			})
+			must.Equal(tc.want, spans["invoke_agent stirrup"]["tag.tags"].AsStringSlice(), "run span tag.tags")
+			must.NotContains(spans["invoke_agent stirrup.subagent"], attribute.Key("tag.tags"), "only the run span gets tag.tags")
+		})
+	}
+}
+
+func TestPhoenix_RunSpanTagsKeepAnExistingValue(t *testing.T) {
+	must := require.New(t)
+	spans := exportThroughPhoenix(t, func(tr oteltrace.Tracer) {
+		_, root := tr.Start(context.Background(), "invoke_agent stirrup", oteltrace.WithAttributes(
+			attribute.String("gen_ai.operation.name", "invoke_agent"),
+			attribute.String("gen_ai.agent.name", "stirrup"),
+			attribute.StringSlice("tag.tags", []string{"custom"}),
+		))
+		root.End()
+	})
+	must.Equal([]string{"custom"}, spans["invoke_agent stirrup"]["tag.tags"].AsStringSlice())
+}
