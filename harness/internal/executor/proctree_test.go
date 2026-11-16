@@ -54,10 +54,13 @@ func assertWrapperKilledTree(t *testing.T, g groupedCommand, dir string, env []s
 	t.Helper()
 	must := require.New(t)
 	check := assert.New(t)
-	// The detached grandchild holds no pipe; only a signal reaches it.
-	g.command = "sh -c 'sleep 2; touch after-kill' >/dev/null 2>&1 & sleep 600"
+	// The detached grandchild holds no pipe; only a signal reaches it. The
+	// kill script signals only descendants that exist when it runs, so the
+	// command writes "tree-ready" once both children are forked.
+	g.command = "sh -c 'sleep 2; touch after-kill' >/dev/null 2>&1 & sleep 600 & echo ready >tree-ready; wait"
 	_, done := startGrouped(t, g, dir, env)
 	waitForFile(t, g.pidFile)
+	waitForFile(t, filepath.Join(dir, "tree-ready"))
 
 	runKill(t, g, env)
 
