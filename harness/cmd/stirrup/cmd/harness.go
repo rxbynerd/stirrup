@@ -736,7 +736,9 @@ default first-touch posture.
 
 Exit status: 0 success; 1 validation or any other failure; 2 malformed
 input; 3 I/O error; 4 invalid flag combination; 5 the run completed with an
-outcome other than success (max_turns, verification_failed, cancelled, ...).`,
+outcome other than success (max_turns, verification_failed, cancelled, ...).
+A run that fails with an error instead of an outcome, such as a fatal preRun
+hook, exits 1.`,
 	Args: cobra.MaximumNArgs(1),
 	// PreRunE rather than a check inside runHarness: a release binary must
 	// reject an explicitly-set --debug / --trace-wire before BuildRunConfig
