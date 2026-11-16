@@ -157,6 +157,9 @@ The pieces and their lifecycle:
   shell — the image need not pre-create a writable `/workspace`, and the
   volume is wiped per Pod. (This mirrors the container executor's writable
   host bind mount; both hide any content an image bakes at that path.)
+  To keep the workspace past the Pod, set a workspace export: the archive
+  is produced in the sandbox and uploaded by the harness, to `gs://` or to
+  an [HTTPS PUT destination](../configuration.md#https-put-destinations).
   A second, disk-backed `emptyDir` at `/scratch`, with a `sizeLimit` of
   `executor.resources.scratchMb` (default 1024 MiB), holds `HOME`
   (`/scratch/home`) and `TMPDIR` (`/scratch/tmp`), which the executor

@@ -183,7 +183,10 @@ all collector contact. The workspace-export probe (`gs://` destinations)
 and the `gcs` trace probe authenticate via the same
 `gcp-workload-identity` default the real run uses, so both fail outside a
 GCP runtime that provides a metadata server unless an explicit credential
-is configured.
+is configured. For an
+[HTTPS PUT destination](#https-put-destinations) the workspace-export
+step resolves the URL reference and checks the URL's shape, but sends
+nothing: an upload is the only request such a URL answers.
 
 The report lists each step with one of four statuses:
 
@@ -969,18 +972,20 @@ At end-of-run the executor's workspace can be tarred, gzipped, and
 uploaded to a GCS URI — the result-collection surface for serverless
 targets with no persistent filesystem (see
 [`cloud-run-jobs.md`](cloud-run-jobs.md#shape-b-workspace-tarball-from-gcs)
-for the operator walkthrough).
+for the operator walkthrough) — or, outside Google Cloud, to an
+[HTTPS PUT destination](#https-put-destinations).
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--export-workspace-to` | (none) | Destination URI for the workspace tarball (e.g. `gs://bucket/runs/<runId>/workspace.tar.gz`). Only `gs://` is supported in v1. Overrides `executor.workspaceExportTo` from `--config` when explicitly set; an explicit empty value clears the field. JSON path: `executor.workspaceExportTo`. |
+| `--export-workspace-to` | (none) | Destination URI for the workspace tarball (e.g. `gs://bucket/runs/<runId>/workspace.tar.gz`). Only `gs://` is accepted here; an HTTPS destination is configured with `executor.workspaceExportHttpsPut` and has no flag. Overrides `executor.workspaceExportTo` from `--config` when explicitly set; an explicit empty value clears the field. JSON path: `executor.workspaceExportTo`. |
 | `--export-workspace-required` | `true` when a destination is set | Whether a failed workspace export turns a successful run into outcome `handoff_failed` and a non-zero exit. `--export-workspace-required=false` records the failure in `RunResult.workspaceExport` without failing the run. Requires a destination. JSON path: `executor.workspaceExportRequired`. A gRPC control plane sets `executor.workspaceExportRequired` (proto `ExecutorConfig.workspace_export_required`) in the `task_assignment`'s `RunConfig`; `stirrup job` applies it to every run, and leaving it unset keeps the destination default. |
 
 The export runs even when the run itself failed, so the workspace
-state stays inspectable after a non-zero exit. Uploads authenticate
-via the `gcp-workload-identity` credential source — the GCE/GKE
-metadata server that Cloud Run, GKE Workload Identity, and plain GCE
-VMs expose. There is no credential override for the exporter in v1.
+state stays inspectable after a non-zero exit. `gs://` uploads
+authenticate via the `gcp-workload-identity` credential source — the
+GCE/GKE metadata server that Cloud Run, GKE Workload Identity, and
+plain GCE VMs expose. There is no credential override for the `gs://`
+exporter in v1.
 
 With a follow-up grace window configured, every run exports once it
 completes. The primary run uploads to the configured URI verbatim;
@@ -989,7 +994,103 @@ inserted as the path segment before the object name
 (`gs://bucket/runs/r1/workspace.tar.gz` →
 `gs://bucket/runs/r1/<followUpRunId>/workspace.tar.gz`), so later
 runs never overwrite the primary tarball. The same
-`--export-workspace-required` policy applies to every run.
+`--export-workspace-required` policy applies to every run. An HTTPS PUT
+destination names one object and behaves differently; see
+[Follow-up runs](#follow-up-runs-and-https-put).
+
+### HTTPS PUT destinations
+
+An `httpsPut` block names a destination the harness uploads one object
+to with a single HTTP `PUT`: a presigned object-store URL (Amazon S3,
+Cloudflare R2, Google Cloud Storage, Azure Blob Storage) or an endpoint
+the control plane serves itself. No cloud credential travels and no
+vendor SDK is involved. `executor.workspaceExportHttpsPut` uses it for
+the workspace tarball; it is mutually exclusive with
+`executor.workspaceExportTo`, shares its executor restriction and
+`executor.workspaceExportRequired` policy, and produces the same
+receipt. The block has no CLI flag: it is set through `--config` or a
+`task_assignment`.
+
+```json
+"executor": {
+  "type": "k8s",
+  "workspaceExportHttpsPut": {
+    "urlRef": "secret://file:///var/run/stirrup/export-url",
+    "headers": { "x-ms-blob-type": "BlockBlob" }
+  }
+}
+```
+
+| Field | Notes |
+|---|---|
+| `urlRef` | Required. A `secret://` reference that resolves, in the harness's own environment, to the destination URL. An inline URL is rejected. |
+| `headers` | Optional, at most 32. Sent on the `PUT`. A value is plaintext or a `secret://` reference. `Authorization`, `Cookie`, and any name ending in `-token`, `-key`, `-secret`, `-signature`, `-password` or `-credential` must be a reference. `Host`, `Content-Length`, `Transfer-Encoding` and the hop-by-hop headers belong to the HTTP client and are rejected. A `Content-Type` entry replaces the harness's own. |
+
+**The URL is a capability.** Whoever holds a presigned URL can write the
+object, so the URL is handled like an API key: it never appears in
+`RunConfig`. The reference is resolved through the same secret store as
+`apiKeyRef` (an environment variable, a file, or an SSM parameter), and
+a `RunConfig` alone therefore cannot direct the upload to a URL the
+deployment did not provision. The URL and every header value are kept
+out of logs, traces, events and the `RunResult`:
+
+- `RunConfig.Redact()` rewrites `urlRef` and every header value, so a
+  recorded config carries only the header names.
+- The export receipt's `uri` is the URL's origin (scheme and host), and
+  is empty when the reference did not resolve.
+- An upload failure reports the origin, the HTTP status, and the store's
+  own error code when the response carries one (`HTTP 403 Forbidden
+  (SignatureDoesNotMatch)`). The response body is otherwise discarded,
+  because an object store echoes the request's signature in it.
+
+**The resolved URL** must use `https://`, carry a host, and carry no
+userinfo or fragment. `http://` is accepted only for a loopback host
+(`localhost`, `127.0.0.0/8`, `::1`), which keeps local development and
+tests off TLS without sending a capability across a network in clear
+text. The reference is resolved once when the harness is constructed, so
+a reference that is unset or resolves to an unusable URL fails the run
+before its first turn, and again each time the harness uploads. A
+file-backed reference can therefore be replaced while the run is in
+progress; the presigned URL in place when the run ends must still be
+valid.
+
+**The request** is one `PUT` whose body is the object, with
+`Content-Length` set and a `Content-Type` of `application/gzip` for a
+workspace tarball. Any `2xx` response is success. The client follows no
+redirect (a `3xx` is a failure), uses no proxy, and refuses to connect
+to a link-local address such as the cloud metadata endpoint; a private
+address is allowed, since a control plane's endpoint is commonly
+in-cluster. It allows 30 s to connect, 10 s for the TLS handshake and
+60 s for the response headers once the body is sent. A workspace upload
+is bounded at 5 minutes overall, the same budget the whole workspace
+handoff has, and the tarball at 1 GiB. The upload is attempted once.
+
+Under `--dry-run` the destination is resolved and checked but not
+contacted.
+
+| Executor | `executor.workspaceExportTo` (`gs://`) | `executor.workspaceExportHttpsPut` |
+|---|---|---|
+| `local`, `container`, `k8s`, `k8s-sandbox` | Yes | Yes |
+| `api`, `none` | No (no workspace) | No (no workspace) |
+
+For the sandboxed executors the archive is produced inside the sandbox
+and uploaded by the harness, so the sandbox needs no route to the
+destination and never sees the URL. The `local` executor gives no such
+separation: the agent's commands run in the harness's own environment
+and can read the variable or file the reference names, so a run whose
+upload must be trusted belongs in a sandboxed executor.
+
+#### Follow-up runs and HTTPS PUT
+
+A presigned URL names exactly one object, so the harness cannot derive a
+per-run destination the way it does under `gs://`. Every run in a
+session uploads to whatever URL the reference resolves to when that run
+ends. A control plane that wants each run's archive replaces the
+referenced value (for example the mounted file) between runs; when the
+value is unchanged, a follow-up's upload replaces the earlier object, or
+is refused if the store or URL forbids a second write, which fails a
+required export. Each run's receipt carries the SHA-256 of what it
+uploaded.
 
 ### Dry-run
 

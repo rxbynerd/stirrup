@@ -491,6 +491,7 @@ Every `net/http` provider adapter and the MCP client uses an explicit
 | Provider streaming (Bedrock, AWS SDK client) | SDK defaults (30 s dial, 10 s TLS handshake) plus a 120 s idle read on the connection, set by the adapter because the SDK applies none to Bedrock Runtime; no total cap |
 | MCP client | 30 s |
 | Web fetch tool | 30 s |
+| HTTPS PUT upload ([`configuration.md`](configuration.md#https-put-destinations)) | 30 s dial, 10 s TLS handshake, 60 s response header, and a total cap sized to the object (5 minutes for a workspace tarball); no redirects, no proxy, link-local addresses refused at dial time |
 
 `stirrup harness` and `stirrup job` run every provider call under the
 run context, whose deadline is the RunConfig `timeout`.
