@@ -18,7 +18,11 @@ import (
 // against every value documented on types.RunTrace.Outcome. "success"
 // is the only outcome that must not produce an error; a future outcome
 // added to the enum without updating runSuccessOutcomes fails this
-// test rather than silently exiting 0.
+// test rather than silently exiting 0. Every non-success outcome whose
+// result the run delivered exits with the run-outcome class. A run
+// that returns an error alongside its trace (a fatal preRun hook,
+// for example) never reaches this check and exits with the default
+// class.
 func TestRunOutcomeError_OnlySuccessIsNil(t *testing.T) {
 	nonSuccessCases := []struct {
 		name    string
@@ -44,21 +48,41 @@ func TestRunOutcomeError_OnlySuccessIsNil(t *testing.T) {
 	for _, tc := range nonSuccessCases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			err := runOutcomeError(&types.RunTrace{Outcome: tc.outcome})
+			err := runOutcomeError(&types.RunTrace{Outcome: tc.outcome}, false)
 			must.Error(err)
-			must.Equal(1, classifyExitCode(err), "failed and cancelled runs exit 1")
+			must.Equal(exitRunOutcome, classifyExitCode(err), "a completed non-success run exits with the run-outcome class")
 		})
 	}
 
+	t.Run("control stream lost", func(t *testing.T) {
+		must := require.New(t)
+		err := runOutcomeError(&types.RunTrace{Outcome: "control_stream_lost"}, false)
+		must.Error(err)
+		must.Equal(1, classifyExitCode(err), "an outcome the control plane never received keeps the default class")
+	})
+
+	t.Run("cancelled by signal", func(t *testing.T) {
+		must := require.New(t)
+		err := runOutcomeError(&types.RunTrace{Outcome: "cancelled"}, true)
+		must.Error(err)
+		must.Equal(1, classifyExitCode(err), "a signal cancel keeps the default class so an orchestrator retries it")
+	})
+
+	t.Run("signal does not reclassify another outcome", func(t *testing.T) {
+		must := require.New(t)
+		err := runOutcomeError(&types.RunTrace{Outcome: "max_turns"}, true)
+		must.Equal(exitRunOutcome, classifyExitCode(err))
+	})
+
 	t.Run("success", func(t *testing.T) {
 		must := require.New(t)
-		must.NoError(runOutcomeError(&types.RunTrace{Outcome: "success"}))
+		must.NoError(runOutcomeError(&types.RunTrace{Outcome: "success"}, false))
 	})
 
 	// Callers return their own error before a nil trace reaches this check.
 	t.Run("nil trace", func(t *testing.T) {
 		must := require.New(t)
-		must.NoError(runOutcomeError(nil))
+		must.NoError(runOutcomeError(nil, false))
 	})
 }
 
@@ -136,7 +160,7 @@ func TestRunWithConfig_ProviderErrorOutcome_ExitsNonZero(t *testing.T) {
 	stdout := stdoutDone()
 
 	must.Error(runErr, "an outcome of error must still fail the process")
-	check.Equal(1, classifyExitCode(runErr))
+	check.Equal(exitRunOutcome, classifyExitCode(runErr))
 
 	result := decodeStirrupResult(t, stdout)
 	check.Equal("error", result.Outcome)

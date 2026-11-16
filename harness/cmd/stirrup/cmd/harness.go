@@ -732,7 +732,13 @@ The default --mode is "planning" (read-only: no write_file / edit_file /
 run_command, deny-side-effects permission policy). Pass --mode execution
 to enable editing and shell access; the read-only modes (planning, review,
 research, toil) differ only in prompt template and ship as the safe-by-
-default first-touch posture.`,
+default first-touch posture.
+
+Exit status: 0 success; 1 validation or any other failure; 2 malformed
+input; 3 I/O error; 4 invalid flag combination; 5 the run completed with an
+outcome other than success (max_turns, verification_failed, cancelled, ...).
+A run that returns an error instead of an outcome, such as a fatal preRun
+hook, exits 1, as does a run ended by SIGINT or SIGTERM.`,
 	Args: cobra.MaximumNArgs(1),
 	// PreRunE rather than a check inside runHarness: a release binary must
 	// reject an explicitly-set --debug / --trace-wire before BuildRunConfig
@@ -2007,7 +2013,7 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	setupSignalHandler(cancel, shutdownCancel)
+	interrupted := installSignalHandler(cancel, shutdownCancel)
 
 	// The wall-clock budget covers component construction plus the
 	// primary run; follow-ups mint their own from the cancel-only ctx.
@@ -2069,5 +2075,5 @@ func runWithConfig(config *types.RunConfig, opts runOptions) error {
 	}
 	// A non-success outcome reached here (runErr == nil but e.g.
 	// Outcome == "error" or "hook_failed") must still fail the process.
-	return runOutcomeError(runTrace)
+	return runOutcomeError(runTrace, interrupted())
 }

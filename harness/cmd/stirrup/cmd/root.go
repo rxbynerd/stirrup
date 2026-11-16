@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -252,11 +253,22 @@ var runSuccessOutcomes = map[string]bool{
 // runSuccessOutcomes, returning a descriptive error if so. Called at
 // the tail of runWithConfig and runJob after every non-fatal post-run
 // step has run, so a non-success outcome always yields a non-zero exit.
-func runOutcomeError(rt *types.RunTrace) error {
+// The error carries exit class 5 because the run completed and its
+// outcome was reported. It keeps the default class when the outcome says
+// nothing about the run itself: control_stream_lost, because the stream
+// that carries the outcome is the thing that failed, and a cancellation
+// this process received as a SIGINT/SIGTERM (interrupted), which an
+// orchestrator also sends to preempt or evict a pod that should be
+// retried.
+func runOutcomeError(rt *types.RunTrace, interrupted bool) error {
 	if rt == nil || runSuccessOutcomes[rt.Outcome] {
 		return nil
 	}
-	return fmt.Errorf("run outcome %q is not success", rt.Outcome)
+	err := fmt.Errorf("run outcome %q is not success", rt.Outcome)
+	if rt.Outcome == "control_stream_lost" || (interrupted && rt.Outcome == "cancelled") {
+		return err
+	}
+	return runOutcomeFailure(err)
 }
 
 // newResultSink is the seam tests use to inject a stub ResultSink.
@@ -497,6 +509,17 @@ var setupSignalHandler = func(interrupt, shutdown func()) {
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go handleSignals(sigCh, os.Stderr, interrupt, shutdown)
+}
+
+// installSignalHandler arms setupSignalHandler with interrupt wrapped so
+// the returned function reports whether the first signal has arrived.
+func installSignalHandler(interrupt, shutdown func()) (interrupted func() bool) {
+	var received atomic.Bool
+	setupSignalHandler(func() {
+		received.Store(true)
+		interrupt()
+	}, shutdown)
+	return received.Load
 }
 
 // handleSignals calls interrupt on the first signal, which ends the run

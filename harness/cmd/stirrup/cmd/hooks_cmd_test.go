@@ -57,6 +57,7 @@ func TestRunWithConfig_FatalPreRunHookFailure_StillEmitsRunResult(t *testing.T) 
 	stdout := stdoutDone()
 
 	must.Error(runErr)
+	must.Equal(exitValidation, classifyExitCode(runErr), "a run that fails with an error keeps the default class, not the run-outcome class")
 
 	// stdout also carries the default stdio transport's own JSON event
 	// stream, so the STIRRUP_RESULT line is not necessarily the first

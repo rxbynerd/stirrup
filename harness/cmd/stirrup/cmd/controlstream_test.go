@@ -154,6 +154,7 @@ func assertJobCancelledOnLoss(t *testing.T, provider *blockingToolCallProvider, 
 	case err := <-errCh:
 		must.Error(err, "runJob returned nil, want the loss to fail the process")
 		must.ErrorContains(err, "control_stream_lost", "runJob should name the control_stream_lost outcome")
+		must.Equal(exitValidation, classifyExitCode(err), "a lost control stream keeps the default class")
 	case <-time.After(terminalWaitBudget):
 		must.FailNow("runJob did not return after the control stream was lost")
 	}
@@ -438,6 +439,7 @@ func TestRunWithConfig_GRPCTransportLossCancelsRun(t *testing.T) {
 	select {
 	case err := <-errCh:
 		must.ErrorContains(err, "control_stream_lost", "runWithConfig should return the control_stream_lost outcome")
+		must.Equal(exitValidation, classifyExitCode(err), "a lost control stream keeps the default class")
 	case <-time.After(terminalWaitBudget):
 		must.FailNow("runWithConfig did not return after the control stream was lost")
 	}

@@ -105,7 +105,7 @@ func TestRunWithConfig_RequiredExportFailureReportsHandoffFailed(t *testing.T) {
 	stdout := stdoutDone()
 
 	must.Error(runErr)
-	check.Equal(1, classifyExitCode(runErr))
+	check.Equal(exitRunOutcome, classifyExitCode(runErr))
 
 	done := stdioDoneEvent(t, stdout)
 	check.Equal("handoff_failed", done.StopReason)
@@ -253,7 +253,7 @@ func TestRunJob_RequiredExportFailureReportsHandoffFailed(t *testing.T) {
 
 	done, uploaded, runErr := runHandoffJob(t, handoffJobTask(t, provider.URL), exp)
 	must.Error(runErr)
-	check.Equal(1, classifyExitCode(runErr))
+	check.Equal(exitRunOutcome, classifyExitCode(runErr))
 	check.Equal(int32(1), uploaded, "upload attempts finished when done arrived")
 
 	check.Equal("handoff_failed", done.GetStopReason())

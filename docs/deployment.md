@@ -227,8 +227,10 @@ IMDS, GitHub Actions OIDC). See
     repeat for that run. See
     [Run budgets and precedence](#run-budgets-and-precedence).
 11. **Exit.** The liveness probe file is removed; the process exits 0
-    when the primary run succeeded or non-zero on transport / build /
-    runtime failure. Before the connection closes the harness
+    when the primary run succeeded, `5` when it completed with another
+    outcome, or another non-zero status on transport / build / runtime
+    failure (see [Exit status and Kubernetes
+    Jobs](#exit-status-and-kubernetes-jobs)). Before the connection closes the harness
     half-closes the stream and waits up to 2 seconds (not
     configurable) for the control plane to end `RunTask`, so a
     terminal `done` is not lost to an abrupt teardown. A control plane
@@ -263,6 +265,42 @@ export failing on any run, follow-up included, fails the process.
 The full event vocabulary lives in
 [`proto/harness/v1/harness.proto`](../proto/harness/v1/harness.proto) —
 that is the source of truth for the wire contract.
+
+### Exit status and Kubernetes Jobs
+
+The exit status of `stirrup job` tells the runtime whether the harness
+worked, and the `done` event tells the control plane how the run went.
+
+| Status | Meaning |
+|---|---|
+| `0` | The primary run succeeded. |
+| `5` | The primary run completed and reported an outcome other than `success` (`max_turns`, `verification_failed`, `cancelled` by a `cancel` event from the control plane, `timeout`, `error`, and the rest). Its `done` and `RunResult` were produced as for any run. |
+| other non-zero | The harness failed to start or finish the run: a `RunConfig` that could not be built, a transport failure, a lost control stream (`control_stream_lost`), a run that returned an error instead of an outcome (a fatal `hooks.preRun` failure, for example), or a run ended by a SIGINT or SIGTERM sent to the process. |
+
+The full scheme, shared with `stirrup harness`, is in
+[Exit codes](configuration.md#exit-codes).
+
+A SIGTERM does not identify who sent it: an operator stopping the pod
+and the node preempting or evicting it look the same to the process. A
+run ended that way exits `1`, not `5`, so a Job that retries on a
+harness failure also retries a preempted pod. An operator cancel that
+should not be retried is the `cancel` control event, which exits `5`.
+
+A Kubernetes Job reports `Failed` for any non-zero exit, so a run that
+ended at `max_turns` or was cancelled by the control plane also produces a
+`Failed` Job. That condition does not mean the harness malfunctioned.
+Alerts and reconciliation loops that act on a failed Job distinguish the
+two by exit code. A Job whose pod template sets `restartPolicy: Never`
+(as [`examples/k8s/harness-job.yaml`](../examples/k8s/harness-job.yaml)
+does) can also add a `podFailurePolicy` rule with `action: FailJob` and
+`onExitCodes` matching `5`, so a Job with a non-zero `backoffLimit` retries
+a harness that failed to start or finish but not a run that already
+reported its outcome. An `Ignore` action on that rule would instead
+re-run completed runs without limit. A retry starts the run from the
+beginning, so a non-zero `backoffLimit` suits only runs whose side
+effects are idempotent, or failures that occurred before the run
+started; [Cloud Run jobs](cloud-run-jobs.md#6-deploy-the-cloud-run-job)
+sets `--max-retries=0` for this reason.
 
 ### Health probes
 
