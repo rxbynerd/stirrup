@@ -163,7 +163,7 @@ the policy lint keeps its lint findings in the message.
 | `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input`, `trace_context` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. `trace_context` (`traceparent`, `tracestate`), when present, is the W3C context of the call's `execute_tool` span; see [Control-plane-fulfilled tools](#control-plane-fulfilled-tools-tool_result_request). |
 | `heartbeat` | `session_phase` (`phase`, `step`) | Liveness signal every 30 s by default; `RunConfig.heartbeat_seconds` sets 5-600 s. From a harness advertising `session_liveness`, sent for the whole session and naming its phase; otherwise sent only while a run is in progress, with no fields. Treat sustained absence as a hang and reap the Pod; see [Detecting a stalled or orphaned run](#detecting-a-stalled-or-orphaned-run). |
 | `warning` | `message`, `request_id` (about a `user_response`) | Log; non-fatal. A `warning` carrying `request_id` is about that `user_response`: a message starting `user_response dropped:` means it was not accepted (empty text, the queue of 16 was full, the session was cancelled, or it was still queued when the session ended) — retry after the next turn where that applies; one starting `user_response sanitized:` means it was accepted after tag stripping or truncation to 50,000 bytes. A message starting `result sink:` arrives just before a run's `done` and means the configured `resultSink` could not deliver that run's `RunResult`; the run's outcome is unchanged. |
-| `error` | `message` | Optional diagnostic for some early run failures; when emitted by a built loop, a `done` follows. |
+| `error` | `message`, `build_failure` (`reason`, `phase`) | Optional diagnostic for some early run failures; when emitted by a built loop, a `done` follows. When the task could not be built into a run, `build_failure` classifies why and names the construction step; see [Classifying a construction failure](#classifying-a-construction-failure). |
 | `done` | `stop_reason`, `trace` | Terminal status for that run. `trace` is the run summary, including `trace_reference` when the run recorded an OTel span; it is absent on a `done` for a task rejected before its run started. |
 | `batch_submission` | `request_id`, `input` (BatchSubmission JSON) | Batch mode only — see [Batch mode](#batch-mode-amortised-token-pricing). |
 | `batch_waiting` | `request_id` | Batch keep-alive (roughly every 5 minutes) distinguishing "provider batch still pending" from a stall. |
@@ -265,6 +265,38 @@ turns a pod launch into an immediate API error. Mirror the harness with
 `stirrup run-config --validate`, or call `types.ValidateRunConfig` from
 Go and send the result with `runconfig.ToProto`; see
 [Sending a RunConfig from Go](#sending-a-runconfig-from-go).
+
+#### Classifying a construction failure
+
+The `error` that `stirrup job` sends when the task cannot be built into a
+run carries `build_failure`, so a control plane can react to the class
+of failure without matching on the message. `build_failure.reason` is one
+of a closed set; a value a control plane does not recognise is treated
+as `unclassified`:
+
+| `reason` | Meaning | Typical response |
+|---|---|---|
+| `config_invalid` | The `RunConfig` failed validation. | Fix the task; retrying it unchanged fails again. |
+| `host_file` | A file the `RunConfig` names could not be used from the harness host. | Fix the task or the harness image; the message names only the field. |
+| `credential` | A secret reference or provider credential could not be resolved. | Fix the secret or the workload identity. |
+| `token_exchange` | The sandbox identity token exchange was declined, timed out, or returned an unusable token. | Check the control plane's own token issuer. |
+| `sandbox_platform` | The cluster or container engine refused or could not serve a sandbox request: RBAC, a missing namespace or RuntimeClass, a quota, an unreachable engine. | Treat the cluster as misconfigured; retrying elsewhere may succeed. |
+| `admission_mismatch` | Admission changed the sandbox Pod in a way the executor's runtime does not accept. | Fix the cluster's admission policy. |
+| `runtime_diagnostic_failed` | The sandbox's runtime diagnostics found it was not isolated as its runtime requires. | Treat the node pool as misconfigured; do not retry on it. |
+| `sandbox_image` | The sandbox image could not be pulled or was not allowed, or its container exited before it was ready. | Fix the image reference, its registry credentials or the image itself. |
+| `sandbox_not_ready` | The sandbox did not become ready or reachable for commands, for example within the readiness timeout. | Usually capacity or a slow node; retrying may succeed. |
+| `control_stream_lost` | The control stream ended during construction. | The `done` that follows carries `stop_reason: "control_stream_lost"`. |
+| `unclassified` | Any other construction failure. | Read the message. |
+
+`build_failure.phase` is `constructing` with the step that was in
+progress, the same values the session heartbeats carry (see
+[The session phase](#the-session-phase)); an empty step is construction
+outside the named steps. A sandbox whose image cannot be pulled on
+Kubernetes, for example, arrives as reason `sandbox_image` and step
+`sandbox_ready`, since the kubelet pulls the image while the harness
+waits for readiness. `build_failure` is set only on this pre-run
+`error`; a run that fails setup, such as a fatal `preRun` hook, reports
+its outcome through `done.stop_reason` as before.
 
 ### Transport security posture (v0.1)
 

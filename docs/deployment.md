@@ -161,7 +161,9 @@ IMDS, GitHub Actions OIDC). See
    and execution begins. A `RunConfig` that fails validation, or any
    other failure to build the loop, terminates the run here: the
    harness emits `HarnessEvent{type:"error"}` carrying the validation
-   message followed by `HarnessEvent{type:"done", stop_reason:"error"}`,
+   message and a `build_failure` classifying it (see
+   [Classifying a construction failure](integration-guide.md#classifying-a-construction-failure))
+   followed by `HarnessEvent{type:"done", stop_reason:"error"}`,
    then exits non-zero. No run ever started, so that `done` carries no
    `trace` and no `RunResult` reaches the configured `resultSink`.
 7. **Stream events.** After the git setup the harness first emits

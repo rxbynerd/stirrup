@@ -10,6 +10,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/http"
 	"path"
 	"strconv"
 	"strings"
@@ -181,7 +182,7 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		return nil, fmt.Errorf("container executor requires a host directory")
 	}
 	if err := checkImageAllowed(cfg.Image, cfg.RegistryAllowlist); err != nil {
-		return nil, err
+		return nil, startupErr(types.BuildFailureSandboxImage, err)
 	}
 
 	socketPath := cfg.SocketPath
@@ -189,7 +190,7 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		var err error
 		socketPath, err = detectSocket()
 		if err != nil {
-			return nil, fmt.Errorf("detect container socket: %w", err)
+			return nil, startupErr(types.BuildFailureSandboxPlatform, fmt.Errorf("detect container socket: %w", err))
 		}
 	}
 
@@ -291,7 +292,7 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		if proxy != nil {
 			stopProxyBounded(proxy)
 		}
-		return nil, fmt.Errorf("create container: %w", err)
+		return nil, classifyContainerCreate(fmt.Errorf("create container: %w", err))
 	}
 
 	if err := api.startContainer(ctx, containerID); err != nil {
@@ -300,7 +301,7 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		if proxy != nil {
 			stopProxyBounded(proxy)
 		}
-		return nil, fmt.Errorf("start container: %w", err)
+		return nil, startupErr(types.BuildFailureSandboxPlatform, fmt.Errorf("start container: %w", err))
 	}
 
 	return &ContainerExecutor{
@@ -314,6 +315,17 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 		proxy:           proxy,
 		sandboxIdentity: cfg.SandboxIdentityToken,
 	}, nil
+}
+
+// classifyContainerCreate classifies a failed container create: an image
+// the engine does not have is the image's failure, anything else the
+// engine's.
+func classifyContainerCreate(err error) error {
+	var status *apiStatusError
+	if errors.As(err, &status) && status.status == http.StatusNotFound {
+		return startupErr(types.BuildFailureSandboxImage, err)
+	}
+	return startupErr(types.BuildFailureSandboxPlatform, err)
 }
 
 // sleepArg is the argument to the container's keep-alive `sleep`: the

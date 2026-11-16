@@ -362,7 +362,7 @@ func TestEmitTerminalFailure_EmitsErrorThenDone(t *testing.T) {
 	check := assert.New(t)
 	tp := &recordingTransport{}
 
-	emitTerminalFailure(tp, errors.New("building harness: config validation: bad"), "error")
+	emitTerminalFailure(tp, errors.New("building harness: config validation: bad"), nil, "error")
 
 	must.Len(tp.events, 2, "want exactly error then done, got %v", tp.events)
 	check.Equal("error", tp.events[0].Type)
@@ -379,7 +379,7 @@ func TestEmitTerminalFailure_EmitFailureStillAttemptsDone(t *testing.T) {
 	must := require.New(t)
 	tp := &recordingTransport{emitErr: errors.New("stream closed")}
 
-	emitTerminalFailure(tp, errors.New("building harness: boom"), "error")
+	emitTerminalFailure(tp, errors.New("building harness: boom"), nil, "error")
 
 	must.Len(tp.events, 2, "want both events attempted despite the emit failure, got %v", tp.events)
 	must.Equal("done", tp.events[1].Type)
@@ -388,7 +388,7 @@ func TestEmitTerminalFailure_EmitFailureStillAttemptsDone(t *testing.T) {
 // emitTerminalFailure is safe when no transport was established, so the
 // caller never has to guard it.
 func TestEmitTerminalFailure_NilTransportDoesNotPanic(t *testing.T) {
-	emitTerminalFailure(nil, errors.New("boom"), "error")
+	emitTerminalFailure(nil, errors.New("boom"), nil, "error")
 }
 
 // recordingControlPlane is the minimal correct control plane from
@@ -538,6 +538,9 @@ func TestRunJob_InvalidAssignedConfigSignalsControlPlane(t *testing.T) {
 	for _, ev := range srv.events() {
 		if ev.Type == "error" {
 			errMessages = append(errMessages, ev.Message)
+			check.Equal(types.BuildFailureConfigInvalid, ev.GetBuildFailure().GetReason(), "the error names the failure's class")
+			check.Equal(types.SessionPhaseConstructing, ev.GetBuildFailure().GetPhase().GetPhase())
+			check.Empty(ev.GetBuildFailure().GetPhase().GetStep(), "validation runs outside the named steps")
 		}
 	}
 	must.NotEmpty(errMessages, "no error event received; got %v", srv.events())
@@ -614,6 +617,7 @@ func TestRunJob_UnusableReplayFileLooksTheSameToControlPlane(t *testing.T) {
 			errEvent := srv.findEvent("error")
 			must.NotNil(errEvent, "no error event received; got %v", srv.events())
 			check.Equal(want, errEvent.Message)
+			check.Equal(types.BuildFailureHostFile, errEvent.GetBuildFailure().GetReason(), "every cause has the same class")
 		})
 	}
 }

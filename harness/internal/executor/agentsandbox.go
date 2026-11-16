@@ -235,7 +235,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 		return nil, err
 	}
 	if _, err := clientset.NetworkingV1().NetworkPolicies(cfg.Namespace).Create(ctx, policy, metav1.CreateOptions{}); err != nil {
-		return nil, fmt.Errorf("install egress NetworkPolicy for sandbox %s/%s: %w", cfg.Namespace, name, boundClusterErr(err))
+		return nil, startupErr(types.BuildFailureSandboxPlatform, fmt.Errorf("install egress NetworkPolicy for sandbox %s/%s: %w", cfg.Namespace, name, boundClusterErr(err)))
 	}
 
 	partial := &AgentSandboxExecutor{
@@ -253,7 +253,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 	}
 
 	if _, err := dyn.Resource(sandboxGVR).Namespace(cfg.Namespace).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
-		createErr := fmt.Errorf("create sandbox %s/%s: %w", cfg.Namespace, name, boundClusterErr(err))
+		createErr := startupErr(types.BuildFailureSandboxPlatform, fmt.Errorf("create sandbox %s/%s: %w", cfg.Namespace, name, boundClusterErr(err)))
 		return nil, withTeardownErr(createErr, partial.reconcileFailedCreate(sandboxLabels(cfg.Lifecycle.RunID), err))
 	}
 
@@ -282,7 +282,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 	if err != nil {
 		// Duration omitted: readiness can end on the ceiling or a shorter
 		// caller deadline, and a hardcoded value would misreport the latter.
-		return nil, rollback(fmt.Errorf("sandbox %s/%s not ready: %w", cfg.Namespace, name, boundClusterErr(err)))
+		return nil, rollback(classifyK8sStartup(fmt.Errorf("sandbox %s/%s not ready: %w", cfg.Namespace, name, boundClusterErr(err))))
 	}
 
 	podName := resolveSandboxPodName(ready)

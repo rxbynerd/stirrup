@@ -243,7 +243,9 @@ func runJob(cmd *cobra.Command, args []string) error {
 			_ = loop.Close()
 		}
 		lostErr := fmt.Errorf("building harness: %w: %w", core.ErrControlStreamLost, lossErr)
-		emitTerminalFailure(tp, lostErr, "control_stream_lost")
+		failure := buildFailureOf(err)
+		failure.Reason = types.BuildFailureControlStreamLost
+		emitTerminalFailure(tp, lostErr, failure, "control_stream_lost")
 		return lostErr
 	}
 	if err != nil {
@@ -253,7 +255,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 		buildErr := fmt.Errorf("building harness: %w", err)
 		buildFailed := time.Since(started)
 		liveness.Stop()
-		emitTerminalFailure(tp, controlPlaneBuildError(buildErr), "error")
+		emitTerminalFailure(tp, controlPlaneBuildError(buildErr), buildFailureOf(err), "error")
 		// Phase timings for the terminal-failure path, so a control plane
 		// reporting a missing "done" can name the phase that stalled.
 		// emit_returned marks the handoff to the transport, not delivery;
@@ -369,19 +371,33 @@ func controlPlaneBuildError(err error) error {
 	return err
 }
 
+// buildFailureOf is the class BuildLoop gave err, or an unclassified
+// failure outside the named steps when err carries none.
+func buildFailureOf(err error) *types.BuildFailure {
+	var built *core.BuildError
+	if errors.As(err, &built) {
+		return built.Failure()
+	}
+	return &types.BuildFailure{
+		Reason: types.BuildFailureUnclassified,
+		Phase:  types.SessionPhase{Phase: types.SessionPhaseConstructing},
+	}
+}
+
 // emitTerminalFailure sends the "error" then "done" pair that the
 // agentic loop emits on its own fatal paths, for failures that occur
 // after a task assignment but before the loop exists to emit them.
-// "done" is the control plane's terminal signal, so it must follow
-// "error" even here; stopReason is its stop_reason.
+// "error" carries failure, and "done" is the control plane's terminal
+// signal, so it must follow "error" even here; stopReason is its
+// stop_reason.
 //
 // Best-effort: emit failures are reported on stderr and never replace
 // the failure being signalled.
-func emitTerminalFailure(tp transport.Transport, cause error, stopReason string) {
+func emitTerminalFailure(tp transport.Transport, cause error, failure *types.BuildFailure, stopReason string) {
 	if tp == nil {
 		return
 	}
-	if err := tp.Emit(types.HarnessEvent{Type: "error", Message: cause.Error()}); err != nil {
+	if err := tp.Emit(types.HarnessEvent{Type: "error", Message: cause.Error(), BuildFailure: failure}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to send error event: %v\n", err)
 	}
 	if err := tp.Emit(types.HarnessEvent{Type: "done", StopReason: stopReason}); err != nil {

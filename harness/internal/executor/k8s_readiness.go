@@ -13,6 +13,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // permanentWaitingReasons are agent container waiting reasons no retry can
@@ -35,6 +37,9 @@ type podReadiness struct {
 	waiting    string
 	lastAPIErr error
 	sawPod     bool
+	// imageFailure is set when the last observation showed the agent
+	// container's image could not be obtained or started.
+	imageFailure bool
 }
 
 // waitForPodReady polls until the Pod is Running with the agent container
@@ -58,7 +63,7 @@ func waitForPodReady(ctx context.Context, clientset kubernetes.Interface, namesp
 				return nil, fmt.Errorf("%w: %w", errPodNotReady, err)
 			}
 			if reason, terminal := podTerminalReason(pod); terminal {
-				return nil, fmt.Errorf("%w: %s", errPodNotReady, reason)
+				return nil, seen.classify(fmt.Errorf("%w: %s", errPodNotReady, reason))
 			}
 			if podReady(pod) {
 				return pod, nil
@@ -82,17 +87,27 @@ func waitForPodReady(ctx context.Context, clientset kubernetes.Interface, namesp
 
 		if !sleepCtx(waitCtx, timing.pollPeriod) {
 			if err := ctx.Err(); err != nil {
-				return nil, fmt.Errorf("%w before the run context ended: %s: %w", errPodNotReady, seen.summary(), err)
+				return nil, seen.classify(fmt.Errorf("%w before the run context ended: %s: %w", errPodNotReady, seen.summary(), err))
 			}
-			return nil, fmt.Errorf("%w within %s: %s: %w", errPodNotReady, timing.readyTimeout, seen.summary(), waitCtx.Err())
+			return nil, seen.classify(fmt.Errorf("%w within %s: %s: %w", errPodNotReady, timing.readyTimeout, seen.summary(), waitCtx.Err()))
 		}
 	}
+}
+
+// classify marks err as an image failure when the last observation showed
+// one; other readiness failures are classified by the caller.
+func (r *podReadiness) classify(err error) error {
+	if r.imageFailure {
+		return startupErr(types.BuildFailureSandboxImage, err)
+	}
+	return err
 }
 
 // observe records the diagnostics a timeout error reports.
 func (r *podReadiness) observe(pod *corev1.Pod) {
 	r.sawPod = true
 	r.lastAPIErr = nil
+	r.imageFailure = podImageFailure(pod)
 	r.phase = pod.Status.Phase
 	r.scheduled = ""
 	for _, c := range pod.Status.Conditions {

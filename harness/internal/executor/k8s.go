@@ -175,12 +175,12 @@ func newK8sExecutorWithClient(ctx context.Context, cfg K8sExecutorConfig, wrap f
 
 	restCfg, err := buildRESTConfig(cfg.Kubeconfig)
 	if err != nil {
-		return nil, fmt.Errorf("build kube rest config: %w", err)
+		return nil, startupErr(types.BuildFailureSandboxPlatform, fmt.Errorf("build kube rest config: %w", err))
 	}
 
 	clientset, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
-		return nil, fmt.Errorf("build kube clientset: %w", err)
+		return nil, startupErr(types.BuildFailureSandboxPlatform, fmt.Errorf("build kube clientset: %w", err))
 	}
 
 	var client kubernetes.Interface = clientset
@@ -240,7 +240,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 		return nil, err
 	}
 	if _, err := clientset.NetworkingV1().NetworkPolicies(cfg.Namespace).Create(ctx, policy, metav1.CreateOptions{}); err != nil {
-		return nil, fmt.Errorf("install egress NetworkPolicy for pod %s/%s: %w", cfg.Namespace, podName, boundClusterErr(err))
+		return nil, startupErr(types.BuildFailureSandboxPlatform, fmt.Errorf("install egress NetworkPolicy for pod %s/%s: %w", cfg.Namespace, podName, boundClusterErr(err)))
 	}
 
 	teardown := podTeardown{
@@ -255,14 +255,14 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 
 	created, err := clientset.CoreV1().Pods(cfg.Namespace).Create(ctx, pod, metav1.CreateOptions{})
 	if err != nil {
-		return nil, withTeardownErr(classifyPodCreateError(profile, err), teardown.reconcileFailedCreate(pod.Labels, err))
+		return nil, withTeardownErr(startupErr(types.BuildFailureSandboxPlatform, classifyPodCreateError(profile, err)), teardown.reconcileFailedCreate(pod.Labels, err))
 	}
 	teardown.podUID = created.UID
 
 	admission := newPodAdmission(pod, created, profile)
 	if err := admission.checkCreate(); err != nil {
 		reportAdmissionFailure(cfg.Security, cfg.Runtime, profile, err)
-		return nil, withTeardownErr(err, teardown.run())
+		return nil, withTeardownErr(classifyK8sStartup(err), teardown.run())
 	}
 	if profile.runtimeClassName == "" && created.Spec.RuntimeClassName != nil {
 		logger.Info("k8s executor pod admitted with a cluster-assigned RuntimeClass",
@@ -272,7 +272,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 	cfg.Lifecycle.reportStartup(types.SessionStepSandboxReady)
 	if _, err := waitForPodReady(ctx, clientset, cfg.Namespace, podName, admission, timing, logger); err != nil {
 		reportAdmissionFailure(cfg.Security, cfg.Runtime, profile, err)
-		return nil, withTeardownErr(fmt.Errorf("pod %s/%s %w", cfg.Namespace, podName, err), teardown.run())
+		return nil, withTeardownErr(classifyK8sStartup(fmt.Errorf("pod %s/%s %w", cfg.Namespace, podName, err)), teardown.run())
 	}
 
 	exec := &K8sExecutor{
@@ -294,7 +294,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 		timing:            timing,
 	}
 	if err := waitForExecReachable(ctx, &exec.podExecCore, timing, logger); err != nil {
-		return nil, withTeardownErr(fmt.Errorf("pod %s/%s %w", cfg.Namespace, podName, err), teardown.run())
+		return nil, withTeardownErr(classifyK8sStartup(fmt.Errorf("pod %s/%s %w", cfg.Namespace, podName, err)), teardown.run())
 	}
 	// The diagnostics run before the executor is returned, so before any
 	// token delivery or lifecycle hook reaches the sandbox.
@@ -302,7 +302,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 		cfg.Lifecycle.reportStartup(types.SessionStepRuntimeDiagnostics)
 	}
 	if err := runK8sRuntimeDiagnostics(ctx, cfg.Runtime, profile, &exec.podExecCore); err != nil {
-		return nil, withTeardownErr(err, teardown.run())
+		return nil, withTeardownErr(classifyK8sStartup(err), teardown.run())
 	}
 	return exec, nil
 }
