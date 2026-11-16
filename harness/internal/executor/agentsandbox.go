@@ -324,7 +324,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 		timing:            timing,
 	}
 	if err := waitForExecReachable(ctx, &exec.podExecCore, timing, logger); err != nil {
-		return nil, rollback(fmt.Errorf("sandbox %s/%s %w", cfg.Namespace, name, err))
+		return nil, rollback(classifyK8sStartup(fmt.Errorf("sandbox %s/%s %w", cfg.Namespace, name, err), types.BuildFailureSandboxNotReady))
 	}
 	if err := exec.prepareScratch(ctx); err != nil {
 		return nil, rollback(fmt.Errorf("sandbox %s/%s: %w", cfg.Namespace, name, err))

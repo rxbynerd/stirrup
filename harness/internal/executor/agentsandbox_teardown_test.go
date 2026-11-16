@@ -224,6 +224,23 @@ func TestNewAgentSandboxExecutor_RollsBackThroughClose(t *testing.T) {
 		f.requireSandboxRemovedThenPolicy(t, f.sandboxName(t))
 	})
 
+	t.Run("exec unreachable", func(t *testing.T) {
+		must := require.New(t)
+		f := newFakeAgentSandbox(t)
+		f.admitSandboxes(nil)
+		f.lingerOnDelete(t, 3)
+		calls := 0
+		f.execFn = scriptedExec(&calls, errKubeletUnreachable)
+		timing := fastK8sTiming
+		timing.execReachableTimeout = 50 * time.Millisecond
+
+		_, _, err := f.build(t, timing)
+
+		must.ErrorIs(err, errExecUnreachable)
+		must.Equal(types.BuildFailureSandboxNotReady, startupReason(err))
+		f.requireSandboxRemovedThenPolicy(t, f.sandboxName(t))
+	})
+
 	t.Run("scratch setup failure", func(t *testing.T) {
 		must := require.New(t)
 		f := newFakeAgentSandbox(t)
