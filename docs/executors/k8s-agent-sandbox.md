@@ -303,6 +303,7 @@ grants the `sandboxes` verbs and reduces `pods` to `get`:
 | `pods` | `create, get, delete` | `get` |
 | `pods/exec` | `create` | `create` |
 | `networking.k8s.io/networkpolicies` | `create, delete, patch` | `create, delete` |
+| `networking.k8s.io/networkpolicies` named `stirrup-sandbox-default-deny-egress` | `get` | `get` |
 
 On the `k8s-sandbox` path `pods` `get` is used only by teardown, to
 confirm the backing Pod is gone before the policy is removed;
