@@ -761,31 +761,12 @@ The container executor applies these defaults regardless of what
 - `NetworkMode: "none"` (overridden to `"bridge"` only when
   `network.mode == "allowlist"`, in which case the egress proxy
   enforces FQDN allowlisting on the way out)
-- A registry allowlist on `executor.image`. The default admits
-  only the project's own `ghcr.io/rxbynerd/*` images and Docker Hub
-  official `docker.io/library/*` images; any other reference is
-  rejected before a container is created. Operators widen or
-  replace the set via `executor.registryAllowlist` (a list of
-  globs over the normalised `host/repo` reference, tag/digest
-  stripped, with the `index.docker.io` / `registry-1.docker.io`
-  pull aliases folded to `docker.io`). Globs follow `path.Match`
-  semantics, so `*` matches one path segment and does not cross
-  `/`: `ghcr.io/rxbynerd/*` admits `ghcr.io/rxbynerd/base` but not
-  `ghcr.io/rxbynerd/team/base` (use `ghcr.io/rxbynerd/*/*` for the
-  deeper namespace). An explicit list *replaces* the default rather
-  than extending it. Digest-pinned references (`@sha256:…`) are
-  accepted and preferred. The executor does not verify signatures on
-  the images it pulls; release images can be verified before their
+- `executor.image` passes the deployment's
+  [image admission policy](#image-admission-policy) before the
+  container is created. The executor does not verify signatures on
+  the images it runs; release images can be verified before their
   digests are pinned, as described in
-  [Verify what you run](deployment.md#verify-what-you-run). This
-  allowlist governs only the container executor's own image pulls
-  (via the Docker Engine API); it is not consulted for the
-  `k8s`/`k8s-sandbox` executors, whose Pod image is scheduled by the
-  cluster. A deployment pulling container-executor images from Google Cloud
-  Artifact Registry (a `*.pkg.dev` host, including a GAR
-  remote/standard repository) must add that host to
-  `executor.registryAllowlist` explicitly — the default does not
-  admit any Artifact Registry host.
+  [Verify what you run](deployment.md#verify-what-you-run).
 - API keys and `secret://` references are resolved on the *host*
   before tool dispatch; they never enter the container's
   environment.
@@ -848,6 +829,90 @@ before any upstream dial — the client's in-flight TLS handshake
 fails, but no egress leak occurs. Sending the 200 early costs only
 that a denied client briefly sees "tunnel established"; the audit
 event is still emitted.
+
+## Image admission policy
+
+An image admission policy states which registries a deployment's
+sandboxes may come from. The deployment sets it, not the `RunConfig` it
+constrains: whoever writes a `RunConfig` also writes `executor.image`, so
+a list beside the image would not constrain that author. The policy
+comes from `stirrup harness --image-allowlist` (repeatable) or the
+`STIRRUP_IMAGE_ALLOWLIST` environment variable. When both are set, the
+flag replaces the variable. `stirrup job` takes no flags, so a Job
+template sets the variable (see
+[`deployment.md`](deployment.md#optional-environment-variables)). Each
+flag value and the variable can each hold several patterns separated by
+commas. A malformed pattern stops the harness before it builds anything.
+
+The policy applies to every executor that starts a sandbox from
+`executor.image`: `container`, `k8s` and `k8s-sandbox`. The harness
+checks the image while it builds the run, before any container, Pod or
+Sandbox exists. `--dry-run` reports the same check as its
+`image-admission` step. The harness does not pull images. The
+`container` executor runs an image already present on the engine, and
+the cluster's kubelet pulls a `k8s` sandbox image. The policy decides
+which references the harness will hand to either of them.
+
+Patterns are matched against the normalised reference: the registry
+host and repository path, with the tag and digest removed. Docker Hub
+short names expand to `docker.io` (`ubuntu` becomes
+`docker.io/library/ubuntu`), and the `index.docker.io` and
+`registry-1.docker.io` aliases fold to `docker.io`, in patterns as well
+as in references. A pattern takes one of two forms:
+
+- A pattern ending in `/` is a **prefix**. It admits every repository
+  below that prefix, at any depth. `us-docker.pkg.dev/acme-prod/`
+  admits `us-docker.pkg.dev/acme-prod/sandboxes/go/toolchain`. It does
+  not admit `us-docker.pkg.dev/acme-prod-staging/base`, because a prefix
+  matches whole path segments. It also does not admit
+  `us-docker.pkg.dev/acme-prod` itself, because a prefix needs at least
+  one repository segment below it. `ghcr.io/` admits every repository
+  on that registry.
+- Any other pattern must match the **whole reference**, one path
+  segment at a time. `ghcr.io/acme/*` admits `ghcr.io/acme/base` but not
+  `ghcr.io/acme/team/base`. `docker.io/library/ubuntu` admits only that
+  repository.
+
+Each segment of either form is a `path.Match` glob. `*` and `?` match
+within a single segment, and no glob matches `/`. A glob in the host
+segment covers a family of hosts:
+`*.dkr.ecr.eu-west-1.amazonaws.com/platform/` admits the `platform/`
+namespace in every account's ECR registry in that region.
+`harbor.acme.internal:8443/sandboxes/` admits a Harbor project at any
+depth.
+
+The parser rejects a pattern that could never match:
+
+- an empty pattern, including one left by a trailing comma;
+- a pattern with an empty segment;
+- a bare host with no `/` (write `ghcr.io/` to admit a whole registry);
+- a first segment that is not a registry host (one with a `.` or `:`,
+  `localhost`, or a glob);
+- a pattern containing a tag or digest;
+- `**` (use a trailing `/` instead);
+- whitespace inside a pattern.
+
+With no policy configured, every syntactically valid reference is
+accepted. A reference with whitespace, a control character, or an
+empty path segment is rejected whether or not a policy is set.
+
+Two security events record the outcome on the harness's stderr:
+
+| Event | Level | When | Data |
+|---|---|---|---|
+| `image_admission_denied` | `error` | A configured policy refuses `executor.image`. The run fails before any sandbox is created. | `executor`, `image`, `patterns` |
+| `image_unpinned_without_admission_policy` | `warn` | No policy is configured and `executor.image` is not pinned by digest (`@sha256:…`), so nothing stops a mistyped or re-pushed reference from running. The run continues. | `executor`, `image` |
+
+A reference with a syntax error raises `config_validation_failed`
+instead. A digest pins an image's content but does not verify who
+published it. Signature verification (cosign/Sigstore) is not
+implemented.
+
+`executor.registryAllowlist` no longer exists. A JSON `RunConfig` that
+sets it fails to parse with an error that names this policy. The
+`ExecutorConfig` proto field it used is reserved. A control plane that
+still sends the field has it ignored as an unknown proto field. It no
+longer appears in the `ready` event's `config_fields`.
 
 ## Untrusted context
 
@@ -1050,6 +1115,10 @@ Controls layered from outside in:
    GuardRail (pre-tool): LLM classifier on the cleaned call.
    PermissionPolicy: structural deny / Cedar policy / ask
    upstream.
+
+  ── Before the sandbox starts ─────────────────────────────
+   Image admission: the deployment's policy on executor.image
+   (container, k8s, k8s-sandbox).
 
   ── In sandbox ────────────────────────────────────────────
    Executor hardening: caps, no-new-privileges, network none,

@@ -795,7 +795,11 @@ Or in a `RunConfig` file:
 not the harness image (`ghcr.io/rxbynerd/stirrup`). The harness image is
 distroless and has no shell, so it cannot run commands, hooks, or
 in-sandbox git. Production configurations should pin the sandbox image
-by digest instead of `latest`.
+by digest instead of `latest`. A deployment can also restrict which
+registries sandbox images come from with an
+[image admission policy](security.md#image-admission-policy). Without
+one, an image that is not pinned by digest raises the
+`image_unpinned_without_admission_policy` security event.
 
 `ValidateRunConfig` rejects values outside the closed set above.
 

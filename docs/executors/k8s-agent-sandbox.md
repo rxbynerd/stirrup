@@ -345,7 +345,10 @@ the `k8s` executor uses — `--k8s-namespace`, `--k8s-kubeconfig`,
 `--k8s-node-selector`, `--k8s-service-account`, `--k8s-egress-proxy-url`,
 and the shared `image`/`network`/`resources` surface — with their meaning
 unchanged. See the [configuration reference in
-`k8s.md`](k8s.md#configuration-reference) for each field.
+`k8s.md`](k8s.md#configuration-reference) for each field. The
+deployment's [image admission policy](../security.md#image-admission-policy)
+applies to `executor.image` as it does for `k8s`, before the Sandbox is
+created.
 
 The one difference is the runtime field. The `k8s-sandbox` executor is
 **gVisor-only**: leave `--container-runtime` / `executor.runtime` empty,

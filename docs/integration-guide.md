@@ -1650,7 +1650,7 @@ topology):
 
 Everything else on `RunConfig` is expressible in a
 `task_assignment`, including the executor's
-`registryAllowlist`, `workspaceExportTo`, `k8sEgressProxyUrl`,
+`workspaceExportTo`, `k8sEgressProxyUrl`,
 `sandboxIdentity`, and `gitProxy` blocks, plus `resultSink`,
 `toolChoiceEscalation`, `correlation`, `observability.logsExport`,
 `observability.serviceName`, `tools.profile`, `tools.commandOutput`,
@@ -1658,6 +1658,13 @@ and the `traceEmitter` fields
 `metricsTemporality`, `captureContentMaxBytes`, `platform`,
 `platformOptions`, and `archive` (apart from its `credential`). The
 fields in the table are also left out of `ready.config_fields`.
+
+The sandbox image admission policy is not a `RunConfig` field. The
+deployment sets it in the harness's environment
+(`STIRRUP_IMAGE_ALLOWLIST` in the Job template), so a `task_assignment`
+cannot widen it. A task whose `executor.image` the policy refuses fails
+with a build error before any sandbox is created. See
+[Image admission policy](security.md#image-admission-policy).
 
 When a field in this table becomes load-bearing for a control plane,
 the project invariant is that it ships with its proto mirror and

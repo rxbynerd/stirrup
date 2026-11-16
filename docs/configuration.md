@@ -196,11 +196,20 @@ The report lists each step with one of four statuses:
 - `warn` — the step found a condition the run can proceed with: an
   optional MCP server that did not answer or does not advertise every
   allowlisted tool, a `tools.lazyLoading.eager` name that matches no
-  tool, or a `k8s` executor with no `executor.runtime` (the
-  `executor-runtime` step). A warning does not fail the report.
+  tool, a `k8s` executor with no `executor.runtime` (the
+  `executor-runtime` step), or a sandbox image that is not pinned by
+  digest while no image admission policy is configured (the
+  `image-admission` step). A warning does not fail the report.
 - `fail` — construction or a probe failed. The step names the component,
   carries the underlying error, and — where a concrete next step is
   known — a remediation hint.
+
+For the `container`, `k8s` and `k8s-sandbox` executors, the
+`image-admission` step applies the deployment's
+[image admission policy](security.md#image-admission-policy)
+(`--image-allowlist` or `STIRRUP_IMAGE_ALLOWLIST`) to `executor.image`.
+It fails when a configured policy refuses the image and makes no network
+call. `--no-probe-executor` does not skip it.
 
 When `tools.lazyLoading.enabled` is set, the `lazy-tools` step reports the
 tool set a run would send. Its detail gives the search strategy, the
@@ -533,6 +542,7 @@ The exchange audience is set on the `tokenSource` (canonically
 | `--k8s-node-selector` | (none) | Repeatable `key=value` `nodeSelector` constraining where the `k8s` / `k8s-sandbox` Pod schedules (e.g. `--k8s-node-selector disktype=ssd`). JSON path: `executor.k8sNodeSelector`. |
 | `--k8s-service-account` | (none) | ServiceAccount name for the `k8s` / `k8s-sandbox` Pod. Empty uses the namespace `default`. The token is never automounted regardless. JSON path: `executor.k8sServiceAccount`. |
 | `--k8s-egress-proxy-url` | (none) | URL the `k8s` / `k8s-sandbox` Pod routes `HTTP_PROXY`/`HTTPS_PROXY` (and the lower-case `http_proxy`/`https_proxy`, which is what `git` honours for a plain-http proxy URL) through. Required when the executor is `k8s` or `k8s-sandbox` and the network mode is `allowlist`; rejected otherwise. JSON path: `executor.k8sEgressProxyUrl`. |
+| `--image-allowlist` | (none; `STIRRUP_IMAGE_ALLOWLIST`) | `stirrup harness` only. The deployment's sandbox image admission policy for the `container`, `k8s` and `k8s-sandbox` executors. Repeatable, and each value may hold comma-separated patterns. A pattern ending in `/` admits every repository below that prefix at any depth (`us-docker.pkg.dev/acme/`). Any other pattern is a glob matched one path segment at a time (`ghcr.io/acme/*`). Replaces `STIRRUP_IMAGE_ALLOWLIST` when given. With neither set, any valid reference is accepted, and an image not pinned by digest raises the `image_unpinned_without_admission_policy` security event. Not a `RunConfig` field, so `run-config` does not accept it and `--output-runconfig` does not record it. See [Image admission policy](security.md#image-admission-policy). |
 | `--edit-strategy` | `multi` | One of `whole-file`, `search-replace`, `udiff`, `multi`. `composite` is reachable only via `--config`. |
 | `--verifier` | `none` | One of `none`, `test-runner`, `llm-judge`. `composite` is reachable only via `--config`. |
 | `--git-strategy` | `none` | One of `none`, `deterministic`. |

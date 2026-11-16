@@ -817,6 +817,7 @@ flag and field below is verified against
 | `--container-runtime` | `executor.runtime` | no | Runtime mapped to the Pod `RuntimeClassName`. Closed set: `runc`, `gvisor`, `kata-qemu`, `kata-fc`, `kata-clh`, `nitro-isolated`. Each value except `nitro-isolated` is also its RuntimeClass name; `nitro-isolated` selects `isolated-sandbox` (see [EKS with Nitro Sandboxes](#eks-with-nitro-sandboxes)). Empty selects the cluster-default RuntimeClass (and logs an isolation warning). |
 | *(RunConfig only)* | `executor.network` | yes for `k8s` | Mode `none` or `allowlist`. A nil network is rejected at config load (fail closed). `nitro-isolated` accepts only `none`. |
 | *(RunConfig only)* | `executor.resources` | no (yes for `nitro-isolated`) | CPU/memory/disk mapped onto the Pod container. See [Resource mapping](#resource-mapping). |
+| `--image-allowlist` / `STIRRUP_IMAGE_ALLOWLIST` | *(deployment, not RunConfig)* | no | The deployment's sandbox image admission policy. When set, `executor.image` must match one of its patterns or the run fails before the Pod or NetworkPolicy is created. `stirrup job` reads only the environment variable. See [Image admission policy](../security.md#image-admission-policy). |
 
 `--container-runtime` is shared with the `container` executor, where it
 names a host OCI runtime. For `k8s` the same field names a runtime that
@@ -838,6 +839,10 @@ only, so the `k8s` values are valid but not offered by completion.
 [`types/runconfig.go`](../../types/runconfig.go)):
 
 - `executor.image` is **required**.
+- `executor.image` must be admitted by the deployment's image admission
+  policy, when one is configured. This check runs while the harness
+  builds the run, after `ValidateRunConfig`, because the policy is not
+  part of the `RunConfig`.
 - `executor.k8sNamespace` is **required**.
 - `executor.workspace` is **rejected** — the Pod workspace is fixed at
   `/workspace`, not a mapped host directory.
