@@ -1320,6 +1320,19 @@ cross-namespace proxy is denied (more restrictive, not a bypass). Deploy
 it from [`examples/k8s/egress-proxy/`](../examples/k8s/egress-proxy/) or
 run it standalone with `stirrup egress-proxy`.
 
+The sandbox namespace MUST also hold a standing default-deny egress
+policy that selects every sandbox Pod
+([`examples/k8s/sandbox-egress-default-deny.yaml`](../examples/k8s/sandbox-egress-default-deny.yaml)).
+The per-Pod policy can be removed while the sandbox container still
+runs: the garbage collector removes it during a foreground delete of
+the harness Pod, which the Job TTL controller always uses, and a force
+delete can drop the Pod's record before its workload stops. Because
+NetworkPolicy allows are additive and any `Egress` policy isolates the
+Pods it selects, the standing policy makes that removal narrow the
+sandbox's egress instead of opening it. The
+[`k8s` executor reference](executors/k8s.md#standing-default-deny-egress)
+lists the cases and what the dry run checks.
+
 > **Enforcement depends on the CNI.** kindnet — the default CNI for
 > `kind` — accepts `NetworkPolicy` objects but does **not** enforce
 > them, so on a stock kind cluster the deny/allowlist policy is inert

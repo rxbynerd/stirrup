@@ -68,6 +68,7 @@ those files.
   - [Shutdown timing and grace period](#shutdown-timing-and-grace-period)
 - [RuntimeClass selection per run](#runtimeclass-selection-per-run)
 - [Egress](#egress)
+  - [Standing default-deny egress](#standing-default-deny-egress)
 - [Safety rings on Kubernetes](#safety-rings-on-kubernetes)
 - [Sandbox identity token exposure](#sandbox-identity-token-exposure)
 - [Dry-run preflight](#dry-run-preflight)
@@ -584,6 +585,8 @@ What the read in step 2 cannot establish:
 
 On a cluster that enforces NetworkPolicy a retained policy keeps
 confining a Pod that is still running and is inert once the Pod is gone.
+A workload that outlives its policy stays isolated by the
+[standing default-deny egress policy](#standing-default-deny-egress).
 A policy is never owned by the sandbox Pod alone, because garbage
 collection would then remove it as soon as the Pod object disappears,
 including after a force delete that does not wait for the workload to
@@ -637,7 +640,7 @@ set:
 | Object | Harness in a Pod, variables set | Otherwise |
 |---|---|---|
 | Sandbox Pod | Owned by the harness Pod; garbage-collected, and stopped within its 1-second grace period. | Left running until `activeDeadlineSeconds` marks it `Failed`; the object stays. |
-| Egress policy | Owned by the harness Pod and the sandbox Pod; garbage-collected once both are gone, so never while the sandbox Pod still exists. | Left in place. |
+| Egress policy | Owned by the harness Pod and the sandbox Pod; garbage-collected once both are gone when the harness Pod is deleted with background propagation. A foreground delete removes it earlier (see below). | Left in place. |
 
 The policy takes the owner references after the sandbox Pod is created,
 because the Pod's UID does not exist earlier and the policy must be
@@ -653,17 +656,25 @@ deleted object concurrently. A policy owned by the harness Pod alone is
 removed at the moment the harness Pod is deleted, while the sandbox Pod
 runs on until its grace period ends.
 
-The ordering holds for the default background propagation. A foreground delete of the
-harness Pod (`kubectl delete pod --cascade=foreground`) makes the
-collector remove the policy at once, while the sandbox Pod is still
-terminating. A foreground delete of the sandbox Pod alone leaves the
-policy in place, because the harness Pod still owns it.
+The ordering holds only for background propagation, which is the
+default for `kubectl delete pod`. A foreground delete of the harness
+Pod (`kubectl delete pod --cascade=foreground`, the Job TTL controller
+deleting the Job, Argo CD's default prune) makes the collector remove
+the policy as soon as the sandbox Pod is marked for deletion, while its
+container still runs. A foreground delete of the sandbox Pod leaves the
+policy in place only while the harness Pod object exists; once the
+harness Pod is gone it removes the policy the same way.
 
 The collector also removes the policy when the sandbox Pod disappears
 without the kubelet confirming it (a force delete, or the Pod garbage
 collector after the Node was removed) and the harness Pod is gone too.
 The workload can then outlive the policy, as described in
 [Teardown edge cases](#teardown-edge-cases).
+
+In each of these cases the
+[standing default-deny egress policy](#standing-default-deny-egress)
+keeps the sandbox isolated for egress until its container stops. The
+owner references only decide when the per-run policy is cleaned up.
 
 The `k8s-sandbox` executor sets no owner reference on its policy or its
 Sandbox. After a harness death the controller's TTL deletes the Sandbox
@@ -929,6 +940,7 @@ The standing objects (namespace, RBAC, RuntimeClasses) come from
 
 ```sh
 kubectl apply -f examples/k8s/namespace.yaml
+kubectl apply -f examples/k8s/sandbox-egress-default-deny.yaml
 kubectl apply -f examples/k8s/rbac.yaml
 kubectl apply -f examples/k8s/runtimeclass.yaml   # registered handlers only
 ```
@@ -1064,6 +1076,7 @@ failure, so a normal command error is not retried. This mirrors
 
 ```sh
 kubectl apply -f examples/k8s/namespace.yaml   # stirrup-sandbox, restricted PSS
+kubectl apply -f examples/k8s/sandbox-egress-default-deny.yaml
 kubectl apply -f examples/k8s/rbac.yaml        # orchestrator SA + Role/RoleBinding
 # (skip runtimeclass.yaml on GKE — see the note in step 1)
 ```
@@ -1264,6 +1277,7 @@ the DMI diagnostic only if its guest reports a name ending `.enclave`.
 
    ```sh
    kubectl apply -f examples/k8s/namespace.yaml
+   kubectl apply -f examples/k8s/sandbox-egress-default-deny.yaml
    kubectl apply -f examples/k8s/rbac.yaml
    # skip runtimeclass.yaml: Auto Mode provides isolated-sandbox
    kubectl get runtimeclass isolated-sandbox -o yaml
@@ -1878,6 +1892,75 @@ the sandbox only while no other policy in the sandbox namespace selects
 it with a wider egress rule. Controlling who can create NetworkPolicies
 in that namespace, and which ones exist, is an operator prerequisite;
 the [admission check](#admission-check) does not compare the policy set.
+The namespace also needs the
+[standing default-deny egress policy](#standing-default-deny-egress),
+which keeps a sandbox isolated if its per-Pod policy is removed first.
+
+### Standing default-deny egress
+
+Every sandbox namespace needs a standing NetworkPolicy that selects all
+sandbox Pods and isolates them for egress. The reference manifest is
+[`examples/k8s/sandbox-egress-default-deny.yaml`](../../examples/k8s/sandbox-egress-default-deny.yaml):
+an `Egress` policy with no egress rules that selects
+`stirrup-sandbox=true`, the label every sandbox Pod carries under both
+the `k8s` and the `k8s-sandbox` executor. Set its namespace to
+`executor.k8sNamespace` and apply it once, before the first run.
+
+The per-run policy is not enough on its own, because it can disappear
+while the sandbox container is still running:
+
+- A foreground delete of the harness Pod. The sandbox Pod and the
+  per-run policy are both dependents of the harness Pod, and the policy
+  is also a dependent of the sandbox Pod, so the garbage collector
+  deletes the sandbox Pod in the foreground and removes the policy as
+  soon as the sandbox Pod is marked for deletion. The container keeps
+  running until the kubelet stops it. The Job TTL-after-finished
+  controller (`ttlSecondsAfterFinished`, which the
+  [reference Job](../../examples/k8s/harness-job.yaml) sets) always
+  deletes with foreground propagation, and so does Argo CD's default
+  prune.
+- A foreground delete of the sandbox Pod after the harness Pod object is
+  already gone, for example
+  `kubectl delete pod -l stirrup-sandbox=true --cascade=foreground`.
+- A force delete of the sandbox Pod, or its removal by the Pod garbage
+  collector after its Node was deleted, when the harness Pod is gone
+  too (see [Teardown edge cases](#teardown-edge-cases)).
+
+NetworkPolicy allows are additive, and a Pod that any `Egress` policy
+selects is isolated for egress. With the standing policy in place, a
+sandbox whose per-run policy has gone keeps only what the standing
+policies allow, which for the reference manifest is nothing. Removing a
+per-run policy then narrows egress and never widens it. *Measured* on a
+kind cluster whose CNI enforced NetworkPolicy: without the standing
+policy, a foreground delete of the harness Pod let connections from the
+terminating sandbox to an external address succeed for one to two seconds;
+with it, none did.
+
+The manifest does not carry the `stirrup-sandbox` label, so the
+[cleanup procedure](#cleaning-up-retained-objects), which selects
+per-run policies by that label, does not match it. The
+`stirrup-sandbox-egress` policy under
+[`examples/k8s/egress-proxy/`](../../examples/k8s/egress-proxy/network-policy.yaml)
+also isolates every sandbox Pod, but it allows DNS and the proxy to all
+of them, including runs in mode `none`; the default-deny is the
+standing policy to use.
+
+The [dry run](#dry-run-preflight) lists the namespace's NetworkPolicies
+and fails when none of them isolates every sandbox Pod for egress. A
+run does not check: the reference Role grants no `list`, and the
+executor does not need it.
+
+The standing policy protects against the garbage collector and teardown
+edge cases, not against a leaked orchestrator credential. The reference
+Role grants `create`, `delete` and `patch` on every NetworkPolicy in the
+namespace, because per-run policy names are random and RBAC cannot name
+them in advance. Those credentials can therefore delete the standing
+policy, add an allow-all policy, rewrite a policy in place, or add owner
+references that make the garbage collector delete one later. Operators
+who need to rule that out can bind a `ValidatingAdmissionPolicy` to the
+orchestrator ServiceAccount that admits changes only to policies
+labelled `stirrup-sandbox=true` and, for updates, only changes to
+`metadata.ownerReferences`.
 
 ### Mode `none` — deny all egress
 
@@ -2014,7 +2097,7 @@ the K8s-specific mapping is:
 | Ring | On Kubernetes |
 |---|---|
 | **1 — Runtime class** | `executor.runtime` selects the Pod `RuntimeClassName`, not a host OCI runtime. `gvisor` / `kata-*` give kernel/VM isolation, and `nitro-isolated` an AWS Nitro Sandbox VM on EKS ([offline only](#network-mode-none-on-this-runtime)); empty selects the cluster default (warned). The hardened `securityContext` (drop ALL, runAsNonRoot, seccomp RuntimeDefault) is applied unconditionally beneath the runtime choice. |
-| **2 — Egress proxy** | A per-Pod `NetworkPolicy` plus the in-cluster proxy Deployment, instead of an in-process host proxy. Enforcement depends on a NetworkPolicy-enforcing CNI. |
+| **2 — Egress proxy** | A per-Pod `NetworkPolicy` over a [standing default-deny](#standing-default-deny-egress), plus the in-cluster proxy Deployment, instead of an in-process host proxy. Enforcement depends on a NetworkPolicy-enforcing CNI. |
 | **3 — Cedar policy** | Unchanged — per tool-call authorization runs in the orchestrator before the executor acts, identically across executor types. |
 | **4 — Rule of Two** | Unchanged — a pre-flight invariant on the `RunConfig`. A non-`none` `network.mode` counts toward `canCommunicateExternally` exactly as for other executors. |
 | **5 — Code scanner** | Unchanged — post-edit content check, executor-agnostic. |
