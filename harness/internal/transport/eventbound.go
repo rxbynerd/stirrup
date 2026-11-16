@@ -26,15 +26,12 @@ const maxEventIdentifierBytes = 1 << 10
 // misbehaving producer.
 const maxEventToolEntries = 256
 
-// MaxRequestInputBytes bounds the input of a permission_request or
-// tool_result_request. The control plane decides on, or executes, exactly
-// that input, so an oversized one is refused rather than truncated.
-const MaxRequestInputBytes = maxEventFieldBytes
-
-// MaxBatchSubmissionInputBytes bounds a batch_submission's input, the
-// whole provider request body. It leaves headroom under grpc-go's 4 MiB
-// default receive limit; a cut body would not be a valid request.
-const MaxBatchSubmissionInputBytes = 3 << 20
+// MaxRequestInputBytes bounds the input of a permission_request,
+// tool_result_request or batch_submission: grpc-go's 4 MiB default
+// receive limit less headroom for the event's other fields. The control
+// plane approves, executes or submits exactly that input, so an
+// oversized one is refused rather than truncated.
+const MaxRequestInputBytes = 4<<20 - 64<<10
 
 // ErrRequestInputTooLarge is returned by Emit when a request event's
 // input exceeds its bound. The event is not sent.
@@ -75,10 +72,8 @@ func boundEventFields(event *types.HarnessEvent) error {
 	case "tools_loaded":
 		event.Input = capEventInput(event.Input)
 		event.Tools = capEventIdentifiers(event.Tools)
-	case "permission_request", "tool_result_request":
-		return refuseOversizedInput(event, MaxRequestInputBytes)
-	case "batch_submission":
-		return refuseOversizedInput(event, MaxBatchSubmissionInputBytes)
+	case "permission_request", "tool_result_request", "batch_submission":
+		return refuseOversizedInput(event)
 	}
 	return nil
 }
@@ -96,11 +91,11 @@ func refuseWithheldRequestInput(eventType string, withheld bool) error {
 	return nil
 }
 
-func refuseOversizedInput(event *types.HarnessEvent, limit int) error {
-	if len(event.Input) <= limit {
+func refuseOversizedInput(event *types.HarnessEvent) error {
+	if len(event.Input) <= MaxRequestInputBytes {
 		return nil
 	}
-	return fmt.Errorf("%w: %s input is %d bytes, limit %d", ErrRequestInputTooLarge, event.Type, len(event.Input), limit)
+	return fmt.Errorf("%w: %s input is %d bytes, limit %d", ErrRequestInputTooLarge, event.Type, len(event.Input), MaxRequestInputBytes)
 }
 
 // capEventIdentifiers caps every entry and the length of a name list.

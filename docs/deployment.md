@@ -385,7 +385,8 @@ construction, the harness tears the sandbox down, and the run ends the
 same way. For a refresh after delivery, a late or missing response is
 retried after half the current token's remaining lifetime while the
 eight-request budget lasts. An explicit `is_error`, an invalid token,
-or a token that expires before a retry succeeds stops refreshing and
+a failed delivery of the refreshed token into the sandbox, or the
+current token expiring before a retry succeeds stops refreshing and
 emits a `warning` event naming the expiry of the token still in the
 sandbox; the run itself continues.
 

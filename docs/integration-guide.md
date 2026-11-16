@@ -971,17 +971,21 @@ than 1 KiB comes back shortened and does not match the one sent.
 most 256 entries, each capped like a name field, and
 `tools_loaded.input` is capped like a `tool_call` input.
 
-**Request inputs are bounded, never truncated.** The control plane
-acts on the `input` of a `permission_request` or
-`tool_result_request`, so the harness refuses to send one over
-256 KiB rather than cutting it. An oversized `permission_request` is
-denied without being sent, and the model sees `Permission denied:`
-with the reason. An oversized `tool_result_request` fails that tool
-call with `input_too_large`. A `batch_submission` input (the whole
-provider request) is bounded at 3 MiB, under grpc-go's 4 MiB default
-receive limit; a larger submission fails the model call without being
-sent. Secret-shaped values in a request input are redacted before it
-is sent, as on every event. When a redaction would leave the input as
+<a id="request-input-bounds"></a>**Request inputs are bounded, never truncated.** The control plane
+approves, executes or submits the `input` of a `permission_request`,
+`tool_result_request` or `batch_submission` as sent, so the harness
+refuses to send one larger than grpc-go's 4 MiB default receive limit
+less 64 KiB of headroom, rather than cutting it:
+
+- an oversized `permission_request` is denied without being sent, and
+  the model sees `Permission denied:` with the reason;
+- an oversized `tool_result_request` fails that tool call with
+  `input_too_large`;
+- an oversized `batch_submission` (the whole provider request) is not
+  sent, and the run ends with `done{stop_reason:"error"}`.
+
+Secret-shaped values in a request input are redacted before it is
+sent, as on every event. When a redaction would leave the input as
 invalid JSON, other events carry a placeholder instead, but a request
 event is refused the same way as an oversized one (`input_withheld`
 for a `tool_result_request`), so the control plane never decides on an
@@ -1248,8 +1252,9 @@ The control plane must:
    aborts construction and tears the sandbox down; on a refresh the
    harness retries after half the current token's remaining lifetime
    while the request budget lasts, and surfaces a `warning` event if
-   the token expires first. A refusal on a refresh stops refreshing
-   with a `warning`.
+   the current token expires first or the budget runs out while it
+   would expire before the run ends. A refusal, an invalid token or a
+   failed delivery into the sandbox stops refreshing with a `warning`.
 2. Derive the run's identity from the stream, never from the
    request body; validate `audience` against its own allowlist
    before minting.

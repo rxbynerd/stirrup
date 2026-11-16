@@ -212,13 +212,10 @@ func TestBoundEventFields_CapsToolsLoaded(t *testing.T) {
 }
 
 func TestBoundEventFields_RequestInputAtBoundPassesUnchanged_OverBoundRefused(t *testing.T) {
-	for typ, limit := range map[string]int{
-		"permission_request":  MaxRequestInputBytes,
-		"tool_result_request": MaxRequestInputBytes,
-		"batch_submission":    MaxBatchSubmissionInputBytes,
-	} {
+	for _, typ := range []string{"permission_request", "tool_result_request", "batch_submission"} {
 		t.Run(typ, func(t *testing.T) {
 			must := require.New(t)
+			limit := MaxRequestInputBytes
 			atBound := json.RawMessage(`"` + strings.Repeat("a", limit-2) + `"`)
 			ev := types.HarnessEvent{Type: typ, RequestID: "r-1", Input: atBound}
 			must.NoError(boundEventFields(&ev))

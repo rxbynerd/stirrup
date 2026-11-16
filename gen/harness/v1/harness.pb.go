@@ -147,10 +147,10 @@ const (
 //	                back in the corresponding permission_response ControlEvent.
 //	  - tool_name:  the tool requesting permission.
 //	  - input:      JSON-encoded tool input (so the control plane can display
-//	                what the tool wants to do), at most 256 KiB and never
-//	                truncated: the harness denies a call whose input is
-//	                larger, or that secret redaction would leave as
-//	                invalid JSON, without sending the request.
+//	                what the tool wants to do), at most 4 MiB less 64 KiB
+//	                and never truncated: the harness denies a call whose
+//	                input is larger, or that secret redaction would leave
+//	                as invalid JSON, without sending the request.
 //
 //	"tool_result_request"
 //	  - request_id: unique ID for this request; the control plane must echo it
@@ -159,10 +159,10 @@ const (
 //	                 the control plane can correlate to the original tool_call).
 //	  - tool_name:   the async tool whose result is being requested.
 //	  - input:       JSON-encoded tool input (so the control plane can decide
-//	                 what to do), at most 256 KiB and never truncated: a
-//	                 larger input, or one that secret redaction would leave
-//	                 as invalid JSON, fails the call without sending the
-//	                 request.
+//	                 what to do), at most 4 MiB less 64 KiB and never
+//	                 truncated: a larger input, or one that secret
+//	                 redaction would leave as invalid JSON, fails the call
+//	                 without sending the request.
 //	  Emitted by the agentic loop when an async tool defers its result to the
 //	  control plane. The harness blocks on the matching tool_result_response
 //	  under ctx cancellation and a per-call timeout.
@@ -200,8 +200,10 @@ const (
 //	  - input:      JSON-encoded BatchSubmission payload (provider_type,
 //	                custom_id, body). The body is the marshalled provider
 //	                request the streaming adapter would have POSTed. At
-//	                most 3 MiB and never truncated: a larger submission
-//	                fails the turn without being sent.
+//	                most 4 MiB less 64 KiB and never truncated: a larger
+//	                submission, or one that secret redaction would leave
+//	                as invalid JSON, is not sent and the run ends with an
+//	                error.
 //
 //	"batch_waiting"
 //	  - request_id: the originating batch_submission request_id.

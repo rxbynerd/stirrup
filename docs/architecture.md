@@ -791,7 +791,7 @@ selections. Categories cover dispatch-site failures
 (`unknown_tool`, `tool_not_loaded`, `schema_validation_failed`, `permission_denied`,
 `permission_error`, `security_guard_denied`, `guardrail_denied`,
 `handler_error`, `handler_missing`), async-tool failures
-(`async_preflight_error`, `async_transport_unavailable`,
+(`async_preflight_error`, `async_input_refused`, `async_transport_unavailable`,
 `async_timeout`, `async_cancelled`, `async_upstream_error`,
 `async_panic`, `async_internal_error`), provider-side failures
 during tool-bearing turns (`provider_request_failed`,

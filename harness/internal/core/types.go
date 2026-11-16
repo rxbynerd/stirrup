@@ -679,10 +679,12 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 	})
 	if err != nil {
 		if errors.Is(err, transport.ErrRequestInputTooLarge) {
-			return fmt.Sprintf("async tool %s input_too_large: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncPreflight
+			return fmt.Sprintf("async tool %s input_too_large: the call's %d-byte input exceeds the %d-byte limit for the control plane, so it was not sent",
+				call.Name, len(inputForCall), transport.MaxRequestInputBytes), false, observability.ToolFailureAsyncInputRefused
 		}
 		if errors.Is(err, transport.ErrRequestInputWithheld) {
-			return fmt.Sprintf("async tool %s input_withheld: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncPreflight
+			return fmt.Sprintf("async tool %s input_withheld: secret redaction left the call's input unreadable, so it was not sent to the control plane",
+				call.Name), false, observability.ToolFailureAsyncInputRefused
 		}
 		// The correlator wraps emit errors with "emit failed", timeouts
 		// with "timed out", and ctx errors carry context.Canceled /

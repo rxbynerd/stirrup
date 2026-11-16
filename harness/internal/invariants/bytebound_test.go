@@ -92,7 +92,8 @@ func TestHarnessEvents_EveryInputCarryingTypeIsBounded(t *testing.T) {
 	fset := token.NewFileSet()
 	files := parseProductionTree(t, fset, "harness")
 
-	handled := boundEventFieldsCases(t, files)
+	handled := boundEventFieldsInputCases(t, files)
+	check.NotEmpty(handled, "boundEventFields has no case bounding Input; the check would be vacuous")
 	consts := packageStringConsts(files)
 
 	producers := 0
@@ -110,22 +111,23 @@ func TestHarnessEvents_EveryInputCarryingTypeIsBounded(t *testing.T) {
 			if !check.True(resolved, "%s: HarnessEvent with Input has a Type the check cannot resolve to a string constant", where) {
 				return true
 			}
-			check.True(handled[typ], "%s: %q events carry Input but boundEventFields has no case for them", where, typ)
+			check.True(handled[typ], "%s: %q events carry Input but no boundEventFields case bounds it", where, typ)
 			return true
 		})
 	}
 	check.Positive(producers, "no HarnessEvent literal sets Input; the check would be vacuous")
 }
 
-// boundEventFieldsCases returns the string literals of the case clauses
-// in boundEventFields.
-func boundEventFieldsCases(t *testing.T, files []sourceFile) map[string]bool {
+// boundEventFieldsInputCases returns the event types of the case clauses
+// in boundEventFields whose body bounds Input: it reads or assigns a
+// .Input field, or calls a function whose name mentions Input.
+func boundEventFieldsInputCases(t *testing.T, files []sourceFile) map[string]bool {
 	t.Helper()
 	fd := findFunc(t, files, "harness/internal/transport/eventbound.go", "boundEventFields")
 	cases := map[string]bool{}
 	ast.Inspect(fd.decl.Body, func(n ast.Node) bool {
 		clause, ok := n.(*ast.CaseClause)
-		if !ok {
+		if !ok || !boundsInput(clause.Body) {
 			return true
 		}
 		for _, expr := range clause.List {
@@ -135,8 +137,23 @@ func boundEventFieldsCases(t *testing.T, files []sourceFile) map[string]bool {
 		}
 		return true
 	})
-	assert.NotEmpty(t, cases, "boundEventFields has no string cases; the check would be vacuous")
 	return cases
+}
+
+func boundsInput(body []ast.Stmt) bool {
+	found := false
+	for _, stmt := range body {
+		ast.Inspect(stmt, func(n ast.Node) bool {
+			switch e := n.(type) {
+			case *ast.SelectorExpr:
+				found = found || e.Sel.Name == "Input"
+			case *ast.CallExpr:
+				found = found || strings.Contains(calleeName(e), "Input")
+			}
+			return !found
+		})
+	}
+	return found
 }
 
 // packageStringConsts maps each package directory to its string constants.

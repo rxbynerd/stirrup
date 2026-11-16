@@ -36,7 +36,9 @@ func NewStdioTransport(w io.Writer, r io.Reader) *StdioTransport {
 }
 
 // Emit scrubs secret patterns from the event's string fields, marshals it as
-// a single JSON line, and writes it to the output stream. When the optional
+// a single JSON line, and writes it to the output stream. A request event
+// whose input the scrub withheld is not written; Emit returns
+// ErrRequestInputWithheld. When the optional
 // Security logger is wired and any redaction occurs, emits a
 // SecretRedactedInOutput event with the matched pattern name and a stable
 // location string identifying the call site.
@@ -76,8 +78,8 @@ const scrubInvalidatedJSONPlaceholder = "[redacted:scrub-invalidated-json]"
 // call's raw input on a permission_request event, and that input can carry
 // the very secret that tripped the sensitive-data latch (an AWS key echoed
 // into a web_fetch URL or run_command argument). Scrubbing the string form
-// can in principle break the JSON (a redaction spanning a structural
-// boundary), so the result is revalidated and falls back to a fixed
+// can break the JSON (a redaction spanning a structural boundary), so the
+// result is revalidated and falls back to a fixed
 // placeholder rather than emit malformed JSON onto the wire; withheld
 // reports that substitution. An empty input is returned unchanged so the
 // omitempty wire field stays absent.
