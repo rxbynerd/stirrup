@@ -13,10 +13,9 @@
 #   ------------------------------     ------------------------------------------
 #   pods: create, get, delete          pods: get ONLY (the controller owns the
 #                                        Pod's create/delete via the Sandbox CR)
-#   (no sandboxes verb)                sandboxes: create, get, list, watch, delete
+#   (no sandboxes verb)                sandboxes: create, get, delete
 #   pods/exec: create                  pods/exec: create        (unchanged)
 #   networkpolicies: create, delete    networkpolicies: create, delete (unchanged)
-#   pods/log: get (debug convenience)  (omitted — add it back for `kubectl logs`)
 #
 # The verbs below are derived from the executor's calls in
 # harness/internal/executor/agentsandbox.go (Sandbox create/get/delete via the
@@ -30,9 +29,6 @@
 #                              reads the Sandbox until it is gone, and
 #                              construction looks it up by name after a
 #                              failed create
-#                    list    — operator/teardown discovery by the
-#                              stirrup-sandbox=true label (also future warm-pool)
-#                    watch   — granted alongside list for controller-style reads
 #                    delete  — the foreground teardown delete on Close(),
 #                              which construction failures also go through
 #   pods             get     — Close() reads the controller-created Pod until it
@@ -48,7 +44,8 @@
 #
 # The Role is intentionally namespaced (not a ClusterRole): the orchestrator
 # operates within a single sandbox namespace. Bind one Role per namespace if
-# runs span several. The Agent Sandbox CONTROLLER's own cluster RBAC (to manage
+# runs span several. The Role grants nothing else; reading a sandbox Pod's logs
+# (`kubectl logs`) needs `pods/log` get from a separate Role. The Agent Sandbox CONTROLLER's own cluster RBAC (to manage
 # Pods on the orchestrator's behalf) is installed with the controller and is out
 # of scope here — this Role is only the orchestrator's.
 apiVersion: v1
@@ -80,8 +77,6 @@ rules:
     verbs:
       - create
       - get
-      - list
-      - watch
       - delete
   - apiGroups: [""]
     resources:

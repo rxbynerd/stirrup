@@ -133,10 +133,9 @@ The pieces and their lifecycle:
   `$KUBECONFIG`. It holds the RBAC the executor's lifecycle needs:
   `pods` (create/get/delete), `pods/exec` (create), and
   `networkpolicies` (create/delete/patch). The reference Role
-  ([`examples/k8s/rbac.yaml`](../../examples/k8s/rbac.yaml)) also grants
-  `pods/log` (get); the executor does not use it, so it is granted only
-  for operator `kubectl logs` debugging and may be dropped to tighten
-  the Role to the executor's minimum.
+  ([`examples/k8s/rbac.yaml`](../../examples/k8s/rbac.yaml)) grants
+  exactly these; an operator who reads sandbox logs with the harness
+  credentials (`kubectl logs`) adds `pods/log` (get) in a separate Role.
 
 - **The sandbox Pod** is created per run with a fixed, config-independent
   hardened `securityContext`: `allowPrivilegeEscalation: false`,
@@ -2119,9 +2118,8 @@ Defence-in-depth on K8s additionally relies on cluster-level controls the
 reference manifests configure: the sandbox namespace enforces the
 `restricted` Pod Security Standard (pinned to a version, not `latest`),
 and the orchestrator's RBAC is the minimal `pods` / `pods/exec` /
-`networkpolicies` verb set the executor needs (the reference Role adds
-`pods/log` get for operator debugging only; drop it to reach the
-executor's exact minimum). The sandbox Pod has no API access of its own
+`networkpolicies` verb set the executor needs, which is exactly what the
+reference Role grants. The sandbox Pod has no API access of its own
 (`automountServiceAccountToken: false`).
 
 ## Sandbox identity token exposure
@@ -2229,9 +2227,7 @@ not satisfy the `k8s-sandbox` check. The list matches what the executors
 call, and a test pins it to the reference Roles
 ([`rbac.yaml`](../../examples/k8s/rbac.yaml),
 [`rbac-agent-sandbox.yaml`](../../examples/k8s/agent-sandbox/rbac-agent-sandbox.yaml)):
-the permissions those Roles grant beyond the list (`pods/log` `get`;
-`sandboxes` `list` and `watch`) are not used by the executors and are not
-checked.
+the Roles grant exactly the listed permissions.
 
 `pods/exec` is checked as `create`, which is correct on every Kubernetes
 version: SPDY exec is a POST authorised as `create`, and the WebSocket path

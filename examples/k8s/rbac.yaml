@@ -8,7 +8,8 @@
 #
 # The verbs below are derived from the executor's clientset calls in
 # harness/internal/executor/k8s.go, k8s_netpol.go, k8s_readiness.go and
-# k8s_teardown.go:
+# k8s_teardown.go. The Role grants nothing else; reading a sandbox Pod's logs
+# (`kubectl logs`) needs `pods/log` get from a separate Role.
 #
 #   pods                  create  — NewK8sExecutor creates the sandbox Pod
 #                         get     — waitForPodReady polls Pod status; teardown
@@ -18,10 +19,6 @@
 #                                   delete on Close() and on construction failure
 #   pods/exec             create  — Exec + tar-based file I/O POST to the
 #                                   pods/exec subresource (streamExec)
-#   pods/log              get     — NOT used by the executor today; granted so
-#                                   an operator can `kubectl logs` a sandbox Pod
-#                                   for debugging. Drop this verb to tighten the
-#                                   Role to exactly what the executor needs.
 #   networkpolicies       create  — the egress policy is installed BEFORE the
 #                         delete    Pod and removed only once teardown has
 #                                   confirmed the Pod is gone; without these
@@ -77,11 +74,6 @@ rules:
       - pods/exec
     verbs:
       - create
-  - apiGroups: [""]
-    resources:
-      - pods/log
-    verbs:
-      - get
   - apiGroups: ["networking.k8s.io"]
     resources:
       - networkpolicies
