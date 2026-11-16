@@ -84,7 +84,8 @@ workflow regenerates the checksum files on each Dependabot Go update
 branch, commits them there, and dispatches the verify and lint
 workflows against that commit. An `eval-gate` job runs
 the baselined eval suites against committed baselines, pinned to a
-cheap model, and every merge to `main` publishes a container. A failing
+cheap model, on pushes to `main` and on manual dispatch only, and every
+merge to `main` publishes a container and a sandbox container. A failing
 `compare` exit fails the eval gate.
 See [`.github/workflows/`](.github/workflows/) for the full pipeline.
 
