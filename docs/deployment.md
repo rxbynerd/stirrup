@@ -18,6 +18,7 @@ sequenceDiagram
     K-->>H: Pod scheduled
     H->>CP: Dial gRPC, open RunTask stream
     H->>CP: HarnessEvent{type:"ready", harness_version, harness_semver, capabilities, config_fields}
+    H->>CP: heartbeat{session_phase: awaiting_assignment}, then every 30s
     H->>H: Write /tmp/healthy (liveness) and /tmp/ready (readiness)
     CP->>H: ControlEvent{type:"task_assignment", task: RunConfig, trace_context?}
     H->>H: Remove /tmp/ready
@@ -25,11 +26,12 @@ sequenceDiagram
         H->>CP: sandbox_token_request
         CP-->>H: sandbox_token_response
     end
+    H->>CP: heartbeat{session_phase: constructing}, and at each step
     H->>H: Build AgenticLoop with the supplied RunConfig
     H->>CP: HarnessEvent{type:"run_started", id: run ID, trace_reference?}
     H-->>CP: user_message (the prompt)
     loop For each turn
-        H->>CP: heartbeat (every 30s by default)
+        H->>CP: heartbeat{session_phase: running} (every 30s by default)
         H-->>CP: turn_started
         H-->>CP: text_delta · thinking_delta · tool_call · tool_result
         H-->>CP: turn_committed or turn_abandoned · user_message
@@ -173,7 +175,9 @@ IMDS, GitHub Actions OIDC). See
    `tool_call`, `tool_result`, `turn_committed` or `turn_abandoned`, and
    `user_message` (see
    [Watching a run live](integration-guide.md#watching-a-run-live)) —
-   plus `heartbeat` (every 30 s unless `heartbeatSeconds` is set) and, depending on the permission
+   plus `heartbeat` (every 30 s unless `heartbeatSeconds` is set; from
+   `ready` to the session's last event, naming the session's phase, see
+   [Detecting a stalled or orphaned run](integration-guide.md#detecting-a-stalled-or-orphaned-run)) and, depending on the permission
    policy, `permission_request` events. Tools declared in
    `tools.controlPlane` emit `tool_result_request` and block on
    `tool_result_response`; the request's `trace_context`, when

@@ -862,7 +862,13 @@ The agentic loop emits `heartbeat` events on the transport during
 execution, every 30 seconds unless `RunConfig.heartbeatSeconds` sets
 another interval (5-600 s). The factory resolves the interval into
 `AgenticLoop.HeartbeatInterval`, so the loop never reads the config for
-it. For K8s jobs, file-based probes
+it. Under `stirrup job` a session heartbeat
+(`harness/internal/core/sessionliveness.go`) replaces the loop's own:
+the job starts it after `ready`, the factory reports construction steps
+and sets its interval, and the loop reports its phases to the
+`AgenticLoop.Liveness` interface rather than running a ticker. See
+[Detecting a stalled or orphaned run](integration-guide.md#detecting-a-stalled-or-orphaned-run).
+For K8s jobs, file-based probes
 (`harness/internal/health/probe.go`) distinguish liveness from
 readiness: `/tmp/healthy` is written after the ready event and
 removed only on shutdown (liveness — alive through the whole run),

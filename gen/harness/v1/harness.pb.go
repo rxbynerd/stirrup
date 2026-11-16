@@ -1309,7 +1309,9 @@ type RunConfig struct {
 	// session without a follow-up window, are unaffected.
 	FollowUpHistory string `protobuf:"bytes,60,opt,name=follow_up_history,json=followUpHistory,proto3" json:"follow_up_history,omitempty"`
 	// Optional. Seconds between "heartbeat" events while a run is in
-	// progress. 0 or unset selects the default of 30. Otherwise range: 5-600.
+	// progress and, on a harness advertising "session_liveness", for the rest
+	// of the session once the task is validated. 0 or unset selects the
+	// default of 30. Otherwise range: 5-600.
 	HeartbeatSeconds int32 `protobuf:"varint,61,opt,name=heartbeat_seconds,json=heartbeatSeconds,proto3" json:"heartbeat_seconds,omitempty"`
 	// Optional. Structured log verbosity for this run.
 	// Valid values: "debug", "info", "warn", "error". Default: "info".

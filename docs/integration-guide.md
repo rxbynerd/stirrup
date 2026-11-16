@@ -108,9 +108,11 @@ status.
    model's `text_delta` and `thinking_delta` fragments, each
    `tool_call` and its `tool_result`, and a `user_message` for every
    user-role message the harness appends to the history. Occasional
-   `warning` events and a `heartbeat` (every **30 seconds** by default;
-   see [Detecting a stalled or orphaned run](#detecting-a-stalled-or-orphaned-run))
-   are interleaved. Depending on configuration it may also emit
+   `warning` events and a `heartbeat` (every **30 seconds** by default)
+   are interleaved. A harness advertising `session_liveness` also sends
+   heartbeats before and between runs, from just after `ready`, each
+   naming the session's phase; see
+   [Detecting a stalled or orphaned run](#detecting-a-stalled-or-orphaned-run). Depending on configuration it may also emit
    `permission_request`, `tool_result_request`, `batch_submission`,
    `batch_waiting`, and `batch_cancel_request`. See
    [Watching a run live](#watching-a-run-live) for the ordering and
@@ -157,7 +159,7 @@ the policy lint keeps its lint findings in the message.
 | `turn_abandoned` | `turn`, `abandon_reason` | Informational. The turn left nothing valid in the history; discard what was buffered for it. `abandon_reason` says why; see [Watching a run live](#watching-a-run-live) for the vocabulary, which is open. Every `turn_started` is followed by exactly one `turn_committed` or `turn_abandoned`. Sent by harnesses advertising the `turn_abandoned` capability. |
 | `permission_request` | `request_id`, `tool_name`, `input` | **Must respond** with `permission_response` echoing `request_id` before the policy timeout (default 60 s) or the call is auto-denied. |
 | `tool_result_request` | `request_id`, `tool_use_id`, `tool_name`, `input`, `trace_context` | **Must respond** with `tool_result_response` echoing `request_id`; the loop blocks on it under a per-call timeout. `trace_context` (`traceparent`, `tracestate`), when present, is the W3C context of the call's `execute_tool` span; see [Control-plane-fulfilled tools](#control-plane-fulfilled-tools-tool_result_request). |
-| `heartbeat` | — | Liveness signal every 30 s by default; `RunConfig.heartbeat_seconds` sets 5-600 s. Sent only while a run is in progress. Treat sustained absence during a run as a hang and reap the Pod; see [Detecting a stalled or orphaned run](#detecting-a-stalled-or-orphaned-run) for when none are sent. |
+| `heartbeat` | `session_phase` (`phase`, `step`) | Liveness signal every 30 s by default; `RunConfig.heartbeat_seconds` sets 5-600 s. From a harness advertising `session_liveness`, sent for the whole session and naming its phase; otherwise sent only while a run is in progress, with no fields. Treat sustained absence as a hang and reap the Pod; see [Detecting a stalled or orphaned run](#detecting-a-stalled-or-orphaned-run). |
 | `warning` | `message`, `request_id` (about a `user_response`) | Log; non-fatal. A `warning` carrying `request_id` is about that `user_response`: a message starting `user_response dropped:` means it was not accepted (empty text, the queue of 16 was full, the session was cancelled, or it was still queued when the session ended) — retry after the next turn where that applies; one starting `user_response sanitized:` means it was accepted after tag stripping or truncation to 50,000 bytes. A message starting `result sink:` arrives just before a run's `done` and means the configured `resultSink` could not deliver that run's `RunResult`; the run's outcome is unchanged. |
 | `error` | `message` | Optional diagnostic for some early run failures; when emitted by a built loop, a `done` follows. |
 | `done` | `stop_reason`, `trace` | Terminal status for that run. `trace` is the run summary, including `trace_reference` when the run recorded an OTel span; it is absent on a `done` for a task rejected before its run started. |
@@ -287,7 +289,9 @@ The smallest correct `RunTask` implementation:
    against `ready.config_fields`; see
    [Negotiating RunConfig fields](#negotiating-runconfig-fields).
 3. Consume events. Log `text_delta` / `tool_call` / `tool_result`;
-   track `heartbeat` arrival times.
+   track `heartbeat` arrival times and, when present, their
+   `session_phase`. Heartbeats can arrive before the assignment is
+   sent.
 4. Answer every `permission_request` (even a blanket deny keeps the
    contract; an unanswered request stalls the tool call until the
    timeout auto-denies it).
@@ -315,33 +319,88 @@ The process writes `/tmp/healthy`, but the published distroless image
 contains no `test` or shell binary, so an exec probe runs
 `stirrup healthcheck --file=/tmp/healthy` instead (see
 [Health probes](deployment.md#health-probes)). The wire heartbeat is the
-control plane's direct run-liveness signal.
+control plane's direct liveness signal for the session.
 
 ### Detecting a stalled or orphaned run
 
-The harness emits a `heartbeat` event every 30 seconds while a run is in
-progress. `RunConfig.heartbeat_seconds` (JSON `heartbeatSeconds`,
-`--heartbeat-seconds` on the CLI) sets another interval: `0` or unset
-keeps 30 s, and any other value must be between 5 and 600. The interval
-applies to the primary run and to every follow-up run in the session.
-A harness whose `ready.capabilities` lacks `heartbeat_interval` ignores
-the field and keeps 30 s (see [Compatibility](#compatibility)).
+A harness whose `ready.capabilities` includes `session_liveness` sends
+`heartbeat` events for the whole session, and each one names what the
+session is doing. A harness without it sends them only while a run is in
+progress, as described under
+[Harnesses without `session_liveness`](#harnesses-without-session_liveness).
+`stirrup job` advertises the capability; the gating is on what the
+harness advertises, not on anything the control plane requests, so a
+control plane that ignores the new field keeps working unchanged.
 
-Heartbeats cover the run itself. They start when the loop begins the
-run, after component construction, and stop when the run's context ends
-(its `timeout` or a `cancel`) or just before `done`, whichever comes
-first. None are sent while the harness waits for the assignment, while
-it builds the loop, between runs (including the follow-up grace window),
-or during `postRun` hooks that outlive the run's deadline (see
+#### Interval
+
+Heartbeats are sent every 30 seconds by default.
+`RunConfig.heartbeat_seconds` (JSON `heartbeatSeconds`,
+`--heartbeat-seconds` on the CLI) sets another interval: `0` or unset
+keeps 30 s, and any other value must be between 5 and 600. Until the
+`task_assignment` arrives the harness has no `RunConfig`, so it uses
+30 s; the task's interval applies from the moment the task passes
+validation, through construction, the primary run and every follow-up
+run. A harness whose `ready.capabilities` lacks `heartbeat_interval`
+ignores the field and keeps 30 s (see [Compatibility](#compatibility)).
+
+#### The session phase
+
+Each heartbeat from a `session_liveness` harness carries
+`session_phase`, with a `phase` and an optional `step`:
+
+| `phase` | From | Until | `step` values |
+|---|---|---|---|
+| `awaiting_assignment` | just after `ready` | the `task_assignment` arrives | — |
+| `constructing` | the `task_assignment` (or, for a follow-up, the `user_response` that starts the run) | the run's `run_started` | `token_exchange` (waiting for a `sandbox_token_response`), `sandbox_create`, `sandbox_ready` (Kubernetes executors: scheduling, image pull, start and the first successful exec), `runtime_diagnostics` (an `executor.runtime` that checks itself from inside the sandbox), `pre_run_hooks`, `run_setup` (repository guidance and git setup) |
+| `running` | `run_started` | the run's turns and verification end | — |
+| `post_run` | the end of the turns | the run's `done` | `post_run_hooks` |
+| `idle_followup` | the run's `done`, when a follow-up grace window is open | the next run starts or the window closes | — |
+
+An empty `step` is the phase's work outside the named steps, such as
+building providers and tools during `constructing`. Both vocabularies
+are open: preserve and display values that are not recognised.
+
+A change of phase or step sends a heartbeat at once and restarts the
+interval, so the heartbeat that opens a phase marks when it began. A
+control plane can show "constructing, `sandbox_ready`, 90 s" and apply a
+separate deadline to each phase. Heartbeats continue through a slow
+sandbox start, a long model call or tool execution, and `postRun` hooks
+that run past the run's deadline (see
 [`security.md`](security.md#lifecycle-hooks)).
+
+Heartbeats stop just before each `done` and resume with the next phase,
+and they stop for good before the session's last event. `done` is
+therefore the last event of a session that ends without a follow-up
+window, and a build failure's `error` and `done` pair is never followed
+by a heartbeat.
+
+#### Choosing reap deadlines
 
 A control plane that reaps a Pod after missing heartbeats should pick a
 deadline of several intervals, not one, so a single delayed event does
-not trigger a reap. The heartbeat is emitted by a background goroutine
-rather than by the turn loop, so it continues through a long model call
-or tool execution. A shorter interval raises event volume on
-the stream accordingly. `batch_waiting` events are a separate liveness
-signal during batch waits (see [Batch mode](#batch-mode-amortised-token-pricing)).
+not trigger a reap. With `session_liveness`, a gap of that length in any
+phase means the harness or its stream has stopped; there is no phase
+in which a healthy harness is silent. Separate per-phase ceilings guard
+against a harness that is alive but stuck: for example a `constructing`
+ceiling sized for the slowest expected cold start (image pull and node
+scale-up included), and a `post_run` ceiling sized for the `postRun`
+hook budget (the sum of the hooks' timeouts plus 30 s, at most 1,830 s).
+A shorter interval raises event volume on the stream accordingly.
+`batch_waiting` events are a separate keep-alive during batch waits
+(see [Batch mode](#batch-mode-amortised-token-pricing)).
+
+#### Harnesses without `session_liveness`
+
+An older harness sends heartbeats only while a run is in progress, and
+they carry no `session_phase`. They start when the loop begins the run,
+after component construction, and stop when the run's context ends (its
+`timeout` or a `cancel`) or just before `done`, whichever comes first.
+None are sent while that harness waits for the assignment, while it
+builds the loop, between runs (including the follow-up grace window), or
+during `postRun` hooks that outlive the run's deadline. A watchdog for
+such a harness must not treat a gap in those windows as a lost run;
+size its deadline for the worst case of each window instead.
 
 ## Composing a RunConfig
 
