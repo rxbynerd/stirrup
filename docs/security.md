@@ -853,12 +853,33 @@ Sandbox exists. `--dry-run` reports the same check as its
 the cluster's kubelet pulls a `k8s` sandbox image. The policy decides
 which references the harness will hand to either of them.
 
+The check runs inside the harness process, so it is not a cluster
+admission control. Anything holding the harness ServiceAccount's rights
+to create Pods or Sandboxes can still create one with any image. A
+Kubernetes deployment that needs enforcement in the cluster should also
+apply the same registry list to the sandbox namespace with a
+`ValidatingAdmissionPolicy`, Kyverno or Gatekeeper. Only the `stirrup`
+binary reads the flag and the variable. A program that embeds the
+harness through `harness/harnessapi` runs without a policy.
+
+The harness first checks `executor.image` against the reference grammar
+that Docker, containerd, Podman and CRI-O parse references with
+(`github.com/distribution/reference`). That grammar requires a
+lowercase repository path, at most one tag, a well-formed digest, and a
+name of at most 255 bytes. A reference the grammar rejects is refused
+whether or not a policy is set.
+
 Patterns are matched against the normalised reference: the registry
-host and repository path, with the tag and digest removed. Docker Hub
-short names expand to `docker.io` (`ubuntu` becomes
-`docker.io/library/ubuntu`), and the `index.docker.io` and
-`registry-1.docker.io` aliases fold to `docker.io`, in patterns as well
-as in references. A pattern takes one of two forms:
+host and repository path, with the tag and digest removed. The host is
+split off by the engines' rule. The first segment is a host when it
+contains a `.` or `:`, is `localhost`, or has an upper-case letter.
+Otherwise the reference is a Docker Hub short name. The `index.docker.io`
+and `registry-1.docker.io` aliases fold to `docker.io`. A Docker Hub
+repository with one path segment gains `library/`, as it does in the
+engines: `ubuntu` and `docker.io/ubuntu` both become
+`docker.io/library/ubuntu`. Patterns get the same folding and `library/`
+rule, so `docker.io/ubuntu` as a pattern means `docker.io/library/ubuntu`.
+A pattern takes one of two forms:
 
 - A pattern ending in `/` is a **prefix**. It admits every repository
   below that prefix, at any depth. `us-docker.pkg.dev/acme-prod/`
@@ -874,12 +895,22 @@ as in references. A pattern takes one of two forms:
   repository.
 
 Each segment of either form is a `path.Match` glob. `*` and `?` match
-within a single segment, and no glob matches `/`. A glob in the host
-segment covers a family of hosts:
-`*.dkr.ecr.eu-west-1.amazonaws.com/platform/` admits the `platform/`
-namespace in every account's ECR registry in that region.
+within a single segment, and no glob matches `/`. A literal IPv6 host
+such as `[fd00::1]:5000` is compared exactly, because `[` would
+otherwise start a glob character class.
+`123456789012.dkr.ecr.eu-west-1.amazonaws.com/platform/` admits the
+`platform/` namespace of one account's ECR registry, and
 `harbor.acme.internal:8443/sandboxes/` admits a Harbor project at any
 depth.
+
+A glob in the host segment trusts every owner of every matching host,
+so it must span only hosts the deployment controls, such as
+`registry-*.acme.internal/`. On a multi-tenant registry the host names
+the tenant: the account ID in an ECR host, the registry name in
+`*.azurecr.io`, the project in Artifact Registry. A host glob over that
+part admits registries that anyone, including a `RunConfig` author, can
+create. `*.dkr.ecr.eu-west-1.amazonaws.com/platform/` is an example:
+it admits the `platform/` namespace in every AWS account in that region.
 
 The parser rejects a pattern that could never match:
 
@@ -888,6 +919,10 @@ The parser rejects a pattern that could never match:
 - a bare host with no `/` (write `ghcr.io/` to admit a whole registry);
 - a first segment that is not a registry host (one with a `.` or `:`,
   `localhost`, or a glob);
+- a host made only of glob characters, such as `*/acme/` (any registry's
+  `acme` namespace, which anyone can register on a public registry);
+  `*/` on its own admits every registry that a reference names;
+- a malformed IPv6 host, or one holding a glob;
 - a pattern containing a tag or digest;
 - `**` (use a trailing `/` instead);
 - whitespace inside a pattern.
@@ -900,9 +935,8 @@ then run from somewhere else. Write the reference in full, for example
 `docker.io/library/ubuntu:26.04`. The refusal message gives the full
 form.
 
-With no policy configured, every syntactically valid reference is
-accepted. A reference with whitespace, a control character, or an
-empty path segment is rejected whether or not a policy is set.
+With no policy configured, every reference the grammar accepts is
+admitted.
 
 Two security events record the outcome on the harness's stderr:
 
@@ -919,8 +953,12 @@ implemented.
 `executor.registryAllowlist` no longer exists. A JSON `RunConfig` that
 sets it fails to parse with an error that names this policy. The
 `ExecutorConfig` proto field it used is reserved. A control plane that
-still sends the field has it ignored as an unknown proto field. It no
-longer appears in the `ready` event's `config_fields`.
+still sends the field has it ignored, and the harness logs a warning
+that names `STIRRUP_IMAGE_ALLOWLIST`. The field no longer appears in the
+`ready` event's `config_fields`. The removed built-in default admitted
+only `ghcr.io/rxbynerd/*` and `docker.io/library/*` for the `container`
+executor. A deployment that relied on it now admits every valid
+reference until it sets a policy.
 
 ## Untrusted context
 
