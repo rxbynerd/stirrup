@@ -436,7 +436,9 @@ if err != nil {
 ```
 
 Validation fills defaults in place, so the message carries them
-explicitly; the harness's own validation leaves them unchanged.
+explicitly. A harness built from the same `types` version leaves them
+unchanged; a harness with different defaults receives the control
+plane's as explicit values.
 [`examples/controlplane`](../examples/controlplane) loads its task
 this way.
 
@@ -460,7 +462,15 @@ two differences:
   to numbers before decoding protobuf JSON as file-config JSON.
   Protobuf JSON parsers accept numbers for them.
 
-Apart from these, every field survives in both directions.
+Apart from these, every field survives in both directions. Use the
+lower-camel-case names exactly: file-config JSON also matches keys
+case-insensitively and protobuf JSON also accepts the snake_case proto
+names, so a key accepted by one parser can be rejected by the other.
+Value ranges also differ: an integer outside the `int32` range of its
+wire field decodes as file-config JSON and is rejected as protobuf
+JSON, and numbers inside `outputSchema` and a tool's `inputSchema` are
+carried as 64-bit floats, so integers above 2^53 lose precision on the
+wire.
 
 ## Cookbook
 
