@@ -1,6 +1,7 @@
 // Package workspaceexport uploads the executor's workspace as a
-// gzipped tarball to a remote destination URI. Only "gs://"
-// destinations are supported in v1; see docs/cloud-run-jobs.md.
+// gzipped tarball to a remote destination: a "gs://" URI (GCSExporter;
+// see docs/cloud-run-jobs.md) or an HTTPS PUT destination
+// (HTTPSPutExporter; see docs/configuration.md#https-put-destinations).
 package workspaceexport
 
 import (
@@ -23,7 +24,8 @@ import (
 // or upload bandwidth. Hard-coded for v1.
 const MaxArchiveBytes = 1 << 30
 
-// uploadTimeout bounds the GCS PUT round-trip.
+// uploadTimeout bounds one upload round-trip, body included. It equals
+// the loop's handoff budget, which is the bound a caller observes.
 const uploadTimeout = 5 * time.Minute
 
 // Exporter uploads an executor's workspace to a remote destination URI.
@@ -115,15 +117,20 @@ func (e *GCSExporter) Export(ctx context.Context, src executor.WorkspaceArchiver
 		return receipt, fmt.Errorf("workspace exporter: upload tarball: %w", err)
 	}
 
-	sum := sha256.Sum256(archive.gz)
-	receipt.Bytes = int64(len(archive.gz))
+	archive.fill(&receipt)
+	return receipt, nil
+}
+
+// fill records a delivered archive on receipt.
+func (a packedArchive) fill(receipt *types.ExportReceipt) {
+	sum := sha256.Sum256(a.gz)
+	receipt.Bytes = int64(len(a.gz))
 	receipt.SHA256 = hex.EncodeToString(sum[:])
-	receipt.Files = archive.files
+	receipt.Files = a.files
 	receipt.Status = types.ExportStatusUploaded
-	if archive.files == 0 {
+	if a.files == 0 {
 		receipt.Status = types.ExportStatusEmpty
 	}
-	return receipt, nil
 }
 
 // Probe verifies the export destination is reachable for a dry-run

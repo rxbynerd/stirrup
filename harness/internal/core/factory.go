@@ -147,6 +147,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	if err != nil {
 		return nil, markBuildFailure(types.BuildFailureCredential, fmt.Errorf("build secret store: %w", err))
 	}
+	if err := checkHTTPSPutDestinations(ctx, config, secrets); err != nil {
+		return nil, err
+	}
 
 	// 1. Model router. Needs only the provider TYPE (a string), not the
 	// constructed adapter, so it precedes buildComponents.

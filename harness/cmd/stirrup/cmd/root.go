@@ -20,6 +20,7 @@ import (
 	"github.com/rxbynerd/stirrup/harness/internal/executor"
 	"github.com/rxbynerd/stirrup/harness/internal/observability"
 	"github.com/rxbynerd/stirrup/harness/internal/resultsink"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/harness/internal/workspaceexport"
 	"github.com/rxbynerd/stirrup/types"
 	"github.com/rxbynerd/stirrup/types/version"
@@ -351,8 +352,7 @@ func emitRunOutput(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace
 }
 
 // newWorkspaceExporter is the seam tests use to inject a stub
-// Exporter. Returning an Exporter (not *GCSExporter) keeps the type
-// usable by future S3 / Azure implementations.
+// Exporter for a gs:// destination.
 var newWorkspaceExporter = func() (workspaceexport.Exporter, error) {
 	return workspaceexport.NewGCSExporter(workspaceexport.GCSExporterOptions{
 		// gcp-workload-identity against the runtime metadata server.
@@ -373,7 +373,6 @@ func exportWorkspace(ctx context.Context, cfg *types.RunConfig, exec executor.Ex
 	if !ok {
 		return failed, fmt.Errorf("export workspace to %s: the %s executor cannot archive its workspace", dest, executorType)
 	}
-	// v1 supports only the GCS exporter.
 	exp, err := newWorkspaceExporter()
 	if err != nil {
 		return failed, fmt.Errorf("build workspace exporter: %w", err)
@@ -386,10 +385,44 @@ func exportWorkspace(ctx context.Context, cfg *types.RunConfig, exec executor.Ex
 	return receipt, nil
 }
 
+// exportWorkspaceHTTPSPut archives the run's workspace through exec and
+// PUTs it to cfg's HTTPS destination. The destination is resolved here,
+// per export, so every run uploads to what the reference currently
+// holds. No error it returns carries the URL.
+func exportWorkspaceHTTPSPut(ctx context.Context, cfg *types.RunConfig, exec executor.Executor) (types.ExportReceipt, error) {
+	failed := types.ExportReceipt{Status: types.ExportStatusFailed}
+	executorType := cfg.Executor.Type
+	if executorType == "" {
+		executorType = "local"
+	}
+	archiver, ok := exec.(executor.WorkspaceArchiver)
+	if !ok {
+		return failed, fmt.Errorf("export workspace: the %s executor cannot archive its workspace", executorType)
+	}
+	secrets, err := security.NewAutoSecretStore(ctx, cfg)
+	if err != nil {
+		return failed, fmt.Errorf("build workspace exporter: %w", err)
+	}
+	exp, err := workspaceexport.NewHTTPSPutExporter(workspaceexport.HTTPSPutExporterOptions{
+		Target:  cfg.Executor.WorkspaceExportHTTPSPut,
+		Secrets: secrets,
+	})
+	if err != nil {
+		return failed, fmt.Errorf("build workspace exporter: %w", err)
+	}
+	receipt, err := exp.Export(ctx, archiver)
+	if err != nil {
+		return receipt, fmt.Errorf("export workspace from %s executor: %w", executorType, err)
+	}
+	return receipt, nil
+}
+
 // workspaceHandoff is the core.WorkspaceHandoff `stirrup harness` and
 // `stirrup job` inject: it exports each run's workspace to the
-// configured destination, and each follow-up run to its own
-// followUpExportURI so successive runs never overwrite one another.
+// configured destination. Under a gs:// destination each follow-up run
+// exports to its own followUpExportURI so successive runs never
+// overwrite one another; an HTTPS PUT destination names one object, so
+// every run uploads to the URL its reference resolves to at that moment.
 type workspaceHandoff struct {
 	primaryRunID string
 }
@@ -397,6 +430,10 @@ type workspaceHandoff struct {
 var _ core.WorkspaceHandoff = workspaceHandoff{}
 
 func (h workspaceHandoff) Handoff(ctx context.Context, cfg *types.RunConfig, exec executor.Executor) (*types.ExportReceipt, error) {
+	if cfg.Executor.WorkspaceExportHTTPSPut != nil {
+		receipt, err := exportWorkspaceHTTPSPut(ctx, cfg, exec)
+		return &receipt, err
+	}
 	dest := cfg.Executor.WorkspaceExportTo
 	if cfg.RunID != h.primaryRunID {
 		dest = followUpExportURI(dest, cfg.RunID)

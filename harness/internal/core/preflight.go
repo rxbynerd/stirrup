@@ -224,7 +224,7 @@ func Preflight(ctx context.Context, config *types.RunConfig, opts PreflightOptio
 	// No dedicated --no-probe gate: the probe is a read-only
 	// bucket-metadata GET that spends nothing, so it always runs when an
 	// export destination is set.
-	preflightWorkspaceExport(ctx, config, ok, skip, fail)
+	preflightWorkspaceExport(ctx, config, secrets, ok, skip, fail)
 
 	report.finalise()
 	return report, nil
@@ -665,17 +665,36 @@ func preflightEgress(
 	ok("egress", "all allowlist destinations resolve")
 }
 
-// preflightWorkspaceExport probes the gs:// workspace-export destination
-// when one is configured. It constructs a GCSExporter with the default
-// workload-identity credential source (matching the CLI's
-// newWorkspaceExporter default) and performs a read-only bucket check.
+// preflightWorkspaceExport checks the workspace export destination when
+// one is configured. A gs:// destination gets a read-only bucket check
+// through a GCSExporter with the default workload-identity credential
+// source (matching the CLI's newWorkspaceExporter default). An HTTPS PUT
+// destination is resolved and shape-checked but not contacted.
 func preflightWorkspaceExport(
 	ctx context.Context,
 	config *types.RunConfig,
+	secrets security.SecretStore,
 	ok func(string, string),
 	skip func(string, string),
 	fail func(string, error, string),
 ) {
+	if target := config.Executor.WorkspaceExportHTTPSPut; target != nil {
+		exporter, err := workspaceexport.NewHTTPSPutExporter(workspaceexport.HTTPSPutExporterOptions{
+			Target:  target,
+			Secrets: secrets,
+		})
+		if err != nil {
+			fail("workspace-export", err, "")
+			return
+		}
+		origin, err := exporter.Probe(ctx)
+		if err != nil {
+			fail("workspace-export", err, "verify executor.workspaceExportHttpsPut.urlRef resolves in the harness environment to an https:// URL")
+			return
+		}
+		ok("workspace-export", fmt.Sprintf("export URL reference resolves to %s (not contacted: only an upload would test it)", origin))
+		return
+	}
 	dest := config.Executor.WorkspaceExportTo
 	if dest == "" {
 		skip("workspace-export", "no workspace export destination configured")
