@@ -19,7 +19,10 @@ import (
 // is the only outcome that must not produce an error; a future outcome
 // added to the enum without updating runSuccessOutcomes fails this
 // test rather than silently exiting 0. Every non-success outcome whose
-// result the run delivered exits with the run-outcome class.
+// result the run delivered exits with the run-outcome class. A run
+// that returns an error alongside its trace (a fatal preRun hook,
+// for example) never reaches this check and exits with the default
+// class.
 func TestRunOutcomeError_OnlySuccessIsNil(t *testing.T) {
 	nonSuccessCases := []struct {
 		name    string

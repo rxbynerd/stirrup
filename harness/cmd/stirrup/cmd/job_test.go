@@ -626,6 +626,7 @@ func TestRunJob_FatalPreRunHookSignalsControlPlaneAndSink(t *testing.T) {
 	select {
 	case runErr := <-errCh:
 		must.ErrorContains(runErr, "running harness")
+		must.Equal(exitValidation, classifyExitCode(runErr), "a run that fails with an error keeps the default class, not the run-outcome class")
 	case <-time.After(terminalWaitBudget):
 		must.FailNow("runJob did not return after signalling the control plane")
 	}
