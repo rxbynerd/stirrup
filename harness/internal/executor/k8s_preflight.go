@@ -36,6 +36,9 @@ const (
 	// K8sProbeClientBuild means the kubeconfig or in-cluster configuration
 	// could not be turned into a client.
 	K8sProbeClientBuild K8sProbeKind = "client-build"
+	// K8sProbeCredentialPlugin means the kubeconfig's exec credential plugin
+	// did not return before the probe's context ended.
+	K8sProbeCredentialPlugin K8sProbeKind = "credential-plugin"
 	// K8sProbePermissionDenied means the credentials lack a required permission.
 	K8sProbePermissionDenied K8sProbeKind = "permission-denied"
 	// K8sProbeReviewFailed means an access review request itself failed.
@@ -170,6 +173,9 @@ func ProbeK8sAccess(ctx context.Context, cfg K8sProbeConfig) (string, error) {
 	kube, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
 		return "", &K8sProbeError{Kinds: []K8sProbeKind{K8sProbeClientBuild}, msg: fmt.Sprintf("build kube clientset: %v", err), err: err}
+	}
+	if err := awaitCredentialPlugin(ctx, restCfg, kube); err != nil {
+		return "", &K8sProbeError{Kinds: []K8sProbeKind{K8sProbeCredentialPlugin}, msg: err.Error(), err: err}
 	}
 	return probeK8sAccess(ctx, kube, cfg)
 }

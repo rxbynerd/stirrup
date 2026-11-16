@@ -2504,6 +2504,21 @@ or the default binding was removed), the step fails with the error and a
 hint about reachability and credentials. The reviews run one after another
 and share the `--dry-run-timeout` budget (30 s by default).
 
+A kubeconfig that authenticates through an `exec` credential plugin
+(`gke-gcloud-auth-plugin`, `aws eks get-token`, `kubelogin`) runs the
+plugin as a child process on the first request. client-go applies no
+deadline to that process and ignores the request context, so a plugin
+that hangs, for example one waiting for an interactive login or an
+unreachable metadata endpoint, cannot be cancelled. The executors and the
+dry run therefore make the first authenticated request in the
+background and stop waiting when the context ends. The step then fails
+with `credential plugin did not return: context deadline exceeded`, which
+for a dry run is the `--dry-run-timeout` budget. The plugin process is not
+killed; it is left to exit on its own, and the harness process normally
+exits first. The limit applies only to the first run of the plugin:
+credentials it returns are cached until they expire, and a later refresh
+runs the plugin again without this bound.
+
 A dry run starts no sandbox, so it does not exercise image pull,
 RuntimeClass admission and scheduling, the [admission check and readiness
 wait](#sandbox-lifecycle), teardown, NetworkPolicy enforcement, or the
@@ -2526,6 +2541,7 @@ it, the probe uses the same kubeconfig resolution as a run:
 |---|---|---|
 | `credentials lack permission in namespace "<ns>": "<verb> <resource>" (<reason>)` (dry run) | Every listed permission is missing in `executor.k8sNamespace`: the credentials' Role lacks the verbs, the Role is not bound there, or the namespace does not exist (credentials that cannot read namespaces see a missing namespace as a denial). | Apply [`rbac.yaml`](../../examples/k8s/rbac.yaml) (or [`rbac-agent-sandbox.yaml`](../../examples/k8s/agent-sandbox/rbac-agent-sandbox.yaml)) in that namespace, or grant the verbs; confirm the namespace name. |
 | `access review for "<verb> <resource>" in namespace "<ns>" failed: ...` (dry run) | The review request itself failed: the API server is unreachable, the credentials are rejected, `create` on `selfsubjectaccessreviews` was removed, or `context deadline exceeded` because the sequential reviews used up the `--dry-run-timeout` budget (30 s by default). | Check reachability and credentials (`kubectl auth can-i create selfsubjectaccessreviews`); raise `--dry-run-timeout` for a slow API server. |
+| `credential plugin did not return: context deadline exceeded` (dry run or construction) | The kubeconfig's `exec` credential plugin did not return before the context ended: it may wait for an interactive login, call an unreachable endpoint, or need a refreshed login. | Run the plugin command from the kubeconfig by hand and fix what it waits for; raise `--dry-run-timeout` if it is only slow. |
 | `build kube rest config: ...` / `build kube clientset: ...` (dry run) | No usable kubeconfig or in-cluster configuration. | Set `--k8s-kubeconfig` (`executor.k8sKubeconfig`) or `$KUBECONFIG`, or run in-cluster. |
 | `the Agent Sandbox API agents.x-k8s.io/v1alpha1 is not served by the cluster` (dry run, `k8s-sandbox`) | The Agent Sandbox controller and its CRD are not installed, or serve another version. | Install the controller; see [`k8s-agent-sandbox.md`](k8s-agent-sandbox.md). |
 | `the cluster serves agents.x-k8s.io/v1alpha1 but not the sandboxes resource` (dry run, `k8s-sandbox`) | The group is registered without the `sandboxes` resource, usually an incomplete CRD install. | Reinstall the Agent Sandbox CRDs. |
