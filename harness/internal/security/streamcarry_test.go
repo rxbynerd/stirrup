@@ -125,6 +125,7 @@ func prefixFixtures() []secretFixture {
 		secretFixture{"secret_ref", "SECRET:" + "//provider/api-key", "provider/api-key"},
 		secretFixture{"api_key_header", "OCP-APIM-SUBSCRIPTION-KEY: " + "0123456789abcdefABCDEF", "0123456789abcdefABCDEF"},
 		secretFixture{"generic_hex_secret", `CLIENT_SECRET: "` + "0123456789abcdef0123456789abcdef" + `"`, "0123456789abcdef0123456789abcdef"},
+		secretFixture{"presigned_signature", `"https://a.blob.core.windows.net/c/b?sv=2022-11-02\u0026SIG=` + "Zm9vYmFyYmF6cXV4%2Bc2lnbmF0dXJl%3D" + `"`, "Zm9vYmFyYmF6cXV4%2Bc2lnbmF0dXJl%3D"},
 		secretFixture{"pem_private_key", "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: 1\n\n" + strings.Join(pemBodyLines(4), "\n") + "\n=ABCD\n-----END PGP PRIVATE KEY BLOCK-----", pemBodyLines(4)[3]},
 		secretFixture{"pem_private_key", "a.pem:1:-----BEGIN EC PRIVATE KEY-----\na.pem:2:" + strings.Join(pemBodyLines(3), "\na.pem:3:") + "\na.pem:5:-----END EC PRIVATE KEY-----", pemBodyLines(3)[2]},
 		secretFixture{"pem_private_key", `"-----BEGIN EC PRIVATE KEY-----\n" +` + "\n\t\"" + strings.Join(pemBodyLines(3), `\n" + "`) + `\n"`, pemBodyLines(3)[2]},

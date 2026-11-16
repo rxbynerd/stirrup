@@ -81,6 +81,7 @@ var (
 	azureKeyPrefilterLits     = []string{"account_key", "accountkey", "access_key"}
 	apiKeyHeaderPrefilterLits = []string{"api-key", "ocp-apim-subscription-key"}
 	genericHexPrefilterLits   = []string{"key", "token", "secret", "password"}
+	presignedPrefilterLits    = []string{"sig", "security-token"}
 )
 
 func buildSensitivePatterns() []SensitivePattern {
@@ -119,6 +120,12 @@ func buildSensitivePatterns() []SensitivePattern {
 			// The match spans the key body, which an attacker can extend
 			// with a documentation literal; no documented key is exempt.
 			sp.Validate = nil
+		case "presigned_signature":
+			// Signed URLs are published in ordinary pages and API
+			// responses (CDN media links, release-asset redirects), so
+			// seeing one is not reliably sensitive data.
+			sp.Tier = TierWarn
+			sp.prefilter = anyLiteral(presignedPrefilterLits)
 		case "aws_secret_access_key":
 			sp.prefilter = anyLiteral(awsSecretPrefilterLits)
 		case "azure_storage_key":

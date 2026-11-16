@@ -31,6 +31,80 @@ func TestScrub_RedactsAnthropicKey(t *testing.T) {
 	must.Equal("key is [REDACTED]", got)
 }
 
+// TestScrub_RedactsPresignedURLSignatures pins that each object store's
+// signature or session-token parameter is redacted while the host and the
+// other parameters stay readable.
+func TestScrub_RedactsPresignedURLSignatures(t *testing.T) {
+	hex64 := strings.Repeat("0a1b2c3d", 8)
+	sas := "Zm9vYmFyYmF6cXV4%2Bc2lnbmF0dXJl%3D"
+	cases := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "S3 signature",
+			input: "https://b.s3.amazonaws.com/k?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=900&X-Amz-Signature=" + hex64,
+			want:  "https://b.s3.amazonaws.com/k?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=900&[REDACTED]",
+		},
+		{
+			name:  "S3 session token",
+			input: "https://b.s3.amazonaws.com/k?X-Amz-Security-Token=IQoJb3JpZ2luX2VjEJr%2F%2F%2F&X-Amz-Expires=900",
+			want:  "https://b.s3.amazonaws.com/k?[REDACTED]&X-Amz-Expires=900",
+		},
+		{
+			name:  "GCS V4",
+			input: "https://storage.googleapis.com/b/k?X-Goog-Algorithm=GOOG4-RSA-SHA256&X-Goog-Signature=" + hex64 + hex64,
+			want:  "https://storage.googleapis.com/b/k?X-Goog-Algorithm=GOOG4-RSA-SHA256&[REDACTED]",
+		},
+		{
+			name:  "GCS V2 and CloudFront",
+			input: "https://d111.cloudfront.net/k?Expires=1700000000&Signature=" + sas + "&Key-Pair-Id=K2JCJMDEHXQW5F",
+			want:  "https://d111.cloudfront.net/k?Expires=1700000000&[REDACTED]&Key-Pair-Id=K2JCJMDEHXQW5F",
+		},
+		{
+			name:  "Azure SAS",
+			input: "https://a.blob.core.windows.net/c/b?sv=2022-11-02&sp=cw&sig=" + sas,
+			want:  "https://a.blob.core.windows.net/c/b?sv=2022-11-02&sp=cw&[REDACTED]",
+		},
+		{
+			name:  "JSON-escaped ampersand",
+			input: `{"url":"https://a.blob.core.windows.net/c/b?sv=2022-11-02\u0026sig=` + sas + `"}`,
+			want:  `{"url":"https://a.blob.core.windows.net/c/b?sv=2022-11-02[REDACTED]"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			got, stats := ScrubWithStats(tc.input)
+			must.Equal(tc.want, got)
+			must.Equal([]string{"presigned_signature"}, stats.Patterns)
+		})
+	}
+}
+
+// ordinarySignatureURLs are texts that mention signatures without carrying
+// a presigned URL's signature parameter.
+func ordinarySignatureURLs() []string {
+	return []string{
+		"https://example.com/search?q=signature&page=2",
+		"https://example.com/docs?design=abcdefghijklmnopqrstuvwxyz",
+		"https://example.com/mail?signature_style=bold&font=serif",
+		"https://example.com/?sig=short",
+		"git log --show-signature --format=%H%x00%s",
+		"see https://docs.example.com/API/signature-query-string-auth.html",
+	}
+}
+
+func TestScrub_LeavesOrdinarySignatureURLsAlone(t *testing.T) {
+	for _, input := range ordinarySignatureURLs() {
+		t.Run(input, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(input, Scrub(input))
+		})
+	}
+}
+
 // TestScrub_SecretRefCaseInsensitive pins that the secret_ref pattern
 // redacts a "secret://" reference regardless of scheme case, mid-string
 // included. Scrub is a second line of defence behind the case-insensitive

@@ -53,7 +53,7 @@ attribute value before delegation. `LogValuer` values are resolved
 first; errors, `fmt.Stringer` values and byte slices become scrubbed
 strings, groups are scrubbed recursively, and any other composite value
 (map, slice, struct) is rendered as one scrubbed JSON string. Numeric,
-boolean, time and duration values are unchanged. Nineteen regex patterns
+boolean, time and duration values are unchanged. Twenty regex patterns
 are scrubbed, covering:
 
 - Anthropic API keys
@@ -102,6 +102,11 @@ are scrubbed, covering:
   whose path has more than eight space-separated parts, starts with `-`,
   or holds a quote or shell syntax is not recognised either
 - API-key header values
+- The signature and session-token query parameters of presigned
+  object-store URLs (`X-Amz-Signature`, `X-Amz-Security-Token`,
+  `X-Goog-Signature`, and `sig` or `signature` after a word boundary
+  or a JSON-escaped `&`). The parameter and its value are replaced and
+  the rest of the URL stays readable
 - Key/value-anchored 32-character hex secrets
 - `secret://` references themselves, through the reference syntax the
   secret stores accept (letters, digits and `_./:@+~%=-`), except in a

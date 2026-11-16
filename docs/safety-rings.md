@@ -296,7 +296,8 @@ could not read, is spotlighted in place (see
 **Two confidence tiers.** A *latch-tier* finding is high-confidence
 sensitive data and trips the latch. A *warn-tier* finding (a bare
 SSN-shaped string with no nearby "ssn"/"social security" anchor, a
-`secret://` reference, a tool result dense with email addresses) is
+`secret://` reference, a presigned URL's signature, which ordinary pages
+and download redirects carry, a tool result dense with email addresses) is
 surfaced as an event but does not change run posture. The tier split,
 the checksum validators, and an allowlist of canonical documentation
 placeholders (`AKIAIOSFODNN7EXAMPLE` and friends) keep the false-positive
