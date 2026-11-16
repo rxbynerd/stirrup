@@ -40,6 +40,11 @@ const MaxBatchSubmissionInputBytes = 3 << 20
 // input exceeds its bound. The event is not sent.
 var ErrRequestInputTooLarge = errors.New("request input exceeds the control stream bound")
 
+// ErrRequestInputWithheld is returned by Emit when the secret scrub had to
+// replace a request event's whole input with a placeholder. The event is
+// not sent: the control plane would be deciding on an input it cannot see.
+var ErrRequestInputWithheld = errors.New("request input withheld by the secret scrub")
+
 const eventTruncationFmt = "\n[truncated by harness for the control stream: %d of %d bytes shown]"
 
 // boundEventFields caps the event fields that carry tool payloads,
@@ -74,6 +79,19 @@ func boundEventFields(event *types.HarnessEvent) error {
 		return refuseOversizedInput(event, MaxRequestInputBytes)
 	case "batch_submission":
 		return refuseOversizedInput(event, MaxBatchSubmissionInputBytes)
+	}
+	return nil
+}
+
+// refuseWithheldRequestInput refuses a request event whose input the
+// scrub replaced with a placeholder.
+func refuseWithheldRequestInput(eventType string, withheld bool) error {
+	if !withheld {
+		return nil
+	}
+	switch eventType {
+	case "permission_request", "tool_result_request", "batch_submission":
+		return fmt.Errorf("%w: %s", ErrRequestInputWithheld, eventType)
 	}
 	return nil
 }

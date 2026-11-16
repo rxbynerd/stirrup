@@ -972,7 +972,7 @@ most 256 entries, each capped like a name field, and
 `tools_loaded.input` is capped like a `tool_call` input.
 
 **Request inputs are bounded, never truncated.** The control plane
-acts on the exact `input` of a `permission_request` or
+acts on the `input` of a `permission_request` or
 `tool_result_request`, so the harness refuses to send one over
 256 KiB rather than cutting it. An oversized `permission_request` is
 denied without being sent, and the model sees `Permission denied:`
@@ -980,7 +980,12 @@ with the reason. An oversized `tool_result_request` fails that tool
 call with `input_too_large`. A `batch_submission` input (the whole
 provider request) is bounded at 3 MiB, under grpc-go's 4 MiB default
 receive limit; a larger submission fails the model call without being
-sent. In each case the stream stays open.
+sent. Secret-shaped values in a request input are redacted before it
+is sent, as on every event. When a redaction would leave the input as
+invalid JSON, other events carry a placeholder instead, but a request
+event is refused the same way as an oversized one (`input_withheld`
+for a `tool_result_request`), so the control plane never decides on an
+input it cannot see. In each case the stream stays open.
 
 <a id="secrets-on-the-stream"></a>**Secrets.** Every text field is scrubbed of recognised secret formats
 before it is sent. `text_delta` and `thinking_delta` fragments are not

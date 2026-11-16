@@ -61,6 +61,11 @@ var inputTooLargeForApprovalReason = fmt.Sprintf(
 	"tool input exceeds the %d-byte limit for upstream approval; the control plane cannot review it",
 	transport.MaxRequestInputBytes)
 
+// inputWithheldFromApprovalReason denies a call whose input the secret
+// scrub could not redact without breaking its JSON, so the control plane
+// would only see a placeholder.
+const inputWithheldFromApprovalReason = "tool input could not be shown to the control plane after secret redaction; it cannot be reviewed"
+
 type permissionResponse struct {
 	allowed bool
 	reason  string
@@ -126,7 +131,7 @@ func (p *AskUpstreamPolicy) AddApprovalTool(name string) {
 // approval are auto-allowed. Approval-required tools emit a
 // permission_request event via Transport and block until the control plane
 // responds or the context is cancelled. A call whose input the transport
-// refuses as too large is denied.
+// refuses as too large, or withholds after secret redaction, is denied.
 func (p *AskUpstreamPolicy) Check(ctx context.Context, tool types.ToolDefinition, input json.RawMessage) (*PermissionResult, error) {
 	p.mu.Lock()
 	required := p.approvalTools[tool.Name]
@@ -154,6 +159,9 @@ func (p *AskUpstreamPolicy) Check(ctx context.Context, tool types.ToolDefinition
 	})
 	if errors.Is(err, transport.ErrRequestInputTooLarge) {
 		return &PermissionResult{Allowed: false, Reason: inputTooLargeForApprovalReason}, nil
+	}
+	if errors.Is(err, transport.ErrRequestInputWithheld) {
+		return &PermissionResult{Allowed: false, Reason: inputWithheldFromApprovalReason}, nil
 	}
 	if err != nil {
 		// Surface a domain-specific error message while preserving the

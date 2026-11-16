@@ -681,6 +681,9 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 		if errors.Is(err, transport.ErrRequestInputTooLarge) {
 			return fmt.Sprintf("async tool %s input_too_large: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncPreflight
 		}
+		if errors.Is(err, transport.ErrRequestInputWithheld) {
+			return fmt.Sprintf("async tool %s input_withheld: %s", call.Name, err.Error()), false, observability.ToolFailureAsyncPreflight
+		}
 		// The correlator wraps emit errors with "emit failed", timeouts
 		// with "timed out", and ctx errors carry context.Canceled /
 		// context.DeadlineExceeded in the chain.

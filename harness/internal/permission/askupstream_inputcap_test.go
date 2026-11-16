@@ -30,3 +30,20 @@ func TestAskUpstream_InputRefusedByTransport_DeniesWithoutError(t *testing.T) {
 	check.Contains(result.Reason, fmt.Sprintf("%d-byte limit", transport.MaxRequestInputBytes))
 	check.Zero(policy.correlator.PendingCount())
 }
+
+// TestAskUpstream_InputWithheldByTransport_DeniesWithoutError: when the
+// secret scrub leaves the control plane only a placeholder for the input,
+// the call is denied rather than sent for a blind approval.
+func TestAskUpstream_InputWithheldByTransport_DeniesWithoutError(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	mt := &mockTransport{emitErr: fmt.Errorf("%w: permission_request", transport.ErrRequestInputWithheld)}
+	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 0)
+
+	result, err := policy.Check(context.Background(), types.ToolDefinition{Name: "write_file"}, []byte(`{}`))
+	must.NoError(err)
+	must.NotNil(result)
+	check.False(result.Allowed)
+	check.Equal(inputWithheldFromApprovalReason, result.Reason)
+	check.Zero(policy.correlator.PendingCount())
+}

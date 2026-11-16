@@ -149,7 +149,8 @@ const (
 //	  - input:      JSON-encoded tool input (so the control plane can display
 //	                what the tool wants to do), at most 256 KiB and never
 //	                truncated: the harness denies a call whose input is
-//	                larger without sending the request.
+//	                larger, or that secret redaction would leave as
+//	                invalid JSON, without sending the request.
 //
 //	"tool_result_request"
 //	  - request_id: unique ID for this request; the control plane must echo it
@@ -159,7 +160,9 @@ const (
 //	  - tool_name:   the async tool whose result is being requested.
 //	  - input:       JSON-encoded tool input (so the control plane can decide
 //	                 what to do), at most 256 KiB and never truncated: a
-//	                 larger input fails the call without sending the request.
+//	                 larger input, or one that secret redaction would leave
+//	                 as invalid JSON, fails the call without sending the
+//	                 request.
 //	  Emitted by the agentic loop when an async tool defers its result to the
 //	  control plane. The harness blocks on the matching tool_result_response
 //	  under ctx cancellation and a per-call timeout.
