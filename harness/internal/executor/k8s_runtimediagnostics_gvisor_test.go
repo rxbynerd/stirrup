@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -144,6 +145,18 @@ func TestRunK8sRuntimeDiagnostics_GVisorFailures(t *testing.T) {
 			stdout:     isolatedGuestDump,
 			wantCheck:  "diagnostic_output",
 			wantReason: "where the report for /proc/version should start",
+		},
+		{
+			name:       "truncated report",
+			stdout:     strings.TrimSuffix(gvisorGuestDump, "end /proc/sentry-meminfo\n"),
+			wantCheck:  "diagnostic_output",
+			wantReason: "the report for /proc/sentry-meminfo is not terminated",
+		},
+		{
+			name:       "oversized output",
+			stdout:     gvisorGuestDump + strings.Repeat("x", guestFileDumpOutputLimit),
+			wantCheck:  "diagnostic_output",
+			wantReason: fmt.Sprintf("more than %d bytes", guestFileDumpOutputLimit),
 		},
 		{
 			name:       "no output",
