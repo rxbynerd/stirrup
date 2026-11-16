@@ -119,7 +119,7 @@ A minimal working RunConfig:
   "mode": "review",
   "prompt": "Summarise the repository layout from its top-level directories and README.",
   "provider": { "type": "anthropic", "apiKeyRef": "secret://ANTHROPIC_API_KEY" },
-  "modelRouter": { "type": "static", "provider": "anthropic", "model": "claude-haiku-4-5" },
+  "modelRouter": { "type": "static", "provider": "anthropic", "model": "claude-haiku-5-5" },
   "executor": {
     "type": "api",
     "vcsBackend": {
