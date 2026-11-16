@@ -5,7 +5,7 @@ build:
     go build -o stirrup-eval ./eval/cmd/eval
 
 test:
-    go test ./harness/... ./types/... ./eval/... ./examples/controlplane/...
+    go test ./harness/... ./types/... ./gen/... ./eval/... ./examples/controlplane/...
 
 # The repository root is not a module, so `go build ./...` there fails.
 # Compile every module listed in go.work.
@@ -31,7 +31,7 @@ fuzz-scrub:
     go test ./harness/internal/security/ -run '^$' -fuzz '^FuzzScrubFenced$' -fuzztime 20s -fuzzminimizetime 0
 
 lint:
-    golangci-lint run ./harness/... ./types/... ./eval/... ./examples/controlplane/...
+    golangci-lint run ./harness/... ./types/... ./gen/runconfig/... ./eval/... ./examples/controlplane/...
 
 # Go module vulnerability scan, mirroring the CI govulncheck job.
 # govulncheck scans one module's build graph per invocation, so each

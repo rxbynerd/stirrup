@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 
 	pb "github.com/rxbynerd/stirrup/gen/harness/v1"
+	"github.com/rxbynerd/stirrup/gen/runconfig"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -71,7 +72,7 @@ func TestRunConfigFromProto_CopiesEveryAdvertisedField(t *testing.T) {
 	check := assert.New(t)
 	pc := &pb.RunConfig{}
 	fillProtoMessage(t, pc.ProtoReflect(), map[protoreflect.FullName]int{})
-	raw, err := json.Marshal(runConfigFromProto(pc))
+	raw, err := json.Marshal(runconfig.FromProto(pc))
 	must.NoError(err)
 	var doc any
 	must.NoError(json.Unmarshal(raw, &doc))

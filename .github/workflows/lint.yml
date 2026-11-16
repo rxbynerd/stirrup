@@ -65,11 +65,11 @@ jobs:
 
       - name: Run golangci-lint
         # Mirrors `just lint` (golangci-lint run ./harness/... ./types/...
-        # ./eval/... ./examples/controlplane/...). The recipe is
+        # ./gen/runconfig/... ./eval/... ./examples/controlplane/...). The recipe is
         # invoked directly rather than via `just` to match the existing
         # `_verify.yml` convention of running go tooling without an
         # extra wrapper install step.
-        run: golangci-lint run ./harness/... ./types/... ./eval/... ./examples/controlplane/...
+        run: golangci-lint run ./harness/... ./types/... ./gen/runconfig/... ./eval/... ./examples/controlplane/...
 
   govulncheck:
     name: govulncheck
