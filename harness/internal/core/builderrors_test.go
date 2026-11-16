@@ -190,6 +190,14 @@ func TestCheckHTTPSPutDestinations_FileReferenceFailuresAreHostFileErrors(t *tes
 			must.NotContains(hostFile.Redacted(), dir)
 		})
 	}
+	t.Run("result sink url file", func(t *testing.T) {
+		must := require.New(t)
+		cfg := &types.RunConfig{ResultSink: &types.ResultSinkConfig{Type: "https-put", HTTPSPut: &types.HTTPSPutConfig{URLRef: "secret://file://" + filepath.Join(dir, "absent")}}}
+		err := checkHTTPSPutDestinations(context.Background(), cfg, security.NewEnvSecretStore())
+		var hostFile *HostFileError
+		must.ErrorAs(err, &hostFile)
+		must.Equal("resultSink.httpsPut.urlRef", hostFile.Field)
+	})
 	t.Run("environment reference", func(t *testing.T) {
 		must := require.New(t)
 		cfg := &types.RunConfig{}
