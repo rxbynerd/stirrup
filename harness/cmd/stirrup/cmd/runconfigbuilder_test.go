@@ -365,18 +365,30 @@ func TestBuildRunConfig_RejectsUnknownStdinFields(t *testing.T) {
 	must.ErrorContains(err, "not_a_field")
 }
 
-// TestBuildRunConfig_RejectsRemovedMaxCostBudget pins that the removed
-// maxCostBudget field fails as an ordinary unknown field rather than being
-// accepted and ignored.
+// TestBuildRunConfig_RejectsRemovedMaxCostBudget pins that maxCostBudget
+// fails as an ordinary unknown field rather than being accepted and
+// ignored.
 func TestBuildRunConfig_RejectsRemovedMaxCostBudget(t *testing.T) {
-	must := require.New(t)
-	cmd := newTestHarnessCommand()
-	_, err := BuildRunConfig(RunConfigSources{
-		Stdin:   strings.NewReader(`{"mode":"planning","maxCostBudget":10}`),
-		Cmd:     cmd,
-		Resolve: ResolveBase,
+	const body = `{"mode":"planning","maxCostBudget":10}`
+
+	t.Run("stdin", func(t *testing.T) {
+		must := require.New(t)
+		cmd := newTestHarnessCommand()
+		_, err := BuildRunConfig(RunConfigSources{
+			Stdin:   strings.NewReader(body),
+			Cmd:     cmd,
+			Resolve: ResolveBase,
+		})
+		must.ErrorContains(err, `unknown field "maxCostBudget"`)
 	})
-	must.ErrorContains(err, `unknown field "maxCostBudget"`)
+
+	t.Run("config file", func(t *testing.T) {
+		must := require.New(t)
+		path := filepath.Join(t.TempDir(), "config.json")
+		must.NoError(os.WriteFile(path, []byte(body), 0o600))
+		_, err := loadRunConfigFile(path)
+		must.ErrorContains(err, `unknown field "maxCostBudget"`)
+	})
 }
 
 // TestBuildRunConfig_StdinSizeCap pins that the 1 MiB cap on

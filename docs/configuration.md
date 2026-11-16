@@ -2180,7 +2180,8 @@ The harness carries no per-model price table and computes no cost, so
 it has no cost budget. Cost accounting and spend limits belong to the
 control plane, enforced from provider billing data; `maxTokenBudget` is
 the harness-side proxy for the same intent. A config that sets
-`maxCostBudget` is rejected as an unknown field.
+`maxCostBudget` is rejected as an unknown field in `--config` files and on
+stdin; the gRPC surface drops the retired proto field silently.
 
 `temperature` accepts the union of provider-side ranges (Anthropic
 `[0, 1]`, OpenAI / Gemini `[0, 2]`). A value inside the union may
