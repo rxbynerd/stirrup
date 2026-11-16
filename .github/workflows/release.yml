@@ -7,15 +7,16 @@ name: Release
 # certificate identity as the original run.
 #
 # Pipeline (DAG via `needs:` — fan-out after verify):
-#   validate-tag        → resolves and validates the input/ref tag once
+#   validate-tag        → resolves and validates the input/ref tag once,
+#                         and checks the Go module requirements name it
 #   verify              → reuses _verify.yml — the tagged SHA must pass tests
 #   build-binaries      → matrix of GOOS/GOARCH cells, archives + SHA-256  ┐ parallel
 #   sbom                → SPDX + CycloneDX from anchore/sbom-action         │ after
 #   changelog           → git log since the previous tag                    │ verify
-#   publish-container   → multi-arch image pushed to GHCR + GAR             ┘
-#                         + image SBOM uploaded to Artifact Analysis.
-#                         A version tag that already exists is reused,
-#                         never rebuilt.
+#   publish-container   → multi-arch image pushed by digest, untagged,      ┘
+#                         to GHCR + GAR, + image SBOM uploaded to
+#                         Artifact Analysis. A version tag that already
+#                         exists is reused, never rebuilt.
 #   vulnerability-gate  → Phase 3: queries Artifact Analysis for vulns on
 #                         the pushed digest, emits a summary, and files a
 #                         tracking issue on CRITICAL+fixable findings.
@@ -41,6 +42,12 @@ name: Release
 #                         listed asset and both images
 #   release             → tags the types/ and gen/ Go modules and creates
 #                         the GitHub Release
+#   tag-images          → points vX.Y.Z (and vX.Y, latest) at the signed
+#                         digests; last, so no later step can fail after
+#                         an immutable tag exists
+#
+# Recovery: "Re-run failed jobs" on the run page recovers from a
+# transient failure in any job; see docs/deployment.md#release-process.
 
 on:
   push:
@@ -448,8 +455,9 @@ jobs:
 
       # Version tags are immutable. When this version is already in both
       # registries under one digest and that digest carries this
-      # release's provenance attestation (a full re-run after signing
-      # succeeded), the job reuses it instead of rebuilding.
+      # release's provenance attestation (a full re-run or a dispatch
+      # after the images were tagged), the job reuses it instead of
+      # rebuilding.
       - name: Look up an already-published version tag
         id: existing
         env:
@@ -464,28 +472,26 @@ jobs:
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       # Pinned for the same reason as login-action: runs inside the
-      # credentialled publish job and constructs the tag list that
-      # build-push-action consumes — a retargeted tag could redirect
-      # pushes.
+      # credentialled publish job. Only its OCI labels are used; the
+      # tag-images job applies the tags.
       - name: Generate image metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: |
             ghcr.io/rxbynerd/stirrup
-            ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}
-          # Semver tagging at release time:
-          #   - v{{version}}         — immutable vX.Y.Z (and prereleases like vX.Y.Z-rc.1)
-          #   - v{{major}}.{{minor}} — moving vX.Y pointer for non-prerelease tags
-          #   - latest               — moving; also pushed by ci.yml from main
           tags: |
             type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ !contains(needs.validate-tag.outputs.tag, '-') }}
 
       # This action performs the actual push using the live GHCR + GAR
       # credentials; pinning to an immutable commit is non-negotiable
       # here for the same reason as gcp-auth and login-action.
+      #
+      # The image is pushed by digest only, with no tag, to both
+      # registries. Every step after the push can fail, and so can
+      # signing; a failed attempt leaves only an untagged manifest, and
+      # re-running the job builds and pushes a new one. tag-images
+      # applies the version tags once the digest is signed and attested.
       #
       # `id: docker-push` exposes the pushed multi-arch manifest digest
       # to downstream steps as `steps.docker-push.outputs.digest`. The
@@ -516,9 +522,8 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,"name=ghcr.io/rxbynerd/stirrup,${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}",push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           # sbom: true is intentionally release-only;
           # ci.yml::publish-container deliberately omits this to avoid
@@ -750,12 +755,11 @@ jobs:
         with:
           images: |
             ghcr.io/rxbynerd/stirrup-sandbox
-            ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox
           tags: |
             type=semver,pattern=v{{version}}
-            type=semver,pattern=v{{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ !contains(needs.validate-tag.outputs.tag, '-') }}
 
+      # Pushed by digest only, like publish-container; tag-images applies
+      # the tags after signing.
       - name: Build and push sandbox image
         id: docker-push
         if: steps.existing.outputs.digest == ''
@@ -763,9 +767,8 @@ jobs:
         with:
           context: .
           file: ./Dockerfile.sandbox
-          push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,"name=ghcr.io/rxbynerd/stirrup-sandbox,${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox",push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           sbom: true
 
@@ -1299,3 +1302,84 @@ jobs:
             fi
             echo "github.com/${GITHUB_REPOSITORY}/${module}@${TAG} resolves"
           done
+
+  # The last job of a release. The publish jobs push both images by
+  # digest only, so nothing earlier in the run, including signing and
+  # the GitHub Release, can fail after an immutable version tag exists.
+  # This job points vX.Y.Z at the signed, attested digest in GHCR and
+  # Artifact Registry, then moves vX.Y and latest when this is the
+  # newest release of its line and overall. It is idempotent: re-running
+  # it after a partial failure adds only the missing tags.
+  tag-images:
+    name: Tag release images
+    needs: [validate-tag, publish-container, publish-sandbox-container, release]
+    runs-on: ubuntu-latest
+    if: github.repository == 'rxbynerd/stirrup'
+    # id-token for the GAR WIF exchange, packages: write for the GHCR
+    # tags, attestations: read to check the digest before tagging it.
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+      attestations: read
+    env:
+      TAG: ${{ needs.validate-tag.outputs.tag }}
+      COMMIT: ${{ needs.validate-tag.outputs.sha }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate-tag.outputs.sha }}
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud (WIF + SA impersonation)
+        id: gcp-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GAR_PUBLISHER_SA }}
+          token_format: access_token
+
+      - name: Choose the moving tags
+        id: moving
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v" --jq '.[].ref' >refs
+          tags=$(sed 's|^refs/tags/||' refs | scripts/release/moving-tags.sh "$TAG" | tr '\n' ' ')
+          echo "Moving tags for ${TAG}: ${tags:-none}"
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag the harness image
+        env:
+          GHCR_IMAGE: ghcr.io/rxbynerd/stirrup
+          GAR_IMAGE_REF: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}
+          DIGEST: ${{ needs.publish-container.outputs.digest }}
+          MOVING: ${{ steps.moving.outputs.tags }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_PASSWORD: ${{ github.token }}
+          MIRROR_USERNAME: oauth2accesstoken
+          MIRROR_PASSWORD: ${{ steps.gcp-auth.outputs.access_token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # MOVING is a space-separated tag list.
+          scripts/release/apply-release-tags.sh "$GHCR_IMAGE" "$GAR_IMAGE_REF" "$DIGEST" "$TAG" "$COMMIT" $MOVING
+
+      - name: Tag the sandbox image
+        env:
+          GHCR_IMAGE: ghcr.io/rxbynerd/stirrup-sandbox
+          GAR_IMAGE_REF: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox
+          DIGEST: ${{ needs.publish-sandbox-container.outputs.digest }}
+          MOVING: ${{ steps.moving.outputs.tags }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_PASSWORD: ${{ github.token }}
+          MIRROR_USERNAME: oauth2accesstoken
+          MIRROR_PASSWORD: ${{ steps.gcp-auth.outputs.access_token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # MOVING is a space-separated tag list.
+          scripts/release/apply-release-tags.sh "$GHCR_IMAGE" "$GAR_IMAGE_REF" "$DIGEST" "$TAG" "$COMMIT" $MOVING

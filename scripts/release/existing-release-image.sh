@@ -8,7 +8,10 @@
 # reusable when both registries serve the same digest under it and that
 # digest already carries a provenance attestation from this repository's
 # release signing workflow for <tag> at <commit>. Every other state
-# exits 1.
+# exits 1. The release applies version tags only after signing
+# (apply-release-tags.sh), so a tag left by an earlier run of the same
+# release always passes, except one applied to a single registry by an
+# interrupted tagging job; re-running that job completes it.
 #
 # MIRROR_USERNAME and MIRROR_PASSWORD authenticate to the mirror's token
 # endpoint; GH_TOKEN and GITHUB_REPOSITORY are used for the attestation
@@ -33,7 +36,7 @@ case "${ghcr_rc}:${mirror_rc}" in
   3:3) exit 0 ;;
   0:0) ;;
   *)
-    echo "::error::${tag} is in an inconsistent state (GHCR lookup exit ${ghcr_rc}, mirror lookup exit ${mirror_rc}; 3 means absent). Version tags are never rebuilt: copy the published image to the registry that lacks it, by digest, or cut a new version." >&2
+    echo "::error::${tag} is in an inconsistent state (GHCR lookup exit ${ghcr_rc}, mirror lookup exit ${mirror_rc}; 3 means absent, other codes are lookup failures). After a failed lookup, re-run this job. When one registry lacks the tag, an earlier run's tagging job stopped part-way: re-run the failed jobs of that run, whose 'Tag release images' job adds the missing tag. Version tags are never rebuilt." >&2
     exit 1
     ;;
 esac
@@ -49,7 +52,7 @@ if ! gh attestation verify "oci://${ghcr}@${ghcr_digest}" \
   --source-ref "refs/tags/${tag}" \
   --source-digest "$commit" \
   --deny-self-hosted-runners >/dev/null; then
-  echo "::error::${ghcr}:${tag} (${ghcr_digest}) has no provenance attestation from this release at ${commit}, so it is not reused. Re-run only the failed jobs of the original run, or cut a new version." >&2
+  echo "::error::${ghcr}:${tag} (${ghcr_digest}) has no provenance attestation from this release at ${commit}, so it is not reused. If the verification above failed on an API error, re-run this job. Otherwise the tag was not written by the release workflow, which tags only signed digests: investigate it, and cut a new version." >&2
   exit 1
 fi
 
