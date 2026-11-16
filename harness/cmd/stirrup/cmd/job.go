@@ -50,7 +50,7 @@ Exit status: 0 success; 5 the run completed with an outcome other than
 success (max_turns, verification_failed, cancelled, ...) and the harness
 itself did not malfunction; any other non-zero status is a failure to start
 or finish the run (validation, build, transport, a lost control stream, a
-run that fails with an error such as a fatal preRun hook). A
+run that returns an error such as a fatal preRun hook, a SIGTERM). A
 Kubernetes Job whose pod exits 5 is reported Failed; the done event, not the
 exit status, carries the run's outcome.`,
 	Args: cobra.NoArgs,
@@ -119,7 +119,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	// Timeout is applied later once the RunConfig (which carries it) arrives.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	setupSignalHandler(cancel, shutdownCancel)
+	interrupted := installSignalHandler(cancel, shutdownCancel)
 
 	tp, err := transport.NewGRPCTransport(ctx, addr, dialOpts...)
 	if err != nil {
@@ -279,7 +279,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 
 	// A non-success outcome (runErr == nil) must still fail the process so
 	// the job orchestrator can decide whether to retry or alert.
-	return runOutcomeError(runTrace)
+	return runOutcomeError(runTrace, interrupted())
 }
 
 // followUpGraceSeconds resolves the follow-up window: the task's

@@ -89,9 +89,9 @@ func blockingProviderServer(t *testing.T) (srv *httptest.Server, arrived <-chan 
 }
 
 // TestRunWithConfig_NonSuccessOutcome_ExitsRunOutcomeClass pins that a
-// harness run that completes with max_turns, verification_failed or
-// cancelled exits with the run-outcome class, not the default failure
-// class, while still emitting its RunResult.
+// harness run that completes with max_turns or verification_failed
+// exits with the run-outcome class, not the default failure class,
+// while still emitting its RunResult.
 func TestRunWithConfig_NonSuccessOutcome_ExitsRunOutcomeClass(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -112,23 +112,6 @@ func TestRunWithConfig_NonSuccessOutcome_ExitsRunOutcomeClass(t *testing.T) {
 				return replayHarnessConfig(t, replayAnswerTurn, true)
 			},
 		},
-		{
-			name:    "cancelled",
-			outcome: "cancelled",
-			config: func(t *testing.T) *types.RunConfig {
-				interrupts := make(chan func(), 1)
-				prev := setupSignalHandler
-				setupSignalHandler = func(interrupt, _ func()) { interrupts <- interrupt }
-				t.Cleanup(func() { setupSignalHandler = prev })
-
-				srv, arrived := blockingProviderServer(t)
-				go func() {
-					<-arrived
-					(<-interrupts)()
-				}()
-				return runOutcomeTestConfig(t, srv.URL)
-			},
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
@@ -144,6 +127,40 @@ func TestRunWithConfig_NonSuccessOutcome_ExitsRunOutcomeClass(t *testing.T) {
 			check.Equal(tc.outcome, decodeStirrupResult(t, stdout).Outcome)
 		})
 	}
+}
+
+// interruptAfterProviderArrives replaces the signal handler so the first
+// provider request triggers the interrupt a SIGTERM would deliver.
+func interruptAfterProviderArrives(t *testing.T, arrived <-chan struct{}) {
+	t.Helper()
+	interrupts := make(chan func(), 1)
+	prev := setupSignalHandler
+	setupSignalHandler = func(interrupt, _ func()) { interrupts <- interrupt }
+	t.Cleanup(func() { setupSignalHandler = prev })
+	go func() {
+		<-arrived
+		(<-interrupts)()
+	}()
+}
+
+// TestRunWithConfig_SignalCancel_KeepsDefaultExitClass pins that a run
+// cancelled by SIGINT/SIGTERM exits with the default class, because an
+// orchestrator that preempts or evicts a pod sends the same signal and
+// expects the Job to retry.
+func TestRunWithConfig_SignalCancel_KeepsDefaultExitClass(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	srv, arrived := blockingProviderServer(t)
+	interruptAfterProviderArrives(t, arrived)
+	config := runOutcomeTestConfig(t, srv.URL)
+
+	stdoutDone := captureStdout(t)
+	runErr := runWithConfig(config, runOptions{outputMode: "json"})
+	stdout := stdoutDone()
+
+	must.Error(runErr)
+	check.Equal(1, classifyExitCode(runErr), "err=%v", runErr)
+	check.Equal("cancelled", decodeStirrupResult(t, stdout).Outcome)
 }
 
 // TestRunWithConfig_BuildFailure_KeepsDefaultExitClass pins that a
@@ -188,15 +205,16 @@ func awaitRunJobError(t *testing.T, errCh <-chan error) error {
 }
 
 // TestRunJob_NonSuccessOutcome_ExitsRunOutcomeClass pins that a job run
-// that completes with max_turns, verification_failed or cancelled
-// reports its outcome on done and exits with the run-outcome class, so
-// a Kubernetes Job can tell it from a harness failure.
+// that completes with max_turns, verification_failed or an operator
+// cancel from the control plane reports its outcome on done and exits
+// with the run-outcome class, so a Kubernetes Job can tell it from a
+// harness failure.
 func TestRunJob_NonSuccessOutcome_ExitsRunOutcomeClass(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		outcome string
 		// plane builds the control plane and, for cancelled, arranges
-		// the mid-run cancel.
+		// the mid-run cancel event.
 		plane func(t *testing.T) *scriptedControlPlane
 	}{
 		{
@@ -252,6 +270,27 @@ func TestRunJob_NonSuccessOutcome_ExitsRunOutcomeClass(t *testing.T) {
 			check.Equal(exitRunOutcome, classifyExitCode(runErr), "err=%v", runErr)
 		})
 	}
+}
+
+// TestRunJob_SignalCancel_KeepsDefaultExitClass pins that a job
+// cancelled by SIGTERM exits with the default class, unlike a cancel
+// event from the control plane, which exits with the run-outcome class.
+func TestRunJob_SignalCancel_KeepsDefaultExitClass(t *testing.T) {
+	must := require.New(t)
+	useTempMarkerPaths(t)
+	t.Setenv("CONTROL_PLANE_SESSION_ID", "")
+	t.Setenv("TEST_OPENAI_KEY", "test-key")
+	provider, arrived := blockingProviderServer(t)
+	interruptAfterProviderArrives(t, arrived)
+	srv := newScriptedControlPlane(followUpJobConfig(t, provider.URL, 30, 0), func(int) *pb.ControlEvent { return nil })
+	serveControlPlane(t, srv)
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- runJob(jobCmd, nil) }()
+	runErr := awaitRunJobError(t, errCh)
+
+	must.ErrorContains(runErr, `run outcome "cancelled" is not success`)
+	must.Equal(1, classifyExitCode(runErr), "err=%v", runErr)
 }
 
 // TestRunJob_BuildFailure_KeepsDefaultExitClass pins that a task whose

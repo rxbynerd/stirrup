@@ -733,8 +733,9 @@ counterpart. Under `job`, `resultSink.type` alone controls the
 `STIRRUP_RESULT` line: `"none"` or unset omits it.
 
 The exit code reflects the run outcome regardless of `--output`: a
-failed or cancelled run still exits non-zero (class `5`, or `1` when the
-run ends in `control_stream_lost`). A cancellation
+failed or cancelled run still exits non-zero (class `5`; class `1` when
+the run ends in `control_stream_lost` or is cancelled by a signal, see
+[Exit codes](#exit-codes)). A cancellation
 mid-flight emits a partial `RunResult` carrying the cancellation
 outcome rather than nothing, so callers parsing the JSON line always
 see a structured record.
@@ -1011,7 +1012,7 @@ and `healthcheck`:
 | `2` | Parse error | The JSON in a `--config` file or piped stdin failed to decode (syntax error, unknown field, type mismatch). |
 | `3` | I/O error | A `--config` or `--prompt-file` path could not be opened, read, or stat'd; an empty / oversize input; an `--output-runconfig` write or close failure; `healthcheck` found a marker file it could not open (e.g. a permission error). |
 | `4` | Usage error | An invalid flag combination — currently a `--dry-run` probe gate (`--no-probe-provider`/`--no-probe-mcp`/`--no-probe-trace`/`--no-probe-egress`/`--no-probe-executor`) or `--dry-run-timeout` supplied without `--dry-run`. See [Dry-run preflight](#dry-run-preflight). |
-| `5` | Run outcome | `harness` or `job` completed a run whose `RunTrace.Outcome` is not `success` (`max_turns`, `verification_failed`, `cancelled`, `timeout`, `error`, and the rest) and reported it. The harness itself did not fail. A run that fails with an error instead of an outcome (a fatal `hooks.preRun` failure, for example) exits `1`. |
+| `5` | Run outcome | `harness` or `job` completed a run whose `RunTrace.Outcome` is not `success` (`max_turns`, `verification_failed`, `cancelled` by a control-plane `cancel` event, `timeout`, `error`, and the rest) and reported it. The harness itself did not fail. A run whose `Run` call returns an error instead of an outcome (a fatal `hooks.preRun` failure, for example) exits `1`, even when it still delivers an `error` and `done` event. |
 
 A failed `--dry-run` (one or more probes reported `fail`) exits `1` on
 the default path, not `4`: code `4` is reserved for the command-line
@@ -1024,9 +1025,15 @@ stdout, or the `done` event under `stirrup job`, carries the outcome for
 callers that need finer detail than the exit code. A failure before any
 run starts (a `RunConfig` that cannot be built, a control plane that
 cannot be reached) keeps its own class, as does a run that fails with
-an error rather than an outcome. The one outcome that stays on the `1`
-default path is `control_stream_lost`: the stream that would have
-carried the outcome to the control plane is the thing that failed. The
+an error rather than an outcome. Two outcomes stay on the `1` default
+path. `control_stream_lost` does so because the stream that would have
+carried the outcome to the control plane is the thing that failed.
+`cancelled` does so when the process received SIGINT or SIGTERM, because
+an orchestrator that preempts or evicts a pod sends the same signal and
+expects the Job to be retried; a `cancel` event from the control plane
+still exits `5`. If a follow-up run then loses the control stream or
+fails a required export, that failure exits `1` in place of the primary
+run's `5`. The
 interactive first-contact hints (a bare `stirrup` or a
 bare `stirrup harness` on a terminal) are a success surface and exit
 `0`.
@@ -1034,7 +1041,7 @@ bare `stirrup harness` on a terminal) are a success surface and exit
 Process exit code uses a binary success/non-success split on
 `RunTrace.Outcome` ("success" is the only success value; every other
 documented outcome — hard errors, exhausted resource limits, or an
-interruption — exits non-zero, class `5` except `control_stream_lost`) deliberately distinct from the eval
+interruption — exits non-zero) deliberately distinct from the eval
 suite's passed/failed/inconclusive taxonomy
 ([`docs/eval.md`](eval.md)). Eval outcome answers "was the change any
 good", folding limit-hit and cancelled runs into a separate
