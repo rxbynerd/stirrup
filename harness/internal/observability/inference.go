@@ -64,10 +64,11 @@ type InferenceAttrs struct {
 
 // ProviderModelAttributes returns the gen_ai.provider.name and
 // gen_ai.request.model attributes that label the token counters, so token
-// totals can be split by provider and model.
-func ProviderModelAttributes(providerType, model string) []attribute.KeyValue {
+// totals can be split by provider and model. serverAddress is the
+// provider's API host, empty when unknown.
+func ProviderModelAttributes(providerType, serverAddress, model string) []attribute.KeyValue {
 	return []attribute.KeyValue{
-		attribute.String(attrGenAIProviderName, GenAIProviderName(providerType)),
+		attribute.String(attrGenAIProviderName, GenAIProviderName(providerType, serverAddress)),
 		attribute.String(attrGenAIRequestModel, model),
 	}
 }
@@ -76,7 +77,7 @@ func (a InferenceAttrs) attributes(extra ...attribute.KeyValue) metric.Measureme
 	attrs := make([]attribute.KeyValue, 0, 6+len(extra))
 	attrs = append(attrs,
 		attribute.String(attrGenAIOperationName, genAIOperationChat),
-		attribute.String(attrGenAIProviderName, GenAIProviderName(a.ProviderType)),
+		attribute.String(attrGenAIProviderName, GenAIProviderName(a.ProviderType, a.ServerAddress)),
 	)
 	if a.RequestModel != "" {
 		attrs = append(attrs, attribute.String(attrGenAIRequestModel, a.RequestModel))

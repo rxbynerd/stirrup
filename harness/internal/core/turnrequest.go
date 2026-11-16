@@ -492,7 +492,7 @@ func (l *AgenticLoop) recordAttemptUsage(
 	modeAttr := l.metricAttrs(attribute.String("run.mode", config.Mode))
 	l.Metrics.Turns.Add(ctx, 1, modeAttr)
 	inference := inferenceAttrs(config, selection, selectedProvider)
-	tokenAttrs := l.metricAttrs(observability.ProviderModelAttributes(inference.ProviderType, inference.RequestModel)...)
+	tokenAttrs := l.metricAttrs(observability.ProviderModelAttributes(inference.ProviderType, inference.ServerAddress, inference.RequestModel)...)
 	l.Metrics.TokensInput.Add(ctx, int64(tokens.Input), tokenAttrs)
 	l.Metrics.TokensOutput.Add(ctx, int64(tokens.Output), tokenAttrs)
 	if tokens.CacheRead > 0 {

@@ -529,3 +529,32 @@ func TestRootSpan_OtherOutcomesKeepOutcomeAsErrorType(t *testing.T) {
 	assertAttribute(t, root, errorTypeKey, "max_turns")
 	must.Equal("reached the turn limit (maxTurns 5)", root.Status.Description)
 }
+
+func TestChatSpan_ProviderNameFollowsOpenAICompatibleHost(t *testing.T) {
+	emitter, exporter := startLiveRun(t, false)
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{
+		ProviderType: "openai-compatible", Model: "deepseek-chat",
+		ServerAddress: "api.deepseek.com", ServerPort: 443,
+	}).End(ChatSpanEnd{})
+	emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{
+		ProviderType: "openai-compatible", Model: "local-model",
+		ServerAddress: "localhost", ServerPort: 8000,
+	}).End(ChatSpanEnd{})
+	finishLiveRun(t, emitter)
+
+	assertAttribute(t, findSpan(t, exporter, "chat deepseek-chat"), genAIProviderNameKey, "deepseek")
+	assertAttribute(t, findSpan(t, exporter, "chat local-model"), genAIProviderNameKey, "openai-compatible")
+}
+
+func TestRootSpan_ProviderNameFollowsOpenAICompatibleBaseURL(t *testing.T) {
+	emitter, exporter := newTestOTelEmitter()
+	emitter.Start("run-host", &types.RunConfig{
+		RunID:       "run-host",
+		Mode:        "execution",
+		Provider:    types.ProviderConfig{Type: "openai-compatible", BaseURL: "https://api.mistral.ai/v1"},
+		ModelRouter: types.ModelRouterConfig{Model: "mistral-large"},
+	})
+	finishLiveRun(t, emitter)
+
+	assertAttribute(t, findSpan(t, exporter, "invoke_agent stirrup"), genAIProviderNameKey, "mistral")
+}

@@ -339,9 +339,10 @@ func agentSpanAttributes(agentName string, config *types.RunConfig) []attribute.
 	if config == nil {
 		return attrs
 	}
+	host, _ := observability.ServerEndpointFromURL(config.Provider.BaseURL)
 	attrs = append(attrs,
 		attribute.String("run.mode", config.Mode),
-		attribute.String(genAIProviderNameKey, observability.GenAIProviderName(config.Provider.Type)),
+		attribute.String(genAIProviderNameKey, observability.GenAIProviderName(config.Provider.Type, host)),
 	)
 	if config.ModelRouter.Model != "" {
 		attrs = append(attrs, attribute.String(genAIRequestModelKey, config.ModelRouter.Model))

@@ -217,3 +217,25 @@ func TestServerEndpointFromURL_ExtractsHostAndPort(t *testing.T) {
 		})
 	}
 }
+
+func TestInferenceAttrs_ProviderNameFollowsOpenAICompatibleHost(t *testing.T) {
+	must := require.New(t)
+	m, reader := newInferenceTestMetrics(t)
+	m.RecordInferenceDuration(context.Background(), InferenceAttrs{
+		ProviderType:  "openai-compatible",
+		RequestModel:  "deepseek-chat",
+		ServerAddress: "api.deepseek.com",
+		ServerPort:    443,
+	}, time.Second, "")
+
+	got := collectMetric(t, reader, "gen_ai.client.operation.duration").Data.(metricdata.Histogram[float64])
+	attrs := inferenceAttrMap(got.DataPoints[0].Attributes)
+	must.Equal("deepseek", attrs["gen_ai.provider.name"].AsString())
+}
+
+func TestProviderModelAttributes_ProviderNameFollowsOpenAICompatibleHost(t *testing.T) {
+	must := require.New(t)
+	attrs := ProviderModelAttributes("openai-compatible", "api.groq.com", "llama")
+	must.Contains(attrs, attribute.String("gen_ai.provider.name", "groq"))
+	must.Contains(attrs, attribute.String("gen_ai.request.model", "llama"))
+}

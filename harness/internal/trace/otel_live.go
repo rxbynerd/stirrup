@@ -131,7 +131,7 @@ func (e *OTelTraceEmitter) StartChatSpan(parent context.Context, start ChatSpanS
 		providerType = e.config.Provider.Type
 	}
 	if providerType != "" {
-		attrs = append(attrs, attribute.String(genAIProviderNameKey, observability.GenAIProviderName(providerType)))
+		attrs = append(attrs, attribute.String(genAIProviderNameKey, observability.GenAIProviderName(providerType, start.ServerAddress)))
 	}
 	if start.ServerAddress != "" {
 		attrs = append(attrs, attribute.String(serverAddressKey, start.ServerAddress))
