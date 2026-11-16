@@ -63,7 +63,7 @@ func TestNewK8sExecutor_OwnsEgressPolicyByHarnessAndSandboxPods(t *testing.T) {
 				{APIVersion: "v1", Kind: "Pod", Name: "harness-0", UID: "harness-uid"},
 				{APIVersion: "v1", Kind: "Pod", Name: exec.podName, UID: k8stypes.UID("uid-1")},
 			}, policy.OwnerReferences)
-			check.Nil(policy.OwnerReferences[0].BlockOwnerDeletion, "foreground deletion of the harness Pod must not wait on or delete the policy")
+			check.Nil(policy.OwnerReferences[0].BlockOwnerDeletion, "the policy must not hold up a foreground deletion of the harness Pod")
 		})
 	}
 }
