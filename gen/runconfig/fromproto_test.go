@@ -221,6 +221,20 @@ func TestRunConfigFromProto_TranslatesK8sExecutorFields(t *testing.T) {
 	must.Equal("ssd", rc.Executor.K8sNodeSelector["disktype"])
 }
 
+func TestRunConfigFromProto_TranslatesResourceLimits(t *testing.T) {
+	must := require.New(t)
+	pc := &pb.RunConfig{
+		Executor: &pb.ExecutorConfig{
+			Type:      "container",
+			Resources: &pb.ResourceLimits{Cpus: 1.5, MemoryMb: 2048, DiskMb: 4096, Pids: 128, ScratchMb: 768},
+		},
+	}
+
+	rc := runConfigFromProto(pc)
+
+	must.Equal(&types.ResourceLimits{CPUs: 1.5, MemoryMB: 2048, DiskMB: 4096, PIDs: 128, ScratchMB: 768}, rc.Executor.Resources)
+}
+
 // TestRunConfigFromProto_TraceEmitterGCSFieldsPreserved pins that the
 // gcs trace emitter's Bucket and ObjectPrefix survive translation.
 func TestRunConfigFromProto_TraceEmitterGCSFieldsPreserved(t *testing.T) {

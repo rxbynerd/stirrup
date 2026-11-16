@@ -5884,7 +5884,12 @@ type ResourceLimits struct {
 	// Disk space limit in megabytes.
 	DiskMb int32 `protobuf:"varint,3,opt,name=disk_mb,json=diskMb,proto3" json:"disk_mb,omitempty"`
 	// Maximum number of processes/threads.
-	Pids          int32 `protobuf:"varint,4,opt,name=pids,proto3" json:"pids,omitempty"`
+	Pids int32 `protobuf:"varint,4,opt,name=pids,proto3" json:"pids,omitempty"`
+	// Size cap in megabytes of the sandbox's /scratch directory, which holds
+	// HOME and TMPDIR. 0 selects the default (1024). A tmpfs on "container",
+	// counted against memory_mb; a disk-backed emptyDir on "k8s" and
+	// "k8s-sandbox", counted against disk_mb and enforced by eviction.
+	ScratchMb     int32 `protobuf:"varint,5,opt,name=scratch_mb,json=scratchMb,proto3" json:"scratch_mb,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5943,6 +5948,13 @@ func (x *ResourceLimits) GetDiskMb() int32 {
 func (x *ResourceLimits) GetPids() int32 {
 	if x != nil {
 		return x.Pids
+	}
+	return 0
+}
+
+func (x *ResourceLimits) GetScratchMb() int32 {
+	if x != nil {
+		return x.ScratchMb
 	}
 	return 0
 }
@@ -7687,12 +7699,14 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x03ref\x18\x04 \x01(\tR\x03ref\"A\n" +
 	"\rNetworkConfig\x12\x12\n" +
 	"\x04mode\x18\x01 \x01(\tR\x04mode\x12\x1c\n" +
-	"\tallowlist\x18\x02 \x03(\tR\tallowlist\"n\n" +
+	"\tallowlist\x18\x02 \x03(\tR\tallowlist\"\x8d\x01\n" +
 	"\x0eResourceLimits\x12\x12\n" +
 	"\x04cpus\x18\x01 \x01(\x01R\x04cpus\x12\x1b\n" +
 	"\tmemory_mb\x18\x02 \x01(\x05R\bmemoryMb\x12\x17\n" +
 	"\adisk_mb\x18\x03 \x01(\x05R\x06diskMb\x12\x12\n" +
-	"\x04pids\x18\x04 \x01(\x05R\x04pids\"j\n" +
+	"\x04pids\x18\x04 \x01(\x05R\x04pids\x12\x1d\n" +
+	"\n" +
+	"scratch_mb\x18\x05 \x01(\x05R\tscratchMb\"j\n" +
 	"\x12EditStrategyConfig\x12\x12\n" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12,\n" +
 	"\x0ffuzzy_threshold\x18\x02 \x01(\x01H\x00R\x0efuzzyThreshold\x88\x01\x01B\x12\n" +

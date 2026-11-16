@@ -2614,6 +2614,37 @@ func TestValidateRunConfig_ResourceLimits(t *testing.T) {
 			wantErr:     true,
 			errContains: "executor.resources.pids must not be negative",
 		},
+		{
+			name:        "negative scratchMb rejected (container)",
+			execType:    "container",
+			resources:   &ResourceLimits{ScratchMB: -1},
+			image:       "img",
+			wantErr:     true,
+			errContains: "executor.resources.scratchMb must not be negative (got -1)",
+		},
+		{
+			name:      "scratchMb equal to memoryMb valid (container)",
+			execType:  "container",
+			resources: &ResourceLimits{MemoryMB: 1024, ScratchMB: 1024},
+			image:     "img",
+		},
+		{
+			name:        "scratchMb above memoryMb rejected (container)",
+			execType:    "container",
+			resources:   &ResourceLimits{MemoryMB: 512, ScratchMB: 1024},
+			image:       "img",
+			wantErr:     true,
+			errContains: `executor.resources.scratchMb (1024) must not exceed executor.resources.memoryMb (512) for executor.type="container"`,
+		},
+		{
+			name:        "scratchMb above diskMb rejected (k8s-sandbox)",
+			execType:    "k8s-sandbox",
+			resources:   &ResourceLimits{DiskMB: 512, ScratchMB: 1024},
+			image:       "img",
+			k8sNS:       "ns",
+			wantErr:     true,
+			errContains: `executor.resources.scratchMb (1024) must not exceed executor.resources.diskMb (512) for executor.type="k8s-sandbox"`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2636,6 +2667,45 @@ func TestValidateRunConfig_ResourceLimits(t *testing.T) {
 			must.NoError(err)
 		})
 	}
+}
+
+func TestScratchLimitErrors_ChecksTheLimitEachExecutorChargesScratchTo(t *testing.T) {
+	cases := []struct {
+		name     string
+		execType string
+		r        *ResourceLimits
+		wantErr  bool
+	}{
+		{name: "nil resources", execType: "container", r: nil},
+		{name: "unset scratch ignores a small memory limit", execType: "container", r: &ResourceLimits{MemoryMB: 256}},
+		{name: "container without a memory limit", execType: "container", r: &ResourceLimits{ScratchMB: 1 << 20}},
+		{name: "container above memory", execType: "container", r: &ResourceLimits{MemoryMB: 512, ScratchMB: 513}, wantErr: true},
+		{name: "container ignores the disk limit", execType: "container", r: &ResourceLimits{DiskMB: 512, ScratchMB: 1024}},
+		{name: "k8s above disk", execType: "k8s", r: &ResourceLimits{DiskMB: 512, ScratchMB: 513}, wantErr: true},
+		{name: "k8s ignores the memory limit", execType: "k8s", r: &ResourceLimits{MemoryMB: 512, ScratchMB: 1024}},
+		{name: "k8s-sandbox above disk", execType: "k8s-sandbox", r: &ResourceLimits{DiskMB: 512, ScratchMB: 513}, wantErr: true},
+		{name: "local has no scratch", execType: "local", r: &ResourceLimits{MemoryMB: 1, DiskMB: 1, ScratchMB: 1024}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			check := assert.New(t)
+			errs := ScratchLimitErrors(tc.execType, tc.r)
+			if tc.wantErr {
+				check.Len(errs, 1)
+				return
+			}
+			check.Empty(errs)
+		})
+	}
+}
+
+func TestResourceLimits_EffectiveScratchMBDefaultsWhenUnset(t *testing.T) {
+	check := assert.New(t)
+	var nilLimits *ResourceLimits
+	check.Equal(DefaultScratchMB, nilLimits.EffectiveScratchMB())
+	check.Equal(DefaultScratchMB, (&ResourceLimits{}).EffectiveScratchMB())
+	check.Equal(DefaultScratchMB, (&ResourceLimits{ScratchMB: -1}).EffectiveScratchMB())
+	check.Equal(4096, (&ResourceLimits{ScratchMB: 4096}).EffectiveScratchMB())
 }
 
 func TestValidateRunConfig_APIKeyHeader_Rejected(t *testing.T) {

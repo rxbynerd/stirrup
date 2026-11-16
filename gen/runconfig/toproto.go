@@ -443,10 +443,11 @@ func (e *encoder) executorConfig(c *types.ExecutorConfig) *pb.ExecutorConfig {
 	}
 	if r := c.Resources; r != nil {
 		pc.Resources = &pb.ResourceLimits{
-			Cpus:     r.CPUs,
-			MemoryMb: e.int32("executor.resources.memoryMb", r.MemoryMB),
-			DiskMb:   e.int32("executor.resources.diskMb", r.DiskMB),
-			Pids:     e.int32("executor.resources.pids", r.PIDs),
+			Cpus:      r.CPUs,
+			MemoryMb:  e.int32("executor.resources.memoryMb", r.MemoryMB),
+			DiskMb:    e.int32("executor.resources.diskMb", r.DiskMB),
+			Pids:      e.int32("executor.resources.pids", r.PIDs),
+			ScratchMb: e.int32("executor.resources.scratchMb", r.ScratchMB),
 		}
 	}
 	return pc

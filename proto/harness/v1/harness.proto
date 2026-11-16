@@ -2556,6 +2556,12 @@ message ResourceLimits {
 
   // Maximum number of processes/threads.
   int32 pids = 4;
+
+  // Size cap in megabytes of the sandbox's /scratch directory, which holds
+  // HOME and TMPDIR. 0 selects the default (1024). A tmpfs on "container",
+  // counted against memory_mb; a disk-backed emptyDir on "k8s" and
+  // "k8s-sandbox", counted against disk_mb and enforced by eviction.
+  int32 scratch_mb = 5;
 }
 
 // ---------------------------------------------------------------------------

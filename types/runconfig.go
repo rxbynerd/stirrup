@@ -1122,6 +1122,22 @@ type ResourceLimits struct {
 	MemoryMB int     `json:"memoryMb"`
 	DiskMB   int     `json:"diskMb"`
 	PIDs     int     `json:"pids"`
+	// ScratchMB caps the sandbox's scratch directory, which holds HOME and
+	// TMPDIR; zero selects DefaultScratchMB.
+	ScratchMB int `json:"scratchMb,omitempty"`
+}
+
+// DefaultScratchMB is the scratch size a sandbox gets when
+// executor.resources.scratchMb is unset.
+const DefaultScratchMB = 1024
+
+// EffectiveScratchMB is ScratchMB, or DefaultScratchMB when r is nil or
+// ScratchMB is not positive.
+func (r *ResourceLimits) EffectiveScratchMB() int {
+	if r == nil || r.ScratchMB <= 0 {
+		return DefaultScratchMB
+	}
+	return r.ScratchMB
 }
 
 // DefaultSandboxIdentityEnvVar is the variable a sandbox identity token is
@@ -2795,6 +2811,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateNoneExecutor(config.Executor, &errs)
 	validateVcsBackend(config.Executor.VcsBackend, &errs)
 	errs = append(errs, ResourceLimitErrors(config.Executor.Resources)...)
+	errs = append(errs, ScratchLimitErrors(config.Executor.Type, config.Executor.Resources)...)
 	validateSandboxIdentity(config, &errs)
 	validateOptionalType("editStrategy", config.EditStrategy.Type, validEditStrategyTypes, &errs)
 	validateEditStrategyFuzzyThreshold(config.EditStrategy, &errs)
@@ -6576,7 +6593,33 @@ func ResourceLimitErrors(r *ResourceLimits) []string {
 	if r.PIDs < 0 {
 		errs = append(errs, fmt.Sprintf("executor.resources.pids must not be negative (got %d)", r.PIDs))
 	}
+	if r.ScratchMB < 0 {
+		errs = append(errs, fmt.Sprintf("executor.resources.scratchMb must not be negative (got %d)", r.ScratchMB))
+	}
 	return errs
+}
+
+// ScratchLimitErrors returns a message when an explicit scratchMb exceeds
+// the limit its executor charges scratch against: memoryMb on "container",
+// whose scratch is a tmpfs, and diskMb on "k8s" and "k8s-sandbox", whose
+// scratch emptyDir counts against the Pod's ephemeral storage. Such a cap
+// can never be reached. An unset scratchMb, an unset limit and every other
+// executor type yield none.
+func ScratchLimitErrors(executorType string, r *ResourceLimits) []string {
+	if r == nil || r.ScratchMB <= 0 {
+		return nil
+	}
+	switch {
+	case executorType == "container" && r.MemoryMB > 0 && r.ScratchMB > r.MemoryMB:
+		return []string{fmt.Sprintf(
+			"executor.resources.scratchMb (%d) must not exceed executor.resources.memoryMb (%d) for executor.type=%q; the scratch tmpfs counts against the memory limit",
+			r.ScratchMB, r.MemoryMB, executorType)}
+	case IsK8sFamily(executorType) && r.DiskMB > 0 && r.ScratchMB > r.DiskMB:
+		return []string{fmt.Sprintf(
+			"executor.resources.scratchMb (%d) must not exceed executor.resources.diskMb (%d) for executor.type=%q; the scratch emptyDir counts against the Pod's ephemeral storage",
+			r.ScratchMB, r.DiskMB, executorType)}
+	}
+	return nil
 }
 
 // ExportRequired reports whether a failed workspace export fails the

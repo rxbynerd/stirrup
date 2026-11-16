@@ -481,10 +481,11 @@ func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 	}
 	if pc.Resources != nil {
 		ec.Resources = &types.ResourceLimits{
-			CPUs:     pc.Resources.Cpus,
-			MemoryMB: int(pc.Resources.MemoryMb),
-			DiskMB:   int(pc.Resources.DiskMb),
-			PIDs:     int(pc.Resources.Pids),
+			CPUs:      pc.Resources.Cpus,
+			MemoryMB:  int(pc.Resources.MemoryMb),
+			DiskMB:    int(pc.Resources.DiskMb),
+			PIDs:      int(pc.Resources.Pids),
+			ScratchMB: int(pc.Resources.ScratchMb),
 		}
 	}
 	return ec

@@ -933,10 +933,11 @@ suite "s" {
       }
 
       resources {
-        cpus      = 2.0
-        memory_mb = 1024
-        disk_mb   = 2048
-        pids      = 256
+        cpus       = 2.0
+        memory_mb  = 1024
+        disk_mb    = 2048
+        pids       = 256
+        scratch_mb = 512
       }
     }
 
@@ -1028,6 +1029,7 @@ suite "s" {
 	check.Equal("allowlist", rc.Executor.Network.Mode)
 	must.NotNil(rc.Executor.Resources)
 	check.InDelta(2.0, rc.Executor.Resources.CPUs, 1e-9)
+	check.Equal(512, rc.Executor.Resources.ScratchMB)
 	check.Equal("policies/default.cedar", rc.PermissionPolicy.PolicyFile)
 	must.NotNil(rc.CodeScanner)
 	check.True(rc.CodeScanner.BlockOnWarn)
