@@ -362,6 +362,49 @@ func TestPreflight_K8sExecutors_DeniedPermissionFailsStepWithRoleHint(t *testing
 	}
 }
 
+func TestPreflight_K8sExecutor_HungCredentialPluginFailsStepWithPluginHint(t *testing.T) {
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	must := require.New(t)
+	check := assert.New(t)
+	api := newFakeKubeAPI(t)
+	cfg := k8sPreflightConfig(t, "k8s", api)
+	dir := t.TempDir()
+	plugin := filepath.Join(dir, "plugin.sh")
+	must.NoError(os.WriteFile(plugin, []byte("#!/bin/sh\nsleep 3\n"), 0o700))
+	kubeconfig := filepath.Join(dir, "kubeconfig")
+	must.NoError(os.WriteFile(kubeconfig, []byte(fmt.Sprintf(`apiVersion: v1
+kind: Config
+clusters:
+- name: fake
+  cluster: {server: %q, insecure-skip-tls-verify: true}
+users:
+- name: fake
+  user:
+    exec: {apiVersion: client.authentication.k8s.io/v1, command: %q, interactiveMode: Never}
+contexts:
+- name: fake
+  context: {cluster: fake, user: fake}
+current-context: fake
+`, "https://127.0.0.1:1", plugin)), 0o600))
+	cfg.Executor.K8sKubeconfig = kubeconfig
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	report, err := Preflight(ctx, cfg, PreflightOptions{})
+	must.NoError(err)
+
+	status, found := stepStatus(report, "executor-probe")
+	must.True(found, "no executor-probe step")
+	check.Equal(PreflightFail, status)
+	detail, _ := stepDetail(report, "executor-probe")
+	check.Contains(detail, "credential plugin did not return")
+	hint := stepHint(report, "executor-probe")
+	check.Contains(hint, "credential plugin")
+	check.NotContains(hint, "selfsubjectaccessreviews")
+	check.NotContains(hint, "bind a Role")
+	check.False(report.OK)
+}
+
 func TestPreflight_K8sSandbox_UnservedAPIFailsStepWithControllerHint(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)

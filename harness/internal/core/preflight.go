@@ -483,7 +483,7 @@ func k8sProbeHint(executorType, runtime string, err error) string {
 		text string
 	}{
 		{executor.K8sProbeClientBuild, "check --k8s-kubeconfig (executor.k8sKubeconfig), the in-cluster ServiceAccount token, or $KUBECONFIG"},
-		{executor.K8sProbeCredentialPlugin, "the kubeconfig's exec credential plugin (for example gke-gcloud-auth-plugin, aws eks get-token or kubelogin) did not return within the --dry-run-timeout budget; run it by hand to see whether it waits for an interactive login or an unreachable endpoint"},
+		{executor.K8sProbeCredentialPlugin, "the kubeconfig's exec credential plugin did not return; run its command by hand to see what it waits for (an interactive login or an unreachable endpoint), or raise --dry-run-timeout"},
 		{executor.K8sProbeReviewFailed, "check the API server is reachable from this host, accepts the credentials, and lets them create selfsubjectaccessreviews (granted by default through system:basic-user); the sequential reviews share the --dry-run-timeout budget"},
 		{executor.K8sProbePermissionDenied, "bind a Role granting the denied verbs in executor.k8sNamespace (reference: " + roleManifest + ")"},
 		{executor.K8sProbeNamespaceMissing, "create the namespace or correct executor.k8sNamespace"},
