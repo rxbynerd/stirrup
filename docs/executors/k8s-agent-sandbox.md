@@ -112,10 +112,11 @@ The provisioning sequence
    Command execution and file I/O then ride the shared `pods/exec` core,
    including its check for a Pod that ends mid-run (see
    [Sandbox loss during a run](k8s.md#sandbox-loss-during-a-run)). The
-   check reads the backing Pod by name and, unlike the `k8s` executor,
-   does not compare its UID, so if the controller replaced a deleted Pod
-   under the same name, the replacement is not reported as lost,
-   although its workspace starts empty.
+   check reads the backing Pod by name and compares its UID with the one
+   read when the Sandbox became Ready, so a Pod the controller recreates
+   under the same name is reported as lost, because its workspace
+   starts empty. When that read fails, the executor logs a warning and
+   detects a lost Pod by name alone: a replacement is then not reported.
 5. **Wait for `exec` and prepare scratch.** The executor runs the `k8s`
    executor's one-minute wait for `exec` to reach the Pod (see
    [Readiness](k8s.md#readiness)), then creates `HOME` and `TMPDIR`
