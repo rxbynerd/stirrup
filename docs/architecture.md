@@ -327,7 +327,9 @@ operation fails because the sandbox has ended for good, the executor
 returns an `*executor.SandboxLostError` naming the terminal state and
 latches it, so later operations fail at once. The loop checks the
 reporter at the top of each turn and after each tool batch, and ends
-the run with the `sandbox_lost` outcome. What counts as ended is
+the run with the `sandbox_lost` outcome; a setup, verification or
+post-run failure on a lost sandbox is reported as `sandbox_lost` too
+(`core/sandboxlost.go`). What counts as ended is
 documented per executor in
 [Sandbox loss during a run](executors/k8s.md#sandbox-loss-during-a-run);
 the `container` executor counts a container the engine no longer has

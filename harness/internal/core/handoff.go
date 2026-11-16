@@ -80,6 +80,8 @@ func describeOutcome(config *types.RunConfig, outcome string) string {
 		return "blocked by the guardrail"
 	case "rule_of_two_violation":
 		return "aborted by Rule-of-Two enforcement"
+	case "sandbox_lost":
+		return "the sandbox stopped before the run completed"
 	default:
 		return fmt.Sprintf("run ended with outcome %q", outcome)
 	}

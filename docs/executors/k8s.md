@@ -530,11 +530,15 @@ deadline or the run's context ended, the executor reads the Pod. The
 kubelet reports a killed container about a second after the container
 runtime has removed it (*measured* on kind: terminated after about 1
 second, phase `Failed` after about 2), so a Pod that still looks usable
-is read again once a second for up to 5 seconds. The executor treats
-the sandbox as lost as soon as a read finds:
+is read again once a second for up to 5 seconds. The window ends a
+second before the operation's own deadline, so the wait never turns
+the failure into a timeout. The executor treats the sandbox as lost as
+soon as a read finds:
 
 - phase `Failed` or `Succeeded`;
 - the Pod being deleted, or no Pod under its name;
+- for the `k8s` executor, a Pod under its name with a different UID
+  (the `k8s-sandbox` executor does not record the UID);
 - the `agent` container terminated under a restart policy that does
   not restart it (`Never`, or `OnFailure` after exit code `0`).
 
@@ -551,12 +555,18 @@ not, because the sandboxed workload writes it. Every later command and
 file operation returns the same error without contacting the cluster,
 and the run ends after the current turn with the outcome `sandbox_lost`
 and this text as its error (see
-[Terminal semantics](../integration-guide.md#terminal-semantics)). A
-Pod that is still running after those 5 seconds, a container that will
-restart, and a failed Pod read all leave the original `exec` error
-unchanged, so a transient failure stays a tool error the model can
-retry, returned once the 5-second window ends. The reads use
-the `get pods` permission the readiness wait already needs.
+[Terminal semantics](../integration-guide.md#terminal-semantics)). When
+a setup step, the verifier, a lifecycle hook, the final git checkpoint
+or the workspace export finds the loss first, the run also ends
+`sandbox_lost` rather than `error`, `setup_failed`,
+`verification_error`, `hook_failed` or `handoff_failed`; cancellation
+and timeout still take precedence.
+
+A Pod still running when the window ends and a container that will
+restart leave the original `exec` error unchanged, so a transient
+failure stays a tool error the model can retry; it is returned when the
+window ends. A failed Pod read returns the original error at once. The
+reads use the `get pods` permission the readiness wait already needs.
 
 ### Teardown
 
