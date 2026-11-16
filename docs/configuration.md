@@ -1059,9 +1059,11 @@ valid.
 `Content-Length` set and a `Content-Type` of `application/gzip` for a
 workspace tarball. Any `2xx` response is success. The client follows no
 redirect (a `3xx` is a failure), uses no proxy, and refuses to connect
-to a link-local address such as the cloud metadata endpoint; a private
-address is allowed, since a control plane's endpoint is commonly
-in-cluster. Each upload uses its own connection. The client allows
+to a cloud metadata address: any link-local address (such as
+`169.254.169.254`), AWS's IPv6 service range `fd00:ec2::/32`, Alibaba
+Cloud's `100.100.100.200`, and any of these behind the NAT64 prefix
+`64:ff9b::/96`. Other private addresses are allowed, since a control
+plane's endpoint is commonly in-cluster. Each upload uses its own connection. The client allows
 30 s to connect, 10 s for the TLS handshake and 60 s for the response
 headers once the body is sent. A workspace upload
 is bounded at 5 minutes overall, the same budget the whole workspace

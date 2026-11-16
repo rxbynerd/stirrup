@@ -21,6 +21,7 @@ func TestValidatePublicHost_ClassifiesHosts(t *testing.T) {
 		{"cgnat address", "100.64.0.1", true},
 		{"link-local metadata address", "169.254.169.254", true},
 		{"unspecified address", "0.0.0.0", true},
+		{"NAT64 form of the metadata address", "64:ff9b::a9fe:a9fe", true},
 		{"public ip", "1.1.1.1", false},
 		{"empty host", "", true},
 	}
@@ -48,11 +49,43 @@ func TestIsPublicIP_ClassifiesAddresses(t *testing.T) {
 		{"rfc 6598 cgnat address is not public", "100.64.0.1", false},
 		{"address just below cgnat range is public", "100.63.255.255", true},
 		{"public address is public", "1.1.1.1", true},
+		{"AWS IPv6 metadata address is not public", "fd00:ec2::254", false},
+		{"Alibaba Cloud metadata address is not public", "100.100.100.200", false},
+		{"NAT64 form of the metadata address is not public", "64:ff9b::a9fe:a9fe", false},
+		{"NAT64 form of a private address is not public", "64:ff9b::a00:1", false},
+		{"NAT64 form of a public address is public", "64:ff9b::101:101", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			must.Equal(tc.want, IsPublicIP(net.ParseIP(tc.ip)))
+		})
+	}
+}
+
+func TestIsCloudMetadataIP_ClassifiesAddresses(t *testing.T) {
+	cases := []struct {
+		name string
+		ip   string
+		want bool
+	}{
+		{"IPv4 metadata endpoint", "169.254.169.254", true},
+		{"IPv4-mapped metadata endpoint", "::ffff:169.254.169.254", true},
+		{"IPv6 link-local address", "fe80::1", true},
+		{"AWS IPv6 metadata endpoint", "fd00:ec2::254", true},
+		{"EKS Pod Identity agent over IPv6", "fd00:ec2::23", true},
+		{"NAT64 form of the metadata endpoint", "64:ff9b::a9fe:a9fe", true},
+		{"Alibaba Cloud metadata endpoint", "100.100.100.200", true},
+		{"other unique-local address", "fd00:ec3::254", false},
+		{"other CGNAT address", "100.100.100.201", false},
+		{"NAT64 form of a private address", "64:ff9b::a00:1", false},
+		{"private address", "10.96.0.12", false},
+		{"public address", "1.1.1.1", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, IsCloudMetadataIP(net.ParseIP(tc.ip)))
 		})
 	}
 }

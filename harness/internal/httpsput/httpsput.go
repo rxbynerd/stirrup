@@ -168,8 +168,9 @@ func NewClient(timeout time.Duration) *http.Client {
 }
 
 // checkDialAddress runs on the resolved address of every connection. It
-// refuses link-local addresses (the cloud metadata endpoints), multicast
-// and the unspecified address, and holds an http:// upload to loopback
+// refuses cloud metadata addresses (security.IsCloudMetadataIP, which
+// includes every link-local address), multicast and the unspecified
+// address, and holds an http:// upload to loopback
 // whatever its host name resolved to. Private addresses are allowed: a
 // control plane's own endpoint is commonly in-cluster.
 func checkDialAddress(ctx context.Context, _, address string, _ syscall.RawConn) error {
@@ -181,8 +182,8 @@ func checkDialAddress(ctx context.Context, _, address string, _ syscall.RawConn)
 	if ip == nil {
 		return errors.New("refusing to connect: dial address is not an IP")
 	}
-	if ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
-		return fmt.Errorf("refusing to connect to %s: link-local, multicast and unspecified addresses are not upload destinations", ip)
+	if security.IsCloudMetadataIP(ip) || ip.IsMulticast() || ip.IsUnspecified() {
+		return fmt.Errorf("refusing to connect to %s: cloud metadata, link-local, multicast and unspecified addresses are not upload destinations", ip)
 	}
 	if loopbackOnly, _ := ctx.Value(loopbackOnlyKey{}).(bool); loopbackOnly && !ip.IsLoopback() {
 		return fmt.Errorf("refusing to connect to %s: an http:// destination must be loopback", ip)
