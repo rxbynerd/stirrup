@@ -368,12 +368,9 @@ func writeStreamPreview(out *strings.Builder, name, content string, meta types.C
 }
 
 // streamTail returns at most n trailing bytes of content, starting on a
-// UTF-8 boundary.
+// UTF-8 boundary. content can itself be a tail the store cut mid-character.
 func streamTail(content string, n int64) string {
-	if int64(len(content)) <= n {
-		return content
-	}
-	start := len(content) - int(n)
+	start := max(len(content)-int(n), 0)
 	for start < len(content) && !utf8.RuneStart(content[start]) {
 		start++
 	}

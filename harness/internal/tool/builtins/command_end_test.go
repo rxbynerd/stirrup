@@ -191,3 +191,21 @@ func TestRunCommand_CaptureSpilledPreviewsShrinkToMaxResultBytes(t *testing.T) {
 	check.Contains(got.Text, "stderr_tail:\n"+structured.Stderr+"\n", "the payload preview must match the text preview")
 	check.Less(len(structured.Stdout), 4096, "previews must shrink below previewBytesPerStream")
 }
+
+func TestStreamTail_StartsOnRuneBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		n       int64
+		want    string
+	}{
+		{name: "cut inside a character", content: "a€b", n: 3, want: "b"},
+		{name: "content starts mid-character", content: "€b"[1:], n: 64, want: "b"},
+		{name: "whole content", content: "a€b", n: 64, want: "a€b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			must.Equal(tc.want, streamTail(tc.content, tc.n))
+		})
+	}
+}
