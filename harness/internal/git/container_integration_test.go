@@ -96,3 +96,36 @@ func TestContainer_PlantedRepositoryConfigNeverReachesHost(t *testing.T) {
 	check.Equal(HarnessIdentityName, inSandbox("git log -1 --format=%an"), "sandbox commit author")
 	check.Equal(result.SHA, inSandbox("git rev-parse HEAD"), "sandbox HEAD")
 }
+
+// TestContainer_HomeGitConfigDoesNotChangeTheCommit plants a global ignore
+// file and a global attributes file under the sandbox's HOME and checks
+// that the strategy still commits every workspace file unaltered.
+func TestContainer_HomeGitConfigDoesNotChangeTheCommit(t *testing.T) {
+	must := require.New(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	hostDir := t.TempDir()
+	must.NoError(os.Chmod(hostDir, 0o777), "chmod workspace")
+	sandboxExec := liveSandbox(t, ctx, hostDir)
+	inSandbox := func(command string) string {
+		t.Helper()
+		res, err := sandboxExec.Exec(ctx, command, time.Minute)
+		must.NoError(err, "sandbox %q", command)
+		must.Equal(0, res.ExitCode, "sandbox %q\nstdout: %s\nstderr: %s", command, res.Stdout, res.Stderr)
+		return strings.TrimSpace(res.Stdout)
+	}
+
+	inSandbox(`mkdir -p "$HOME/.config/git" && echo hidden.sh > "$HOME/.config/git/ignore" && printf '* -text\nkept.txt filter=pwn\n' > "$HOME/.config/git/attributes"`)
+	inSandbox(`git config --global filter.pwn.clean 'echo rewritten'`)
+
+	gs := NewDeterministicGitStrategy(sandboxExec)
+	must.NoError(gs.Setup(ctx, hostDir, "home-config"), "Setup")
+	must.NoError(sandboxExec.WriteFile(ctx, "kept.txt", "kept\n"), "write kept.txt")
+	must.NoError(sandboxExec.WriteFile(ctx, "hidden.sh", "#!/bin/sh\necho payload\n"), "write hidden.sh")
+	_, err := gs.Finalise(ctx, "success")
+	must.NoError(err, "Finalise")
+
+	must.Equal("hidden.sh\nkept.txt", inSandbox("git ls-tree --name-only HEAD"), "committed files")
+	must.Equal("kept", inSandbox("git show HEAD:kept.txt"), "committed content")
+}
