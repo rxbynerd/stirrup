@@ -65,6 +65,7 @@
       "title": "Develop",
       "pages": [
         "docs/integration-guide.md",
+        "docs/model-refresh.md",
         "CONTRIBUTING.md",
         "SECURITY.md"
       ]
@@ -73,6 +74,7 @@
       "title": "Design records",
       "pages": [
         "docs/sessions-spec-draft.md",
+        "docs/nitro-sandboxes-adoption-plan.md",
         "docs/langfuse-feedback-and-trace-propagation-research.md",
         "docs/langfuse-feedback-and-trace-propagation-implementation.md",
         "docs/langfuse-feedback-and-trace-propagation-qualification.md",

@@ -86,6 +86,7 @@ can read them in this order:
 | Page | Covers |
 |---|---|
 | [Integration guide](integration-guide.md) | The gRPC contract from a control plane's side, with a cookbook. |
+| [Model refresh runbook](model-refresh.md) | The procedure for bringing provider quirk rules, prompt tiers and docs up to date with a vendor's new models. |
 | [Contributing](../CONTRIBUTING.md) | Building, testing, linting and commit conventions. |
 | [`AGENTS.md`](../AGENTS.md) | A per-package map of the harness internals, written for AI coding agents. |
 | [Security policy](../SECURITY.md) | How to report a vulnerability. |
@@ -98,6 +99,7 @@ has shipped, the reference pages are authoritative.
 | Record | Status | Covers |
 |---|---|---|
 | [Sessions](sessions-spec-draft.md) | Draft 2 | Append-only session persistence and `--continue`. Only in-process continuity has shipped, as `followUpHistory: "continue"` in the [Integration guide](integration-guide.md#follow-up-turns). |
+| [AWS Nitro Sandboxes](nitro-sandboxes-adoption-plan.md) | Implemented | The assessment and adoption plan for the `nitro-isolated` runtime of the `k8s` executor, with the live acceptance record. The operator reference is [EKS with Nitro Sandboxes](executors/k8s.md#eks-with-nitro-sandboxes). |
 | [Langfuse feedback and distributed tracing](langfuse-feedback-and-trace-propagation-research.md) | Proposal | Research into trace-reference reporting and W3C trace context propagation. |
 | [Langfuse feedback: implementation](langfuse-feedback-and-trace-propagation-implementation.md) | Proposal | The types, fields, call sites and tests for that work in stirrup. Packages S1 to S6 and S8 are implemented; the shipped behaviour is in the [Integration guide](integration-guide.md#joining-a-control-plane-trace-trace_context) and [Langfuse](observability-cloud.md#langfuse). |
 | [Langfuse feedback: qualification](langfuse-feedback-and-trace-propagation-qualification.md) | Pending | The plan for qualifying how Langfuse handles the data stirrup sends. |
