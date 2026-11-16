@@ -204,6 +204,7 @@ func (g *GeminiAdapter) Stream(ctx context.Context, params types.StreamParams) (
 		g.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("build request: %w", err)
 	}
+	recordSentTemperature(ctx, geminiSentTemperature(params, q))
 	// BuildGenerateContentRequest also returns a per-call id->name map
 	// for outbound tool_result correlation; the marshaller already
 	// populates functionResponse.name from it, so the adapter itself

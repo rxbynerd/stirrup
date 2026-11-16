@@ -20,6 +20,15 @@ var defaultGeminiSafetyThresholds = []geminiSafetySetting{
 	{Category: "HARM_CATEGORY_CIVIC_INTEGRITY", Threshold: "BLOCK_NONE"},
 }
 
+// geminiSentTemperature returns the temperature the request body carries,
+// nil when none is set or the resolved quirks omit sampling parameters.
+func geminiSentTemperature(params types.StreamParams, q quirks.ProviderQuirks) *float64 {
+	if q.BehaviourFlags.Gemini.OmitSamplingParams {
+		return nil
+	}
+	return params.Temperature
+}
+
 // BuildGenerateContentRequest serialises StreamParams into the Vertex AI
 // GenerateContentRequest body. Returns the body bytes and a per-call
 // id→name map for tool-use IDs, used to look up the function name when
@@ -109,7 +118,7 @@ func BuildGenerateContentRequest(
 	// MaxOutputTokens is only emitted when > 0: Vertex treats an explicit
 	// 0 as either a validation error or a hard zero-output cap, neither
 	// of which the caller wants.
-	sendTemperature := params.Temperature != nil && !q.BehaviourFlags.Gemini.OmitSamplingParams
+	sendTemperature := geminiSentTemperature(params, q) != nil
 	includeThoughts := params.ReasoningSummary != types.ReasoningSummaryOff &&
 		(params.ReasoningEffort != "" || q.BehaviourFlags.Gemini.IncludeThoughts || len(q.BehaviourFlags.Gemini.ThinkingLevels) > 0)
 	outputSchema := projectOutputSchema(params.OutputSchema, q.OutputSchema)

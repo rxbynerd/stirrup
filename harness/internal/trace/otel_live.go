@@ -142,9 +142,6 @@ func (e *OTelTraceEmitter) StartChatSpan(parent context.Context, start ChatSpanS
 	if start.MaxTokens > 0 {
 		attrs = append(attrs, attribute.Int(genAIRequestMaxTokensKey, start.MaxTokens))
 	}
-	if start.Temperature != nil {
-		attrs = append(attrs, attribute.Float64(genAIRequestTemperatureKey, *start.Temperature))
-	}
 
 	_, span := e.tracer.Start(parent, name,
 		oteltrace.WithSpanKind(oteltrace.SpanKindClient),
@@ -173,6 +170,9 @@ func (h *otelChatSpan) End(end ChatSpanEnd) {
 			errorType = "error"
 		}
 		var attrs []attribute.KeyValue
+		if end.Temperature != nil {
+			attrs = append(attrs, attribute.Float64(genAIRequestTemperatureKey, *end.Temperature))
+		}
 		stopReason := ""
 		if s := end.Summary; s != nil {
 			stopReason = s.StopReason

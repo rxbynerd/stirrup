@@ -24,9 +24,6 @@ func (l *AgenticLoop) startChatSpan(ctx context.Context, config *types.RunConfig
 		ProviderType: providerTypeFor(config, selection.Provider),
 		Model:        selection.Model,
 		MaxTokens:    params.MaxTokens,
-		// The loop's fallback temperature is left off: for models that
-		// take no sampling parameters it never reaches the wire.
-		Temperature: config.Temperature,
 	}
 	start.ServerAddress, start.ServerPort = provider.ServerEndpointOf(selectedProvider)
 	var chat trace.ChatSpan
@@ -36,7 +33,20 @@ func (l *AgenticLoop) startChatSpan(ctx context.Context, config *types.RunConfig
 	if chat == nil {
 		chat = l.startFallbackChatSpan(ctx, start)
 	}
-	return oteltrace.ContextWithSpan(ctx, chat.Span()), chat
+	ctx, sent := provider.WithSentRequest(ctx)
+	return oteltrace.ContextWithSpan(ctx, chat.Span()), &sentRequestChatSpan{ChatSpan: chat, sent: sent}
+}
+
+// sentRequestChatSpan adds the sampling temperature the adapter reported
+// sending to the span's end.
+type sentRequestChatSpan struct {
+	trace.ChatSpan
+	sent *provider.SentRequest
+}
+
+func (s *sentRequestChatSpan) End(end trace.ChatSpanEnd) {
+	end.Temperature = s.sent.Temperature()
+	s.ChatSpan.End(end)
 }
 
 // startToolSpan opens the execute_tool span for one call under the run

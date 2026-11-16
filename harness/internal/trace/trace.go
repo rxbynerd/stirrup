@@ -228,7 +228,6 @@ type ChatSpanStart struct {
 	ServerAddress string
 	ServerPort    int
 	MaxTokens     int
-	Temperature   *float64
 	// RunID and ParentRunID identify a sub-agent's request; both are
 	// empty for the top-level run.
 	RunID       string
@@ -247,6 +246,9 @@ type ChatSpanEnd struct {
 	// ErrorText is already scrubbed by the caller; the emitter scrubs it
 	// again before it reaches a span.
 	ErrorText string
+	// Temperature is the sampling temperature the adapter put on the
+	// wire; nil when it sent none or reported nothing.
+	Temperature *float64
 }
 
 // ChatSpan is one live model request. Span exposes the underlying span so

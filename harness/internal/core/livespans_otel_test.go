@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +17,8 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 
 	"github.com/rxbynerd/stirrup/harness/internal/permission"
+	"github.com/rxbynerd/stirrup/harness/internal/provider"
+	"github.com/rxbynerd/stirrup/harness/internal/router"
 	"github.com/rxbynerd/stirrup/harness/internal/tool"
 	"github.com/rxbynerd/stirrup/harness/internal/trace"
 	"github.com/rxbynerd/stirrup/types"
@@ -312,33 +317,57 @@ func TestLoop_OTelProviderRequestCancelledWithRun(t *testing.T) {
 	check.Equal("cancelled", errType, "chat error.type")
 }
 
-func TestLoop_OTelChatSpanTemperatureOnlyWhenSet(t *testing.T) {
+func TestLoop_OTelChatSpanTemperatureIsWhatTheAdapterSent(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		temp *float64
-		want string
+		name  string
+		model string
+		temp  *float64
+		want  string
 	}{
-		{name: "loop fallback", temp: nil, want: ""},
-		{name: "operator set", temp: types.Float64Ptr(0.7), want: "0.7"},
+		{name: "operator value", model: "gpt-4o", temp: types.Float64Ptr(0.7), want: "0.7"},
+		{name: "loop default", model: "gpt-4o", temp: nil, want: "0.1"},
+		{name: "model takes no sampling parameters", model: "o1-mini", temp: types.Float64Ptr(0.7), want: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			check := assert.New(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprint(w, "data: "+`{"id":"c1","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
+			}))
+			t.Cleanup(srv.Close)
+			bearer := func(context.Context) (string, error) { return "test-key", nil }
 			loop, exporter := otelLoop(t, nil)
-			loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{{
-				{Type: "text_delta", Text: "done"},
-				{Type: "message_complete", StopReason: "end_turn"},
-			}}}
+			loop.Provider = provider.NewOpenAICompatibleAdapter(bearer, srv.URL, provider.OpenAIAuthConfig{}, provider.RetryPolicy{})
+			loop.Router = router.NewStaticRouter("anthropic", tc.model)
 			config := buildTestConfig()
+			config.ModelRouter.Model = tc.model
 			config.Temperature = tc.temp
 			_, err := loop.Run(context.Background(), config)
 			must.NoError(err)
-			chats := spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6")
+			chats := spansNamed(exporter.GetSpans(), "chat "+tc.model)
 			must.Len(chats, 1, "chat spans")
 			got, _ := spanAttr(chats[0], "gen_ai.request.temperature")
 			check.Equal(tc.want, got, "gen_ai.request.temperature")
 		})
 	}
+}
+
+func TestLoop_OTelChatSpanTemperatureAbsentWhenAdapterReportsNothing(t *testing.T) {
+	must := require.New(t)
+	loop, exporter := otelLoop(t, nil)
+	loop.Provider = &scriptedProvider{turns: [][]types.StreamEvent{{
+		{Type: "text_delta", Text: "done"},
+		{Type: "message_complete", StopReason: "end_turn"},
+	}}}
+	config := buildTestConfig()
+	config.Temperature = types.Float64Ptr(0.7)
+	_, err := loop.Run(context.Background(), config)
+	must.NoError(err)
+	chats := spansNamed(exporter.GetSpans(), "chat claude-sonnet-4-6")
+	must.Len(chats, 1, "chat spans")
+	_, present := spanAttr(chats[0], "gen_ai.request.temperature")
+	must.False(present, "gen_ai.request.temperature present without an adapter report")
 }
 
 func TestLoop_OTelProviderRequestPastDeadlineIsTimeout(t *testing.T) {

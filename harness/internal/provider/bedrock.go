@@ -193,6 +193,12 @@ func (b *BedrockAdapter) Stream(ctx context.Context, params types.StreamParams) 
 		b.recordLatency(ctx, start, metricAttrs)
 		return nil, fmt.Errorf("build converse input: %w", err)
 	}
+	// The wire value is a float32; the caller's value is reported.
+	var sentTemperature *float64
+	if input.InferenceConfig.Temperature != nil {
+		sentTemperature = params.Temperature
+	}
+	recordSentTemperature(ctx, sentTemperature)
 
 	output, err := b.client.ConverseStream(ctx, input)
 	if err != nil {

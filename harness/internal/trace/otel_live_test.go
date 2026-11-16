@@ -79,11 +79,10 @@ func TestStartChatSpan_NilBeforeStart(t *testing.T) {
 func TestChatSpan_StartAttributesAndKind(t *testing.T) {
 	must := require.New(t)
 	emitter, exporter := startLiveRun(t, false)
-	temp := 0.2
 	chat := emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{
 		Turn: 3, ProviderType: "bedrock", Model: "claude-haiku-4-5",
 		ServerAddress: "bedrock-runtime.us-east-1.amazonaws.com", ServerPort: 443,
-		MaxTokens: 8192, Temperature: &temp,
+		MaxTokens: 8192,
 	})
 	chat.End(ChatSpanEnd{Summary: &types.TurnTrace{Turn: 3, StopReason: "end_turn"}})
 	finishLiveRun(t, emitter)
@@ -99,6 +98,34 @@ func TestChatSpan_StartAttributesAndKind(t *testing.T) {
 	must.Equal(int64(443), intAttr(t, span, serverPortKey))
 	must.Equal(int64(3), intAttr(t, span, "turn.number"))
 	must.Equal(int64(8192), intAttr(t, span, genAIRequestMaxTokensKey))
+}
+
+func TestChatSpan_TemperatureRecordedOnlyWhenReportedAtEnd(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		temp *float64
+		want float64
+		set  bool
+	}{
+		{name: "reported", temp: types.Float64Ptr(0.2), want: 0.2, set: true},
+		{name: "reported zero", temp: types.Float64Ptr(0), want: 0, set: true},
+		{name: "not reported", temp: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			emitter, exporter := startLiveRun(t, false)
+			chat := emitter.StartChatSpan(emitter.RootContext(), ChatSpanStart{Model: "claude-haiku-4-5"})
+			chat.End(ChatSpanEnd{Temperature: tc.temp})
+			finishLiveRun(t, emitter)
+
+			span := findSpan(t, exporter, "chat claude-haiku-4-5")
+			v, present := lookupAttr(span, genAIRequestTemperatureKey)
+			must.Equal(tc.set, present, "gen_ai.request.temperature present")
+			if tc.set {
+				must.InDelta(tc.want, v.AsFloat64(), 1e-9)
+			}
+		})
+	}
 }
 
 func TestChatSpan_NameFallsBackToRunModel(t *testing.T) {
