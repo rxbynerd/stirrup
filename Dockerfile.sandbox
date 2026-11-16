@@ -32,6 +32,6 @@ RUN git config --system safe.directory '*'
 
 USER 65532:65532
 
-# Both executors override the command with their own `sleep infinity`;
-# this default keeps ad-hoc `docker run` inspection usable.
+# The executors override the command with their own `sleep`; this default
+# keeps ad-hoc `docker run` inspection usable.
 CMD ["sleep", "infinity"]

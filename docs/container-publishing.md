@@ -12,7 +12,7 @@ Two images ride the same pipeline:
 - **`stirrup-sandbox`** (`./Dockerfile.sandbox`) — the Debian-based
   sandbox image agent workloads run in. It meets the
   [sandbox image contract](executors/image-contract.md) the
-  container/k8s executors require. Published to GHCR as
+  container, k8s and k8s-sandbox executors require. Published to GHCR as
   `ghcr.io/rxbynerd/stirrup-sandbox` with the same tag scheme, and to
   GAR under the `${GAR_IMAGE}-sandbox` image name at release time.
 

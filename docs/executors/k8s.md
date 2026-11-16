@@ -2185,7 +2185,7 @@ and share the `--dry-run-timeout` budget (30 s by default).
 A dry run starts no sandbox, so it does not exercise image pull,
 RuntimeClass admission and scheduling, the [admission check and readiness
 wait](#sandbox-lifecycle), teardown, NetworkPolicy enforcement, or the
-tools inside the image (the [image contract](image-contract.md)). It
+tools the [image contract](image-contract.md) requires. It
 does not check that `executor.k8sServiceAccount` exists, that
 `executor.k8sNodeSelector` matches a schedulable node, or admission
 controls such as Pod Security, quota and webhooks. The egress proxy URL for
@@ -2223,7 +2223,7 @@ it, the probe uses the same kubeconfig resolution as a run:
 | `pod <ns>/<pod> not ready within 5m0s: ...; last waiting reason CreateContainerConfigError` (or `CreateContainerError`) | The kubelet could not build the container: a missing ConfigMap or Secret, an invalid `securityContext` for the image, or a runtime error. | Read the Pod's Events as above; the `Failed` Event carries the kubelet's message. |
 | `pod <ns>/<pod> not ready within 5m0s: ...; last waiting reason ImagePullBackOff (...)` | The image cannot be pulled (wrong name, missing credentials, registry unreachable). | Check the image reference and pull secret; the waiting message carries the registry's answer. |
 | `pod <ns>/<pod> not ready before the run context ended: <summary>: <context error>` | The run's own deadline or a cancellation ended the wait first. | In `stirrup job` raise `timeout`, which also covers sandbox startup. |
-| `pod <ns>/<pod> not ready: agent container terminated (exit code 128, StartError: ... exec: "/bin/sh": stat /bin/sh: no such file or directory: unknown)` | The image lacks `/bin/sh`. The exit code and wording come from the container runtime; this is containerd with runc. | Use an image that meets the [sandbox image contract](image-contract.md). |
+| `pod <ns>/<pod> not ready: agent container terminated (exit code 128, StartError: ... exec: "/bin/sh": stat /bin/sh: no such file or directory: unknown)` | The image lacks `/bin/sh`. The exit code and wording come from the container runtime; this is containerd with runc. | Use an image that ships `/bin/sh` and meets the [sandbox image contract](image-contract.md). |
 | `pod <ns>/<pod> not ready: agent container cannot start: InvalidImageName (...)` | The image reference cannot be parsed. | Fix the image reference. |
 | `pod <ns>/<pod> not ready: pod phase Failed (...)` | The Pod failed before it was Ready (eviction, `DeadlineExceeded`, a runtime error). | Read the reason in the error; check node pressure and the RuntimeClass handler. |
 | `pod <ns>/<pod> is not reachable for exec within 1m0s: <last error>` | The Pod was Ready, but for a minute the API server could not dial the kubelet on its node (the last error contains `error dialing backend`) or every attempt timed out. On a new node this is the window before the kubelet's serving certificate is issued; it outlasted the wait. | Check that the node's `kubernetes.io/kubelet-serving` certificate request was approved (`kubectl get csr`) and that `kubectl exec` reaches other Pods on that node. See [Readiness](#readiness). |

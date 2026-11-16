@@ -2213,10 +2213,9 @@ delivered and ends the schedule.
 
 **Sandbox image and engine prerequisites (documented, not
 enforced).** The composed git configuration relies on the sandbox
-image providing `git` ≥ 2.31, for `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`
-support, and a POSIX shell with `cat`, `mv`, `wc`, `tr`, and `rm`,
-for the inline `!f() { ... }; f` credential-helper form and the
-token-file delivery command. On the
+image providing what the
+[sandbox image contract](executors/image-contract.md#executorsandboxidentity)
+lists for `sandboxIdentity` and `gitProxy`. On the
 container executor the engine must answer an exec start with a
 `101 Switching Protocols` upgrade so stdin can be streamed — Docker
 and Podman do; a socket proxy in front of the engine that does not

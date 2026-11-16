@@ -7,17 +7,20 @@ executors need from the sandbox image (`executor.image`). It is the one
 place the requirements are listed; the other docs, manifests and
 comments link here instead of restating them.
 
-The `local`, `api` and `none` executors run no image and are not
-covered. The reference image, [`Dockerfile.sandbox`](../../Dockerfile.sandbox)
-(published as `ghcr.io/rxbynerd/stirrup-sandbox`), satisfies every entry
-below. The harness image ([`Dockerfile`](../../Dockerfile)) is distroless,
-has no shell, and satisfies none of it.
+The `local`, `api` and `none` executors, and the internal `replay`
+executor, run no image and are not covered. The reference image,
+[`Dockerfile.sandbox`](../../Dockerfile.sandbox) (published as
+`ghcr.io/rxbynerd/stirrup-sandbox`), satisfies every entry below. The
+harness image ([`Dockerfile`](../../Dockerfile)) is distroless, has no
+shell, and satisfies none of it.
 
 The contract has two parts. [Every run](#every-run) lists what an
 executor needs whatever the `RunConfig` asks for. [Per
 feature](#per-feature) lists what a run needs only when it enables a
 feature. An image that meets the first part and lacks a feature's
-requirements fails only runs that enable that feature.
+requirements fails only runs that enable that feature. Where the
+executors differ, the entry names them; an entry that names none applies
+to all three.
 
 ## Versioning
 
@@ -29,21 +32,21 @@ below without a bump, because an image that met the earlier version
 still meets the later one.
 
 A tool outside this repository records the version it checked an image
-against, and compares it with the version here for the stirrup release
-it targets.
+against. The version a stirrup release requires is the one in this file
+at that release's tag.
 
 | Version | Change |
 |---|---|
 | 1 | First complete statement of the contract. |
 
-`harness/internal/executor/imagecontract_test.go` pins the version to the
-commands the executors' scripts run, and
+`harness/internal/executor/imagecontract_test.go` compares the commands
+the executors' scripts run with the commands this document lists, and
 `harness/internal/invariants/imagecontract_test.go` pins the places that
 run commands in the sandbox. Adding a command or a new place fails them
-until this document and the version are updated
-([`CONTRIBUTING.md`](../../CONTRIBUTING.md#the-sandbox-image-contract)).
-The tests recognise command names, not flags: a new flag on an existing
-command is a bump the author has to notice.
+until the command is listed here. The version bump itself is a
+convention ([`CONTRIBUTING.md`](../../CONTRIBUTING.md#the-sandbox-image-contract)),
+and the tests recognise command names, not flags, so a new flag on an
+existing command is a bump the author has to notice.
 
 ## What the executors set
 
@@ -51,53 +54,63 @@ The image's own metadata is partly overridden. Executors differ.
 
 | Image setting | `container` | `k8s` and `k8s-sandbox` |
 |---|---|---|
-| `ENTRYPOINT` | Not overridden. An image entrypoint runs and receives `sleep <n>` as its arguments, so it must `exec` them. | Overridden: the Pod command is `/bin/sh -c "sleep infinity"`. |
+| `ENTRYPOINT` | Not overridden. An image entrypoint runs and receives `sleep <n>` as its arguments, so it must run them as its long-lived main process; an entrypoint that exits ends the sandbox. | Overridden: the Pod command is `/bin/sh -c "sleep infinity"`. |
 | `CMD` | Overridden with `sleep <n>`, where `<n>` is the sandbox lifetime in whole seconds, or `infinity` without a lifetime. | Overridden with the same command (it replaces both `ENTRYPOINT` and `CMD`). |
 | `USER` | Overridden: `65532:65532`. | Overridden: `runAsUser` and `runAsGroup` `65532`, with `runAsNonRoot`. |
 | `WORKDIR` | Overridden: `/workspace`. | Overridden: `/workspace`. |
-| `ENV` | Kept. The executor adds `HOME` and `TMPDIR` after the rest, so they override the image's values, plus any proxy and sandbox identity variables. | Same. |
+| `ENV` | Kept. The executor adds `HOME` and `TMPDIR` after the rest, so they override the image's values. It also adds `HTTP_PROXY`, `http_proxy`, `HTTPS_PROXY`, `https_proxy`, `NO_PROXY` and `no_proxy` in `allowlist` network mode, and, with `sandboxIdentity` or `gitProxy`, the token variable, its `_FILE` companion and the `GIT_CONFIG_*` variables. | Same. |
 | Content at `/workspace` | Hidden by the bind mount of the host workspace. | Hidden by an `emptyDir`. |
 | Root filesystem | Read-only. | Writable where the image's permissions allow the sandbox user. |
+| Privileges | All capabilities dropped and `no-new-privileges`. | All capabilities dropped, privilege escalation disabled, `RuntimeDefault` seccomp. |
 
-The executors provide these locations, so the image does not create them
-and anything the image places at them is hidden:
+Because of the last row, an image that relies on setuid binaries or file
+capabilities does not work in the sandbox.
+
+The executors mount these locations. The image does not create them, and
+anything the image places at them is hidden.
 
 | Path | `container` | `k8s` and `k8s-sandbox` |
 |---|---|---|
 | `/workspace` | Bind mount of the host workspace; keeps host ownership. | `emptyDir`; group-writable through `fsGroup: 65532`. |
 | `/scratch` | `tmpfs`, `exec`, mode `1777`, sized by `executor.resources.scratchMb`. | Disk-backed `emptyDir` with the same size limit. |
-| `/tmp` | `tmpfs`, `noexec`, 256 MiB. | Not mounted: the image's own `/tmp` is used. |
-| `/dev/shm` | `tmpfs`, `noexec`, 64 MiB. | Not mounted. |
+| `/tmp` | `tmpfs`, `noexec`, 256 MiB. | Not mounted; see [Every run](#every-run). |
+| `/dev/shm` | `tmpfs`, `noexec`, 64 MiB. | Not mounted; whatever the container runtime provides. |
 | `/run/stirrup/sandbox-identity` | `tmpfs`, only with `sandboxIdentity`. | Memory-backed `emptyDir`, only with `sandboxIdentity`. |
 
 Every executor runs commands as `65532:65532`. The executors do not need
 a `passwd` or `group` entry for that identity; the reference image
 declares one for tools that look the user up. The user must be able to
-read the image's tools and any repository content the image carries
-outside `/workspace`. See
+execute the image's tools. See
 [Sandbox identity and scratch](../security.md#sandbox-identity-and-scratch)
 for what `/scratch`, `HOME` and `TMPDIR` hold.
 
 ## Every run
 
-All commands below run as the sandbox user. The executors run most of
-them inside `sh -c` scripts, so they are resolved through the shell's
-`PATH`. The exceptions are `sleep` (resolved by the container runtime on
-`container`), and `ls`, `tar` (on `k8s`) and `mkdir` (the scratch
-setup), which are exec'd directly and resolved through the image `PATH`.
+All commands below run as the sandbox user. Most run inside `sh -c`
+scripts and are resolved through the shell's `PATH`. The executors exec
+these directly instead: `sleep` on `container` (resolved by the container
+runtime), `sh` on all three, `ls` on all three, `mkdir` (the scratch
+setup) on all three, and `tar` (file writes) on `k8s` and `k8s-sandbox`.
+They are resolved through the image's `PATH`, except `/bin/sh` on `k8s`
+and `k8s-sandbox`.
 
 | Requirement | Used for |
 |---|---|
-| A POSIX shell at `/bin/sh`, also found as `sh` on `PATH`. | Every command a run executes (`/bin/sh -c`), the exec readiness wait on `k8s` and `k8s-sandbox` (`/bin/sh -c :`), and every script below. |
-| Shell builtins `kill` (with `-s`, `-0` and `-- -<pgid>`), `read -r`, `command -v`, `printf`, `echo`, `[`, `exec`, `set --`, `shift`, `exit`, arithmetic expansion, and the `${v#x}`, `${v##x}`, `${v%x}` and `${v%%x}` parameter expansions. | The process-group and file-guard scripts. |
-| `sleep`, accepting `infinity`, a whole number of seconds and a fraction (`0.1`). | The keep-alive command (`infinity` or seconds) and the grace period of the timeout kill (`0.1`). |
-| `rm`, accepting `-f`. | Removing the per-command process-group file. |
-| A writable `/tmp`. | The per-command process-group file `/tmp/.stirrup-exec-<id>.pid`. Without it a command still runs, but a timed-out command is not killed: the kill exits `3` and the executor logs a warning. `container` provides `/tmp`; on `k8s` the image's `/tmp` must be writable by `65532` (mode `1777`). |
-| `tar`, accepting `-C`, `-c`, `-x`, `-f -` and `--`. | Reading a file (`tar -C / -cf - -- <path>`), exporting the workspace (`tar -C <root> -cf - .`), and, on `k8s` and `k8s-sandbox`, writing a file (`tar -C <dir> -xf -`). On `container` writes go through the engine's archive API, so `-x` is unused there; the contract still lists it. |
+| `sh` on `PATH`, and a POSIX shell at exactly `/bin/sh` on `k8s` and `k8s-sandbox`. | `container` runs `sh -c` for every command and script. `k8s` and `k8s-sandbox` run `/bin/sh -c` for the Pod command (`sleep infinity`), every command, the exec readiness wait (`/bin/sh -c :`) and the scripts below. |
+| Shell builtins `kill` (with `-s`, `-0` and `-- -<pgid>`), `read -r`, `command -v`, `printf`, `echo`, `[`, `exec`, `set --`, `shift`, `exit`, and the POSIX shell language the scripts use: functions, `case`, `$(...)`, pipelines, arithmetic and parameter expansion (including `${v:-x}`). | The process-group and file-guard scripts. |
+| `sleep`, accepting `infinity`, a whole number of seconds and a fraction (`0.1`). | The keep-alive command: `infinity` (`k8s`, and `container` without a lifetime) or seconds (`container` with a lifetime). The grace period of the timeout kill uses `0.1`; where `sleep` rejects a fraction the grace period collapses and the kill follows at once. |
+| `rm`, accepting `-f`. | Removing the per-command process-group file. Without it, pid files accumulate in `/tmp`. |
+| A writable `/tmp`. | The per-command process-group file `/tmp/.stirrup-exec-<id>.pid`. `container` mounts `/tmp`. On `k8s` and `k8s-sandbox` the image's own `/tmp` must be writable by `65532`. When it is not, a command still runs and every command's standard error carries the shell's redirection error, and a timed-out command is not killed: the kill exits `3` and the executor logs a warning. |
+| `tar`, accepting `-C`, `-c`, `-x`, `-f -` and `--`. | Reading a file (`tar -C / -cf - -- <path>`). On `k8s` and `k8s-sandbox`, also writing a file (`tar -C <dir> -xf -`); `container` writes through the engine's archive API and does not use `-x`, but the contract lists it for all three. Without `tar`, reads and writes fail. |
 | `readlink`, accepting `-f` and `--`. | Resolving the real path of a read or write target so a symlink in the workspace cannot reach outside it. An image without it fails closed: the first read or write returns an error naming it. |
 | `mkdir`, accepting `-p` and `--`. | Creating the parent directories of a write. |
 | `ls`, accepting `-1`, `-A`, `-p` and `--`. | Listing a directory (`list_directory`, and the prompt's workspace listing). |
-| `mkdir`, accepting `-m` and creating two directories in one call. | The scratch setup: `mkdir -m 0700 /scratch/home /scratch/tmp`, run once as the sandbox user before the sandbox is handed to the run. It fails when either directory exists. |
+| `mkdir`, accepting `-m` and two operands. | The scratch setup: `mkdir -m 0700 /scratch/home /scratch/tmp`, run once as the sandbox user before the sandbox is handed to the run. It fails when either directory exists. |
+
+An image without `sh` or `sleep` does not start: on `container` the
+engine fails to create or start the container, and on `k8s` the Pod ends
+with the runtime's start error (see the
+[troubleshooting table](k8s.md#troubleshooting)).
 
 Optional, and used when present:
 
@@ -108,18 +121,38 @@ Optional, and used when present:
 
 ## Per feature
 
+### Workspace export
+
+Enabled by `executor.workspaceExportTo`.
+
+| Requirement | Used for |
+|---|---|
+| `tar`, accepting `-C`, `-c` and `-f -`, with `.` as the operand. | Streaming the workspace out as one archive (`tar -C <root> -cf - .`). |
+| The shell builtin `[` with `-d`. | Checking that the workspace root exists. |
+
 ### Deterministic git, the git tools and the prompt's git status
 
 Enabled by `gitStrategy: "deterministic"`, the `git_status`,
 `git_changed_files`, `git_diff` and `git_show` tools, and the git-status
 prompt fragment. All of them run `git` inside the sandbox, never on the
-harness host.
+harness host. An image without `git` fails the strategy's probe, makes
+the git tools report that git is not available, and leaves the prompt
+fragment empty.
 
 | Requirement | Used for |
 |---|---|
-| `git`, accepting `-c <key>=<value>`, `--no-optional-locks`, and the subcommands `--version`, `init`, `add`, `commit`, `checkout`, `rev-parse`, `status`, `diff` and `show`. | The strategy's branch, checkpoint and handoff commits, the tools, and the prompt fragment. |
-| Trust of `/workspace` by git. | The git tools run `git` without `safe.directory`, and the sandbox user generally does not own the workspace (a `container` bind mount keeps host ownership; a `k8s` `emptyDir` root is owned by root). The image must trust the workspace; the reference image runs `git config --system safe.directory '*'`. The strategy and the prompt fragment name the workspace as a safe directory themselves. |
+| `git`, accepting `-c <key>=<value>` and `--no-optional-locks` (git 2.15 or later), with ordinary upstream behaviour for `--version`, `init`, `add`, `commit`, `checkout`, `rev-parse`, `status`, `diff` and `show`. | The strategy's branch, checkpoint and handoff commits, the tools, and the prompt fragment. |
 | `test` and `pwd -P`. | The strategy resolves the workspace's physical path and checks for a `.git` entry. Common shells provide both as builtins. |
+
+The four git tools run `git` without naming `/workspace` as a safe
+directory, so for them the image must trust the workspace; the reference
+image runs `git config --system safe.directory '*'`. The sandbox user
+generally does not own the workspace (a `container` bind mount keeps host
+ownership, and a `k8s` `emptyDir` root is normally owned by root; this
+is engine and cluster behaviour, not something the executors set). A
+missing trust setting makes a tool answer that the workspace is not a git
+repository. The strategy and the prompt fragment name the workspace as a
+safe directory themselves.
 
 ### `executor.sandboxIdentity`
 
@@ -136,14 +169,18 @@ well.
 
 | Requirement | Used for |
 |---|---|
-| `git` 2.31 or later, built with the `https` remote helper. | The proxy wiring is delivered as `GIT_CONFIG_COUNT`-style environment configuration, which older git ignores. |
+| `git` 2.31 or later. | The proxy wiring is delivered as `GIT_CONFIG_COUNT`-style environment configuration, which older git ignores. |
 | `cat` and a shell named `sh` on `PATH`. | The inline credential helper that git runs (`!f() { ...; }; f`) to read the token file on every git operation. |
-| A CA bundle git trusts. | Needed when the proxy URL uses `https`. |
+
+Two further prerequisites are operational rather than commands any
+executor runs: git needs the `https` remote helper, and a CA bundle it
+trusts when the proxy URL uses `https`.
 
 ### The search tools
 
 `grep_files` and `find_files` search inside the sandbox on `container`,
-`k8s` and `k8s-sandbox`.
+`k8s` and `k8s-sandbox`. An image missing `grep` or `find` makes the
+matching tool return an error.
 
 | Requirement | Used for |
 |---|---|
@@ -154,9 +191,9 @@ well.
 ### Runtime diagnostics
 
 `executor.runtime: "nitro-isolated"` runs a diagnostic inside the
-sandbox after readiness (see
-[Nitro Sandboxes](k8s.md#eks-with-nitro-sandboxes)). It reads kernel files
-through the shell alone.
+sandbox after readiness, on the `k8s` executor only (see
+[Nitro Sandboxes](k8s.md#eks-with-nitro-sandboxes)). It reads kernel
+files through the shell alone.
 
 | Requirement | Used for |
 |---|---|
