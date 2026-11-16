@@ -615,13 +615,14 @@ carry the attribute:
   are derived from the captured messages and need
   `captureContent: true`;
 - on the root span, `metadata`, a JSON object with the keys `run_id`
-  and `run_mode`.
+  and `run_mode`;
+- on the run span, `tag.tags`, the agent name and the run mode
+  (`["stirrup", "planning"]`), which Phoenix lists as the trace's tags.
 
 The profile sets no endpoint or protocol, so traces go to
 `traceEmitter.endpoint`, or to the default `localhost:4317` over gRPC
-when it is unset. It sets no tag attributes, and Phoenix's tag display
-stays empty (see issue #775). `correlation.userId` stamps `user.id`,
-the OpenInference user attribute, on every span without the profile;
+when it is unset. `correlation.userId` stamps `user.id`, the
+OpenInference user attribute, on every span without the profile;
 Phoenix's user filter has not been checked against it. A collector
 `transform` processor set `user.id`, `metadata`, and tags in the
 assessment.
@@ -1095,10 +1096,21 @@ Span-specific attributes:
 | Span | Attributes |
 |---|---|
 | `invoke_agent` | `gen_ai.operation.name=invoke_agent`, `run.id`, `run.mode`, `gen_ai.provider.name`, `gen_ai.request.model`, `run.outcome`, `run.turns`; sub-agent spans add `run.parent_id`. |
-| `chat {model}` | `gen_ai.operation.name=chat`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.request.max_tokens`, `gen_ai.request.temperature` when the run config sets `temperature` (an adapter that omits sampling parameters for the model does not send it), `server.address` and `server.port` when the adapter knows its host, `turn.number`; at the end, usage (below), `gen_ai.response.finish_reasons`, `gen_ai.response.model`, `turn.tool_calls`, `turn.retries`. |
+| `chat {model}` | `gen_ai.operation.name=chat`, `gen_ai.provider.name`, `gen_ai.request.model`, `gen_ai.request.max_tokens`, `gen_ai.request.temperature` when the adapter sent a temperature (the operator's `temperature`, else the loop default; absent for a model whose adapter omits sampling parameters), `server.address` and `server.port` when the adapter knows its host, `turn.number`; at the end, usage (below), `gen_ai.response.finish_reasons`, `gen_ai.response.model`, `turn.tool_calls`, `turn.retries`. |
 | `hooks.preRun` / `hooks.postRun` | None; a phase that fails the run sets error status. A `continueOnError` failure marks only its `hook` span. |
 | `hook` | `hook.phase`, `hook.index`, `hook.name` when the hook has one, `hook.command` (scrubbed), `hook.exit_code`, `hook.duration_ms`, `hook.timed_out`, `hook.skipped`, `hook.continued_on_error`, `hook.output_truncated`. Error status with the scrubbed hook error when the hook failed. |
 | `execute_tool {name}` | `gen_ai.operation.name=execute_tool`, `gen_ai.tool.name`, `gen_ai.tool.call.id`, `gen_ai.tool.type=function`, `turn.number`, `tool.input_size`, `tool.output_size`, `tool.success`, `tool.duration_ms`, and `tool.queue_ms` when the call waited to run. A control-plane tool call's span opens at dispatch but the call runs only after the turn's synchronous tool calls have run and a parallel slot is free; `tool.queue_ms` is that wait, which the span covers and `tool.duration_ms` excludes. A tool name that resolves to no registered tool is model-controlled, so its span is named bare `execute_tool` and its `gen_ai.tool.name` is scrubbed and cut to 128 bytes. |
+
+`gen_ai.provider.name` is `anthropic`, `aws.bedrock`, `openai` (the
+`openai-responses` type) or `gcp.vertex_ai` for the first-party
+adapters. For `openai-compatible` it follows the endpoint host when the
+host is a well-known vendor: `api.deepseek.com` is `deepseek`,
+`api.groq.com` is `groq`, `api.mistral.ai` is `mistral`, `api.x.ai` is
+`x_ai`, and `*.openai.azure.com` or `*.cognitiveservices.azure.com` is
+`azure.ai.openai`. Any other host, including OpenRouter, which the
+conventions register no name for, keeps `openai-compatible`. The spans,
+the `gen_ai.client.*` histograms and the token counters use the same
+mapping.
 
 Failures set error status with a scrubbed description and an
 `error.type` from a bounded vocabulary: the run outcome on
@@ -1228,7 +1240,7 @@ semantic-convention attributes those backends read natively:
 |---|---|---|
 | `gen_ai.input.messages` | `chat {model}` | The message history the model saw on the request (JSON, semconv message schema). |
 | `gen_ai.output.messages` | `chat {model}` | The model's response blocks, including tool calls, with `finish_reason`. |
-| `gen_ai.system_instructions` | `chat {model}` | The run's built system prompt; top-level requests only. |
+| `gen_ai.system_instructions` | `chat {model}` | The system prompt of the run that made the request: the run's own for top-level requests, the sub-agent's for its requests. |
 | `gen_ai.input.messages` / `gen_ai.output.messages` | `invoke_agent stirrup` (root) | Run-level I/O — the seed prompt and the final assistant message — feeding backends' trace-level input/output views. |
 | `gen_ai.input.messages` / `gen_ai.output.messages` | `invoke_agent stirrup.subagent` | The sub-agent's seed prompt and final assistant message. |
 | `gen_ai.tool.call.arguments` / `.result` | `execute_tool {name}` | Each tool call's input arguments and result text. |
@@ -1297,9 +1309,8 @@ cap; a non-zero cap must be at least 256 bytes, and the field is
 rejected unless `captureContent` is on. Set it at or below the
 backend's per-attribute limit, for example `2048` for Tempo.
 
-Sub-agent requests are captured with their own content; sub-agent
-*system prompts* are not captured, so their `chat` spans carry no
-`gen_ai.system_instructions` (see issue #775). The semconv GenAI
+Sub-agent requests are captured with their own content, including
+their own system prompt. The semconv GenAI
 conventions are Development-status — attribute names track the pinned
 semconv version (v1.40.0) and may evolve with it. The conventions have
 since moved to the `semantic-conventions-genai` repository, which has
