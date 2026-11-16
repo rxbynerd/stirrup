@@ -33,7 +33,10 @@ func (e *podExecCore) SandboxLost() error {
 	return nil
 }
 
-var _ SandboxLossReporter = (*podExecCore)(nil)
+var (
+	_ SandboxLossReporter = (*K8sExecutor)(nil)
+	_ SandboxLossReporter = (*AgentSandboxExecutor)(nil)
+)
 
 // sandboxLostAfter reads the Pod after an exec failed without an exit
 // status, re-reading a Pod that still looks usable until the settle window
@@ -51,7 +54,12 @@ func (e *podExecCore) sandboxLostAfter(ctx context.Context, execErr error) error
 	if settle <= 0 {
 		settle = k8sSandboxLossSettle
 	}
+	// The window ends a poll period before the operation's own deadline,
+	// so the wait never turns the exec error into a timeout.
 	settled := time.Now().Add(settle)
+	if deadline, ok := ctx.Deadline(); ok && deadline.Add(-k8sSandboxLossPollPeriod).Before(settled) {
+		settled = deadline.Add(-k8sSandboxLossPollPeriod)
+	}
 	for {
 		state, ended, err := e.readEndedState(readCtx)
 		if err != nil {
@@ -64,7 +72,7 @@ func (e *podExecCore) sandboxLostAfter(ctx context.Context, execErr error) error
 			}
 			return e.lost.Load()
 		}
-		if !time.Now().Before(settled) || !sleepCtx(readCtx, min(k8sSandboxLossPollPeriod, settle)) {
+		if !time.Now().Before(settled) || !sleepCtx(readCtx, min(k8sSandboxLossPollPeriod, time.Until(settled))) {
 			return execErr
 		}
 	}
@@ -79,6 +87,8 @@ func (e *podExecCore) readEndedState(ctx context.Context) (string, bool, error) 
 		return fmt.Sprintf("sandbox pod %s/%s no longer exists", e.namespace, e.podName), true, nil
 	case err != nil:
 		return "", false, err
+	case e.podUID != "" && pod.UID != e.podUID:
+		return fmt.Sprintf("sandbox pod %s/%s was replaced by another pod with the same name", e.namespace, e.podName), true, nil
 	}
 	state, ended := podEndedState(e.namespace, e.podName, pod)
 	return state, ended, nil

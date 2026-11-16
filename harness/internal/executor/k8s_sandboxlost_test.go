@@ -270,3 +270,27 @@ func TestPodExecCore_Exec_CancelledContextDoesNotReadPod(t *testing.T) {
 	check.Equal(0, countVerb(cs, "get", "pods"))
 	must.NoError(core.SandboxLost())
 }
+
+func TestPodExecCore_Exec_ReportsReplacedPodAsLost(t *testing.T) {
+	must := require.New(t)
+	core, _, _ := lostTestCore(readyPod("uid-2"), errContainerNotFound)
+	core.podUID = "uid-1"
+
+	_, err := core.Exec(context.Background(), "true", time.Second)
+	var lost *SandboxLostError
+	must.ErrorAs(err, &lost)
+	must.Equal("sandbox pod "+testK8sNamespace+"/"+testK8sPodName+" was replaced by another pod with the same name", lost.State)
+}
+
+func TestPodExecCore_Exec_SettleWindowEndsBeforeTheCommandDeadline(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	core, _, _ := lostTestCore(readyPod("uid-1"), errContainerNotFound)
+	core.lossSettle = time.Minute
+
+	start := time.Now()
+	_, err := core.Exec(context.Background(), "true", 1500*time.Millisecond)
+	must.ErrorIs(err, errContainerNotFound)
+	must.NotErrorIs(err, ErrTimeout)
+	check.Less(time.Since(start), 1500*time.Millisecond)
+}

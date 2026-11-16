@@ -83,7 +83,7 @@ func (e *ContainerExecutor) sandboxLostAfter(ctx context.Context, execErr error)
 	default:
 		desc = fmt.Sprintf("%s has exited (exit code %d)", subject, state.ExitCode)
 	}
-	if e.lost.CompareAndSwap(nil, &SandboxLostError{State: desc, Err: execErr}) {
+	if e.lost.CompareAndSwap(nil, &SandboxLostError{State: desc, Err: boundClusterErr(execErr)}) {
 		slog.Warn("container executor sandbox has ended; later operations fail without contacting it", "container", shortContainerID(e.containerID), "state", desc)
 	}
 	return e.lost.Load()

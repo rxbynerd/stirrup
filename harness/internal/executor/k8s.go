@@ -19,7 +19,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -126,7 +125,6 @@ type K8sExecutorConfig struct {
 // are in docs/executors/image-contract.md.
 type K8sExecutor struct {
 	podExecCore
-	podUID k8stypes.UID
 	// networkPolicyName is empty only on a zero-value executor (unit
 	// tests); NewK8sExecutor always installs one. Close() deletes it once
 	// the Pod's termination is established.
@@ -284,8 +282,8 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 			sandboxIdentity: cfg.SandboxIdentityToken,
 			execFn:          execFn,
 			fileIOTimeout:   timing.fileIOTimeout,
+			podUID:          created.UID,
 		},
-		podUID:            created.UID,
 		networkPolicyName: policy.Name,
 		runID:             cfg.Lifecycle.RunID,
 		timing:            timing,

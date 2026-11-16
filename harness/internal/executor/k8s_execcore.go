@@ -17,6 +17,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -35,7 +36,10 @@ type podExecCore struct {
 	restConfig *rest.Config
 	namespace  string
 	podName    string
-	network    *types.NetworkConfig
+	// podUID is the created Pod's UID when the executor created the Pod
+	// itself; empty when only the name is known.
+	podUID  k8stypes.UID
+	network *types.NetworkConfig
 	// Security is nil-checked at every call site; a zero-value core (used in
 	// unit tests) emits nothing.
 	Security SecurityEventEmitter

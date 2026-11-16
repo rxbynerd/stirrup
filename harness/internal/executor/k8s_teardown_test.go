@@ -239,8 +239,7 @@ func TestK8sExecutor_CloseRetainsPolicyAndNamesIt(t *testing.T) {
 	ignorePodDeletes(cs)
 	logger, logs := testLogger()
 	exec := &K8sExecutor{
-		podExecCore:       podExecCore{clientset: cs, namespace: testK8sNamespace, podName: testK8sPodName, logger: logger},
-		podUID:            "uid-1",
+		podExecCore:       podExecCore{clientset: cs, namespace: testK8sNamespace, podName: testK8sPodName, podUID: "uid-1", logger: logger},
 		networkPolicyName: networkPolicyName(testK8sPodName),
 		runID:             testK8sRunID,
 		timing:            fastK8sTiming,
@@ -263,8 +262,7 @@ func TestK8sExecutor_CloseRetriesAfterRetaining(t *testing.T) {
 	})
 	logger, _ := testLogger()
 	exec := &K8sExecutor{
-		podExecCore:       podExecCore{clientset: cs, namespace: testK8sNamespace, podName: testK8sPodName, logger: logger},
-		podUID:            "uid-1",
+		podExecCore:       podExecCore{clientset: cs, namespace: testK8sNamespace, podName: testK8sPodName, podUID: "uid-1", logger: logger},
 		networkPolicyName: networkPolicyName(testK8sPodName),
 		runID:             testK8sRunID,
 		timing:            fastK8sTiming,
@@ -585,8 +583,7 @@ func TestK8sExecutor_CloseUsesDefaultTimingWhenUnset(t *testing.T) {
 	cs := fake.NewClientset(readyPod("uid-1"), testPolicy())
 	logger, _ := testLogger()
 	exec := &K8sExecutor{
-		podExecCore:       podExecCore{clientset: cs, namespace: testK8sNamespace, podName: testK8sPodName, logger: logger},
-		podUID:            "uid-1",
+		podExecCore:       podExecCore{clientset: cs, namespace: testK8sNamespace, podName: testK8sPodName, podUID: "uid-1", logger: logger},
 		networkPolicyName: networkPolicyName(testK8sPodName),
 	}
 	must.NoError(exec.Close())
