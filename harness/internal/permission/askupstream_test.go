@@ -370,6 +370,69 @@ func TestAskUpstream_TwoPoliciesOnOneTransport_ResponseResolvesOnlyItsRequest(t 
 	check.Nil(gated.result)
 }
 
+// TestRuleOfTwoGate_AskUpstreamEscalation_NotReleasedByUnrelatedApproval
+// builds the base ask-upstream policy and the gate's own ask policy on one
+// transport, as the factory does. With an escalation pending in the gate,
+// approving a different call's base request must leave the escalation
+// pending.
+func TestRuleOfTwoGate_AskUpstreamEscalation_NotReleasedByUnrelatedApproval(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	mt := &mockTransport{}
+	base := NewAskUpstreamPolicy(mt, map[string]bool{"write_file": true, "web_fetch": true}, 5*time.Second)
+	ext := map[string]bool{"web_fetch": true}
+	gateAsk := NewAskUpstreamPolicy(mt, ext, 5*time.Second)
+	state := &fakeRuleOfTwoState{tripped: true, enforcing: true, action: "ask-upstream"}
+	gate := NewRuleOfTwoGate(base, state, ext, gateAsk, nil)
+	allowed := true
+
+	writeDone := make(chan checkOutcome, 1)
+	go func() {
+		r, err := gate.Check(context.Background(), types.ToolDefinition{Name: "write_file"}, nil)
+		writeDone <- checkOutcome{r, err}
+	}()
+	must.Eventually(func() bool { return len(mt.emittedRequests()) == 1 }, time.Second, time.Millisecond)
+	writeID := mt.emittedRequests()[0].RequestID
+
+	fetchCtx, cancelFetch := context.WithCancel(context.Background())
+	defer cancelFetch()
+	fetchDone := make(chan checkOutcome, 1)
+	go func() {
+		r, err := gate.Check(fetchCtx, types.ToolDefinition{Name: "web_fetch"}, nil)
+		fetchDone <- checkOutcome{r, err}
+	}()
+	must.Eventually(func() bool { return len(mt.emittedRequests()) == 2 }, time.Second, time.Millisecond)
+	mt.simulateControlEvent(types.ControlEvent{
+		Type:      "permission_response",
+		RequestID: mt.emittedRequests()[1].RequestID,
+		Allowed:   &allowed,
+	})
+	must.Eventually(func() bool { return len(mt.emittedRequests()) == 3 }, time.Second, time.Millisecond)
+	escalation := mt.emittedRequests()[2]
+	must.Equal("web_fetch", escalation.ToolName)
+	must.NotEqual(writeID, escalation.RequestID)
+
+	mt.simulateControlEvent(types.ControlEvent{
+		Type:      "permission_response",
+		RequestID: writeID,
+		Allowed:   &allowed,
+	})
+	wrote := <-writeDone
+	must.NoError(wrote.err)
+	check.True(wrote.result.Allowed)
+
+	select {
+	case leaked := <-fetchDone:
+		must.Failf("rule-of-two escalation released by the write_file approval", "%+v", leaked)
+	case <-time.After(50 * time.Millisecond):
+	}
+	check.Equal(1, gateAsk.correlator.PendingCount())
+
+	cancelFetch()
+	fetched := <-fetchDone
+	must.ErrorIs(fetched.err, context.Canceled)
+}
+
 // TestAskUpstream_ReplayedResponseDoesNotResolveLaterRequest: a response
 // for an already-resolved request ID is ignored, so the next request
 // stays pending and fails closed on timeout instead of inheriting the
