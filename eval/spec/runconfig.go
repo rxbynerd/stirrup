@@ -238,6 +238,7 @@ type traceArchiveSpec struct {
 
 type toolsSpec struct {
 	BuiltIn       []string           `hcl:"built_in,optional"`
+	NoBuiltIn     bool               `hcl:"no_built_in,optional"`
 	CommandOutput *commandOutputSpec `hcl:"command_output,block"`
 	PostEdit      []postEditSpec     `hcl:"post_edit,block"`
 	LazyLoading   *lazyLoadingSpec   `hcl:"lazy_loading,block"`
@@ -445,7 +446,7 @@ func runConfigSpecToType(s *runConfigSpec) *types.RunConfig {
 		out.TraceEmitter = traceEmitterSpecToType(s.TraceEmitter)
 	}
 	if s.Tools != nil {
-		out.Tools = types.ToolsConfig{BuiltIn: s.Tools.BuiltIn, MCPServers: mcpServerSpecsToType(s.Tools.MCPServers)}
+		out.Tools = types.ToolsConfig{BuiltIn: s.Tools.BuiltIn, NoBuiltIn: s.Tools.NoBuiltIn, MCPServers: mcpServerSpecsToType(s.Tools.MCPServers)}
 		if co := s.Tools.CommandOutput; co != nil {
 			out.Tools.CommandOutput = types.CommandOutputConfig{
 				Enabled:               co.Enabled,
