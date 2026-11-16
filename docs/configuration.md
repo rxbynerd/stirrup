@@ -186,7 +186,8 @@ GCP runtime that provides a metadata server unless an explicit credential
 is configured. For an
 [HTTPS PUT destination](#https-put-destinations) the workspace-export
 step resolves the URL reference and checks the URL's shape, but sends
-nothing: an upload is the only request such a URL answers.
+nothing: an upload is the only request such a URL answers. The
+`https-put` trace probe does the same.
 
 The report lists each step with one of four statuses:
 
@@ -252,7 +253,7 @@ fail the run:
 |---|---|
 | `--no-probe-provider` | The provider metadata probe (all configured providers). |
 | `--no-probe-mcp` | The MCP `initialize` / `tools/list` handshake for every configured server. |
-| `--no-probe-trace` | The trace-emitter reachability probe (`otel` flush, `gcs` bucket check). |
+| `--no-probe-trace` | The trace-emitter reachability probe (`otel` flush, `gcs` bucket check, `https-put` reference resolution). |
 | `--no-probe-egress` | The egress-allowlist DNS resolution (container executor in `allowlist` network mode). |
 | `--no-probe-executor` | The `executor-probe` step. For the `container` executor it is the engine probe (socket ping + image-present); for `k8s` and `k8s-sandbox` it is the cluster access check. The step then records `skip`; no engine or API server is contacted. No effect on `local`/`api` executors, which construct without an engine. |
 | `--dry-run-timeout` | Not a gate — bounds the total preflight wall-clock. Defaults to `30s`. |
@@ -611,7 +612,7 @@ the none executor has no capability to back the rest.
 | Flag | Default | Notes |
 |---|---|---|
 | `--trace <path>` | (none) | JSONL trace path. Implies `--trace-emitter=jsonl` unless overridden. |
-| `--trace-emitter` | `jsonl` | One of `jsonl`, `otel`, `gcs`. |
+| `--trace-emitter` | `jsonl` | One of `jsonl`, `otel`, `gcs`, `https-put`. `https-put` uploads the run's JSONL trace line with one HTTP `PUT` and takes its destination from `traceEmitter.httpsPut` in `--config`; see [HTTPS PUT destinations](#https-put-destinations). |
 | `--otel-endpoint` | (none) | OTLP endpoint. Falls back to the platform profile's trace endpoint, then to `localhost:4317`. For `http/protobuf` use the gateway base path (e.g. `https://otlp-gateway-prod-us-east-0.grafana.net/otlp`): the exporter appends `/v1/traces`, `/v1/metrics`, and `/v1/logs`, and uses a path that already ends in the signal's own segment as given. Metrics and logs inherit this endpoint, so a per-signal URL belongs in `--otel-metrics-endpoint` or `observability.logsExport.endpoint` instead. The `OTEL_EXPORTER_OTLP_ENDPOINT` variable is not consulted for traces or metrics; see [`observability-cloud.md`](observability-cloud.md#precedence). |
 | `--otel-protocol` | (none) | OTLP wire protocol: `""` (defaults to grpc, or to the protocol the platform profile requires), `grpc`, `http/protobuf`. Applies to traces, metrics, and logs. HTTP/JSON is intentionally not supported, and `OTEL_EXPORTER_OTLP_PROTOCOL` is not read. See [`observability-cloud.md`](observability-cloud.md). |
 | `--otel-header` | (none) | Repeatable `key=value` HTTP header attached to every OTLP export request. Values may be `secret://` references resolved at exporter init — never pass raw secrets. Requires `--otel-protocol=http/protobuf`, or an `--otel-platform` that requires it (validation rejects headers on the plaintext gRPC path). Explicit flags replace any `headers` map from `--config`. The `OTEL_EXPORTER_OTLP_HEADERS` env var is the SDK-native fallback when no headers are configured. |
@@ -706,8 +707,8 @@ parent (`00`) suppresses export of every span in it, although
 `sampled: false`. An `OTEL_TRACES_SAMPLER` value that is not
 `parentbased_*` replaces that behaviour; see
 [`observability-cloud.md`](observability-cloud.md#trace-context-exchanged-with-a-control-plane).
-The `jsonl` and `gcs` emitters record no spans, so the flags do not
-change their trace files.
+The `jsonl`, `gcs` and `https-put` emitters record no spans, so the
+flags do not change their trace files.
 
 The flags set the run's context, not its config. They are registered
 on `stirrup harness` only, never appear in a `RunConfig`, and are
@@ -757,8 +758,8 @@ see a structured record.
 `RunResult.traceReference` identifies the run's OTel root span:
 `traceId` (32 lowercase hex characters), `runSpanId` (16 lowercase hex
 characters) and `sampled` (the trace flags' sampled bit). It is set
-when `traceEmitter.type` is `otel` and omitted for the `jsonl` and
-`gcs` emitters, which record no OTel span. The same value reaches a
+when `traceEmitter.type` is `otel` and omitted for the `jsonl`, `gcs`
+and `https-put` emitters, which record no OTel span. The same value reaches a
 gRPC control plane on the `run_started` event and the `done` summary;
 see [`integration-guide.md`](integration-guide.md#events-from-the-harness).
 Under `--transport stdio`, the CLI default, the `run_started` event is
@@ -1040,7 +1041,7 @@ An `httpsPut` block names a destination the harness uploads one object
 to with a single HTTP `PUT`: a presigned object-store URL (Amazon S3,
 Cloudflare R2, Google Cloud Storage, Azure Blob Storage) or an endpoint
 the control plane serves itself. No cloud credential travels and no
-vendor SDK is involved. Two surfaces take the block:
+vendor SDK is involved. Three surfaces take the block:
 
 - `executor.workspaceExportHttpsPut` uploads the workspace tarball. It
   is mutually exclusive with `executor.workspaceExportTo`, shares its
@@ -1048,6 +1049,9 @@ vendor SDK is involved. Two surfaces take the block:
   and produces the same receipt.
 - `resultSink.httpsPut`, with `resultSink.type: "https-put"`, uploads
   the `RunResult` JSON (see [Result sinks](#result-sinks)).
+- `traceEmitter.httpsPut`, with `traceEmitter.type: "https-put"`,
+  uploads the run's trace: the same single JSONL line the `gcs` emitter
+  writes, holding the `RunTrace` with its `Redact()`-ed `RunConfig`.
 
 The block has no CLI flag: it is set through `--config` or a
 `task_assignment`.
@@ -1098,8 +1102,8 @@ valid.
 
 **The request** is one `PUT` whose body is the object, with
 `Content-Length` set and a `Content-Type` of `application/gzip` for a
-workspace tarball or `application/json` for a `RunResult`. Any `2xx`
-response is success. The client follows no
+workspace tarball, `application/json` for a `RunResult` or
+`application/x-ndjson` for a trace. Any `2xx` response is success. The client follows no
 redirect (a `3xx` is a failure), uses no proxy, and refuses to connect
 to a cloud metadata address: any link-local address (such as
 `169.254.169.254`), AWS's IPv6 service range `fd00:ec2::/32`, Alibaba
@@ -1111,7 +1115,14 @@ headers once the body is sent. A workspace upload
 is bounded at 5 minutes overall, the same budget the whole workspace
 handoff has, and the tarball at 1 GiB. The upload is attempted once. A
 `RunResult` upload is bounded at 30 s per attempt and retried as
-[Delivery](#delivery) describes.
+[Delivery](#delivery) describes. A trace upload is bounded at 60 s and
+attempted once; as with the `gcs` emitter, a trace that cannot be
+uploaded fails the run's finish: the process exits non-zero, and the
+failure is the run's `error` when the run has no earlier one. The
+`https-put` emitter keeps the
+command-output archive on local disk unless `traceEmitter.archive`
+names a destination (see
+[Command output capture](#command-output-capture)).
 
 Under `--dry-run` the destination is resolved and checked but not
 contacted.
@@ -1141,8 +1152,8 @@ referenced value (for example the mounted file) between runs; when the
 value is unchanged, a follow-up's upload replaces the earlier object, or
 is refused if the store or URL forbids a second write, which fails a
 required export. Each run's receipt carries the SHA-256 of what it
-uploaded. The `https-put` result sink behaves the same way: one
-object, uploaded to by every run.
+uploaded. The `https-put` result sink and trace emitter behave the
+same way: one object each, uploaded to by every run.
 
 ### Dry-run
 
@@ -1229,7 +1240,7 @@ configuration space — the common cases. Anything below requires
 | `permissionPolicy` | `policy-engine` requires `policyFile`; the optional `fallback` field (`allow-all`, `deny-all`, `deny-side-effects`, `ask-upstream`) defaults to `deny-side-effects` when unset. Chained policy engines are rejected. |
 | `codeScanner` | `composite` requires `codeScanner.scanners` (each entry from the non-composite set). |
 | `guardRail` | `composite` requires `guardRail.stages`. Per-phase restriction (`phases`), bespoke criteria, and the classifier timeout are file-only. An empty `phases` runs the guard at all three phases, except that `shieldstral` then checks only `pre_turn` and `post_turn`; `pre_tool` is opt-in (see [`guardrails.md`](guardrails.md#shieldstral)). |
-| `traceEmitter` | `bucket` / `objectPrefix` / `credential` (the `gcs` emitter's routing — selectable via `--trace-emitter gcs` but configurable only by file). |
+| `traceEmitter` | `bucket` / `objectPrefix` / `credential` (the `gcs` emitter's routing — selectable via `--trace-emitter gcs` but configurable only by file), and `httpsPut` (the `https-put` emitter's destination, likewise file-only). |
 | `provider` | Multi-provider routing via `providers{}` plus a `modelRouter` of type `dynamic` or `per-mode`. |
 | `tools.mcpServers` | Remote MCP server registration. |
 | `tools.controlPlane` | Control-plane-fulfilled tools (gRPC transport only). See [Control-plane tools](#control-plane-tools). |
@@ -2101,7 +2112,7 @@ instead.
 | Same, but the run's outcome was already non-`success` (e.g. `max_turns`, `error`) | The original outcome, unchanged | A `postRun` failure never masks the primary failure cause; it is still visible in `RunTrace.HookResults` and `RunResult.hookFailures`. |
 | A hook with `continueOnError: true` fails or times out | The phase's outcome is unaffected | Recorded as a transport `warning` event and in `HookResults`; the remaining hooks in the phase still run. |
 
-Every trace emitter (`jsonl`, `otel`, `gcs`) records each hook's result
+Every trace emitter (`jsonl`, `otel`, `gcs`, `https-put`) records each hook's result
 in `RunTrace.HookResults`. The `otel` emitter also exports one `hook`
 span per execution under its `hooks.preRun` / `hooks.postRun` phase
 span, and attaches the output tail only when `captureContent` is on;

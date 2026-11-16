@@ -235,7 +235,7 @@ Quick map for "I need to change X" lookups:
 | Build errors a control plane sees (`HostFileError` collapse for host-file fields) | `harness/internal/core/builderrors.go`, `harness/cmd/stirrup/cmd/job.go::controlPlaneBuildError` (operator doc: `docs/integration-guide.md#stream-lifecycle`) |
 | Result sink (RunResult payload; `https-put` sink in `httpsput.go`) | `harness/internal/resultsink/` |
 | Workspace export (`gs://` and HTTPS PUT) | `harness/internal/workspaceexport/` |
-| HTTPS PUT destinations (`httpsPut` blocks: secret-reference URL, upload client, origin-only errors) | `harness/internal/httpsput/`, config type and validation in `types/httpsput.go`, construction-time resolve in `core/httpsput.go` (operator doc: `docs/configuration.md#https-put-destinations`) |
+| HTTPS PUT destinations (`httpsPut` blocks: secret-reference URL, upload client, origin-only errors) | `harness/internal/httpsput/`, config type and validation in `types/httpsput.go`, construction-time resolve in `core/httpsput.go`; the three users are `workspaceexport/httpsput.go`, `resultsink/httpsput.go` and `trace/httpsput.go` (operator doc: `docs/configuration.md#https-put-destinations`) |
 | `RunConfig` validation | `types/runconfig.go` |
 | CLI flag definitions (shared between `harness` and `run-config`) | `harness/cmd/stirrup/cmd/runconfigflags.go` |
 | CLI flag definitions (`harness`-only behaviour: `--export-workspace-required`, `--output-runconfig`) | `harness/cmd/stirrup/cmd/harness.go` |
