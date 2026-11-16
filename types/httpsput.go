@@ -20,7 +20,8 @@ type HTTPSPutConfig struct {
 	// Headers are sent on the PUT request. Values may be plaintext or a
 	// "secret://" reference. A header that conventionally carries a
 	// credential (see HTTPSPutHeaderNeedsSecretRef) must be a reference.
-	// A Content-Type entry replaces the harness's own.
+	// A Content-Type entry replaces the harness's own. A resolved value
+	// is held to MaxHTTPSPutHeaderValueBytes.
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
@@ -50,16 +51,26 @@ var httpsPutTransportHeaders = map[string]bool{
 	"proxy-authorization": true,
 }
 
+var httpsPutCredentialHeaderNames = map[string]bool{
+	"authorization":  true,
+	"authentication": true,
+	"cookie":         true,
+	"token":          true,
+	"apikey":         true,
+	"api-key":        true,
+}
+
 var httpsPutCredentialHeaderSuffixes = []string{
-	"-token", "-key", "-secret", "-signature", "-password", "-credential",
+	"-token", "-key", "-apikey", "-auth", "-secret", "-signature", "-password", "-credential",
 }
 
 // HTTPSPutHeaderNeedsSecretRef reports whether a header name
 // conventionally carries a credential, so its value must be a
-// "secret://" reference rather than plaintext in RunConfig.
+// "secret://" reference rather than plaintext in RunConfig. Underscores
+// are read as hyphens.
 func HTTPSPutHeaderNeedsSecretRef(name string) bool {
-	lower := strings.ToLower(name)
-	if lower == "authorization" || lower == "cookie" {
+	lower := strings.ReplaceAll(strings.ToLower(name), "_", "-")
+	if httpsPutCredentialHeaderNames[lower] {
 		return true
 	}
 	for _, suffix := range httpsPutCredentialHeaderSuffixes {
@@ -164,7 +175,7 @@ func validateHTTPSPutConfig(path string, c *HTTPSPutConfig, errs *[]string) {
 			*errs = append(*errs, fmt.Sprintf("%s.headers[%q] must not be empty", path, name))
 		case len(value) > MaxHTTPSPutHeaderValueBytes:
 			*errs = append(*errs, fmt.Sprintf("%s.headers[%q] must be at most %d bytes", path, name, MaxHTTPSPutHeaderValueBytes))
-		case !validHTTPHeaderValue(value):
+		case !ValidHTTPSPutHeaderValue(value):
 			*errs = append(*errs, fmt.Sprintf("%s.headers[%q] contains a control character", path, name))
 		case HTTPSPutHeaderNeedsSecretRef(name) && !strings.HasPrefix(value, "secret://"):
 			*errs = append(*errs, fmt.Sprintf(
@@ -190,9 +201,10 @@ func validHTTPHeaderName(name string) bool {
 	return true
 }
 
-// validHTTPHeaderValue rejects the bytes that could split or truncate a
-// header line: every control character except horizontal tab.
-func validHTTPHeaderValue(value string) bool {
+// ValidHTTPSPutHeaderValue reports whether value is free of the bytes
+// that could split or truncate a header line: every control character
+// except horizontal tab.
+func ValidHTTPSPutHeaderValue(value string) bool {
 	for i := 0; i < len(value); i++ {
 		c := value[i]
 		if (c < 0x20 && c != '\t') || c == 0x7f {

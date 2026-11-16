@@ -39,8 +39,14 @@ const (
 
 // Target is a resolved destination. Its String, GoString and LogValue
 // forms are the origin, so a Target that reaches a log or an error by
-// accident does not disclose the URL or the headers.
+// accident does not disclose the URL or the headers. The capability
+// sits behind a pointer so that a Target printed as an unexported field
+// of another struct, where fmt consults no method, shows an address.
 type Target struct {
+	dest *destination
+}
+
+type destination struct {
 	url     *url.URL
 	headers http.Header
 }
@@ -76,12 +82,15 @@ func Resolve(ctx context.Context, secrets security.SecretStore, cfg *types.HTTPS
 			}
 			value = strings.TrimSpace(resolved)
 		}
-		if value == "" || !validHeaderValue(value) {
+		switch {
+		case value == "" || !types.ValidHTTPSPutHeaderValue(value):
 			return Target{}, fmt.Errorf("header %q resolved to an empty value or one with a control character", name)
+		case len(value) > types.MaxHTTPSPutHeaderValueBytes:
+			return Target{}, fmt.Errorf("header %q resolved to more than %d bytes", name, types.MaxHTTPSPutHeaderValueBytes)
 		}
 		headers.Set(name, value)
 	}
-	return Target{url: u, headers: headers}, nil
+	return Target{dest: &destination{url: u, headers: headers}}, nil
 }
 
 // parseDestination parses a resolved URL. Its errors describe the fault
@@ -109,23 +118,13 @@ func parseDestination(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-func validHeaderValue(value string) bool {
-	for i := 0; i < len(value); i++ {
-		c := value[i]
-		if (c < 0x20 && c != '\t') || c == 0x7f {
-			return false
-		}
-	}
-	return true
-}
-
 // Origin returns the destination's scheme and host, the only part of it
 // that may be logged or recorded. Empty for an unresolved Target.
 func (t Target) Origin() string {
-	if t.url == nil {
+	if t.dest == nil {
 		return ""
 	}
-	return (&url.URL{Scheme: t.url.Scheme, Host: t.url.Host}).String()
+	return (&url.URL{Scheme: t.dest.url.Scheme, Host: t.dest.url.Host}).String()
 }
 
 func (t Target) String() string { return t.Origin() }
@@ -136,13 +135,23 @@ func (t Target) LogValue() slog.Value { return slog.StringValue(t.Origin()) }
 
 type loopbackOnlyKey struct{}
 
+// dialControl is the dialer's ControlContext; tests wrap it to observe
+// what reaches the dial.
+var dialControl = checkDialAddress
+
 // NewClient returns the client Put sends with. timeout bounds one whole
 // exchange, body included, so callers size it to the object: there is no
 // streaming response to keep open. The client follows no redirects, since
 // a redirect would carry the configured headers to a host the operator
-// did not name, and uses no proxy.
+// did not name, uses no proxy, and keeps no connection alive: an upload
+// is one request.
 func NewClient(timeout time.Duration) *http.Client {
-	dialer := &net.Dialer{Timeout: dialTimeout, ControlContext: checkDialAddress}
+	dialer := &net.Dialer{
+		Timeout: dialTimeout,
+		ControlContext: func(ctx context.Context, network, address string, c syscall.RawConn) error {
+			return dialControl(ctx, network, address, c)
+		},
+	}
 	return &http.Client{
 		Timeout: timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -153,7 +162,7 @@ func NewClient(timeout time.Duration) *http.Client {
 			ForceAttemptHTTP2:     true,
 			TLSHandshakeTimeout:   tlsHandshakeTimeout,
 			ResponseHeaderTimeout: responseHeaderTimeout,
-			IdleConnTimeout:       90 * time.Second,
+			DisableKeepAlives:     true,
 		},
 	}
 }
@@ -220,20 +229,20 @@ func Put(ctx context.Context, client *http.Client, t Target, body []byte, conten
 	if client == nil {
 		return errors.New("https put: http client is required")
 	}
-	if t.url == nil {
+	if t.dest == nil {
 		return errors.New("https put: destination is not resolved")
 	}
-	if t.url.Scheme == "http" {
+	if t.dest.url.Scheme == "http" {
 		ctx = context.WithValue(ctx, loopbackOnlyKey{}, true)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, t.url.String(), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, t.dest.url.String(), bytes.NewReader(body))
 	if err != nil {
 		return errors.New("https put: build request")
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	for name, values := range t.headers {
+	for name, values := range t.dest.headers {
 		req.Header[name] = values
 	}
 	req.ContentLength = int64(len(body))

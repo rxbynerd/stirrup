@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -288,6 +289,71 @@ func TestTarget_PrintsOnlyItsOrigin(t *testing.T) {
 		check.NotContains(printed, leak)
 	}
 	check.Empty(Target{}.Origin())
+}
+
+// observeDials wraps the dial check for the test and returns a func
+// reporting, per dialled address, whether the dial was held to loopback.
+func observeDials(t *testing.T) func() map[string]bool {
+	t.Helper()
+	var mu sync.Mutex
+	seen := map[string]bool{}
+	prev := dialControl
+	t.Cleanup(func() { dialControl = prev })
+	dialControl = func(ctx context.Context, network, address string, c syscall.RawConn) error {
+		loopbackOnly, _ := ctx.Value(loopbackOnlyKey{}).(bool)
+		mu.Lock()
+		seen[address] = loopbackOnly
+		mu.Unlock()
+		return prev(ctx, network, address, c)
+	}
+	return func() map[string]bool {
+		mu.Lock()
+		defer mu.Unlock()
+		out := map[string]bool{}
+		for k, v := range seen {
+			out[k] = v
+		}
+		return out
+	}
+}
+
+func TestPut_HoldsAnHTTPDestinationToLoopbackAtTheRealDial(t *testing.T) {
+	must := require.New(t)
+	dials := observeDials(t)
+	plain := httptest.NewServer(&captureServer{})
+	t.Cleanup(plain.Close)
+	secure := httptest.NewTLSServer(&captureServer{})
+	t.Cleanup(secure.Close)
+
+	must.NoError(Put(context.Background(), NewClient(10*time.Second), resolveTarget(t, plain.URL+"/key", nil, nil), []byte("x"), ""))
+	client := NewClient(10 * time.Second)
+	client.Transport.(*http.Transport).TLSClientConfig = secure.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	must.NoError(Put(context.Background(), client, resolveTarget(t, secure.URL+"/key", nil, nil), []byte("x"), ""))
+
+	must.Equal(map[string]bool{
+		strings.TrimPrefix(plain.URL, "http://"):   true,
+		strings.TrimPrefix(secure.URL, "https://"): false,
+	}, dials())
+}
+
+func TestTarget_NestedInAnotherStructDoesNotPrintTheCapability(t *testing.T) {
+	check := assert.New(t)
+	target := resolveTarget(t, "https://uploads.example/bucket/key"+signedQuery,
+		map[string]string{"Authorization": "secret://AUTH"}, mapSecrets{"secret://AUTH": "Bearer upload-token"})
+	holder := struct{ target Target }{target: target}
+
+	printed := fmt.Sprintf("%v|%+v|%#v", holder, holder, holder)
+	for _, leak := range []string{"deadbeefcafe", "AKIDEXAMPLE", "/bucket/key", "upload-token"} {
+		check.NotContains(printed, leak)
+	}
+}
+
+func TestResolve_RejectsAnOversizedResolvedHeaderValue(t *testing.T) {
+	must := require.New(t)
+	_, err := Resolve(context.Background(),
+		mapSecrets{"secret://URL": "https://uploads.example/key", "secret://AUTH": strings.Repeat("a", types.MaxHTTPSPutHeaderValueBytes+1)},
+		&types.HTTPSPutConfig{URLRef: "secret://URL", Headers: map[string]string{"Authorization": "secret://AUTH"}})
+	must.ErrorContains(err, `header "Authorization" resolved to more than 8192 bytes`)
 }
 
 func TestCheckDialAddress_RefusesMetadataAndNonLoopbackHTTPAddresses(t *testing.T) {
