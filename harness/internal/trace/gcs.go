@@ -36,31 +36,28 @@ func gcsObjectName(prefix, runID string) string {
 	return prefix + "/" + runID + ".jsonl"
 }
 
-// gcsUploadTimeout bounds the HTTP round-trip for the JSONL trace
+// traceContentType is the media type of the uploaded JSONL trace line.
+const traceContentType = "application/x-ndjson"
+
+// objectUploadTimeout bounds the HTTP round-trip for the JSONL trace
 // upload. Traces are typically small (well under 1 MiB even for
 // verbose runs) so 60s is generous; the cap exists so a wedged
-// metadata-server or silently-blackholed GCS endpoint cannot
-// indefinitely delay run-end.
-const gcsUploadTimeout = 60 * time.Second
+// metadata-server or silently-blackholed endpoint cannot indefinitely
+// delay run-end.
+const objectUploadTimeout = 60 * time.Second
 
-// GCSTraceEmitter buffers the final JSONL trace line in memory and
-// uploads it to a GCS object at Finish. Unlike JSONLTraceEmitter, no
-// file handle is held — the buffer is materialised once at Finish and
-// PUT to gs://{bucket}/{objectPrefix}/{runID}.jsonl via the GCS JSON
-// API (media upload, single-shot). Streaming/resumable uploads are
-// not needed: a JSONL run trace is one line on the wire.
-//
-// Auth: bearer token from the configured CredentialConfig (defaulting
-// to gcp-workload-identity against the metadata server when Credential
-// is nil). The credential source is a stirrup credential.Source, not
-// the cloud.google.com/go/storage SDK — per project policy in
-// CLAUDE.md, vendor cloud SDKs are avoided unless justified.
-type GCSTraceEmitter struct {
-	bucket          string
-	objectPrefix    string
-	bearer          credential.BearerTokenFunc
-	httpClient      *http.Client
-	endpointBaseURL string // override for tests
+// ObjectTraceEmitter buffers the run's records in memory and uploads
+// the final JSONL trace line as one object at Finish. Unlike
+// JSONLTraceEmitter, no file handle is held. Where the object goes is
+// the constructor's choice: NewGCSTraceEmitter writes
+// gs://{bucket}/{objectPrefix}/{runID}.jsonl through the GCS JSON API.
+// Streaming or resumable uploads are not needed: a JSONL run trace is
+// one line on the wire.
+type ObjectTraceEmitter struct {
+	// upload stores data, the finished trace line, for runID.
+	upload func(ctx context.Context, runID string, data []byte) error
+	// probe checks the destination for a dry-run without writing to it.
+	probe func(ctx context.Context) error
 
 	// redactionDisabled is the --debug bit; see
 	// JSONLTraceEmitter.redactionDisabled for the shared contract. Set only
@@ -90,22 +87,22 @@ type GCSTraceEmitter struct {
 	hookResults          []types.HookExecution
 }
 
-var _ FinalAssistantTextRecorder = (*GCSTraceEmitter)(nil)
-var _ VerificationRecorder = (*GCSTraceEmitter)(nil)
-var _ RepositoryGuidanceRecorder = (*GCSTraceEmitter)(nil)
-var _ LedgerUsageRecorder = (*GCSTraceEmitter)(nil)
-var _ StopDetailsRecorder = (*GCSTraceEmitter)(nil)
-var _ DegradedCapabilitiesRecorder = (*GCSTraceEmitter)(nil)
-var _ CommandOutputRecorder = (*GCSTraceEmitter)(nil)
-var _ CommandOutputArchiveRecorder = (*GCSTraceEmitter)(nil)
-var _ GitHandoffRecorder = (*GCSTraceEmitter)(nil)
-var _ HookRecorder = (*GCSTraceEmitter)(nil)
-var _ WorkspaceExportRecorder = (*GCSTraceEmitter)(nil)
-var _ RunErrorRecorder = (*GCSTraceEmitter)(nil)
-var _ StructuredOutputRecorder = (*GCSTraceEmitter)(nil)
-var _ PostEditCheckRecorder = (*GCSTraceEmitter)(nil)
+var _ FinalAssistantTextRecorder = (*ObjectTraceEmitter)(nil)
+var _ VerificationRecorder = (*ObjectTraceEmitter)(nil)
+var _ RepositoryGuidanceRecorder = (*ObjectTraceEmitter)(nil)
+var _ LedgerUsageRecorder = (*ObjectTraceEmitter)(nil)
+var _ StopDetailsRecorder = (*ObjectTraceEmitter)(nil)
+var _ DegradedCapabilitiesRecorder = (*ObjectTraceEmitter)(nil)
+var _ CommandOutputRecorder = (*ObjectTraceEmitter)(nil)
+var _ CommandOutputArchiveRecorder = (*ObjectTraceEmitter)(nil)
+var _ GitHandoffRecorder = (*ObjectTraceEmitter)(nil)
+var _ HookRecorder = (*ObjectTraceEmitter)(nil)
+var _ WorkspaceExportRecorder = (*ObjectTraceEmitter)(nil)
+var _ RunErrorRecorder = (*ObjectTraceEmitter)(nil)
+var _ StructuredOutputRecorder = (*ObjectTraceEmitter)(nil)
+var _ PostEditCheckRecorder = (*ObjectTraceEmitter)(nil)
 
-// GCSTraceEmitterOptions configures a GCSTraceEmitter. Bucket is
+// GCSTraceEmitterOptions configures NewGCSTraceEmitter. Bucket is
 // required; ObjectPrefix is optional. CredentialSource is the resolved
 // credential.Source — wiring decides whether to default to
 // GoogleWorkloadIdentitySource or honour an explicit override.
@@ -125,16 +122,18 @@ type GCSTraceEmitterOptions struct {
 	EndpointBaseURL string
 
 	// RedactionDisabled is the --debug bit; see
-	// GCSTraceEmitter.redactionDisabled. Production callers pass the
+	// ObjectTraceEmitter.redactionDisabled. Production callers pass the
 	// factory's already-gated value; every other caller leaves it false.
 	RedactionDisabled bool
 }
 
-// NewGCSTraceEmitter validates the options and constructs an emitter.
+// NewGCSTraceEmitter validates the options and constructs an emitter
+// that uploads to GCS. Auth is a bearer token from the configured
+// credential.Source (the wiring defaults it to gcp-workload-identity).
 // Returns a config-shaped error when Bucket is empty or the credential
 // source is nil — these are unrecoverable at construction time and the
 // factory rejects the run rather than waiting until Finish to fail.
-func NewGCSTraceEmitter(ctx context.Context, opts GCSTraceEmitterOptions) (*GCSTraceEmitter, error) {
+func NewGCSTraceEmitter(ctx context.Context, opts GCSTraceEmitterOptions) (*ObjectTraceEmitter, error) {
 	if opts.Bucket == "" {
 		return nil, fmt.Errorf("gcs trace emitter: bucket is required")
 	}
@@ -153,7 +152,7 @@ func NewGCSTraceEmitter(ctx context.Context, opts GCSTraceEmitterOptions) (*GCST
 	client := opts.HTTPClient
 	if client == nil {
 		client = &http.Client{
-			Timeout: gcsUploadTimeout,
+			Timeout: objectUploadTimeout,
 			Transport: &http.Transport{
 				TLSHandshakeTimeout:   10 * time.Second,
 				ResponseHeaderTimeout: 30 * time.Second,
@@ -162,12 +161,27 @@ func NewGCSTraceEmitter(ctx context.Context, opts GCSTraceEmitterOptions) (*GCST
 		}
 	}
 
-	return &GCSTraceEmitter{
-		bucket:            opts.Bucket,
-		objectPrefix:      opts.ObjectPrefix,
-		bearer:            resolved.BearerToken,
-		httpClient:        client,
-		endpointBaseURL:   opts.EndpointBaseURL,
+	return &ObjectTraceEmitter{
+		upload: func(ctx context.Context, runID string, data []byte) error {
+			if err := gcs.UploadObject(ctx, client, gcs.UploadOptions{
+				Bucket:          opts.Bucket,
+				Object:          gcsObjectName(opts.ObjectPrefix, runID),
+				Body:            data,
+				ContentType:     traceContentType,
+				Bearer:          resolved.BearerToken,
+				EndpointBaseURL: opts.EndpointBaseURL,
+			}); err != nil {
+				return fmt.Errorf("gcs trace emitter: upload trace: %w", err)
+			}
+			return nil
+		},
+		probe: func(ctx context.Context) error {
+			return gcs.BucketAccessible(ctx, client, gcs.BucketProbeOptions{
+				Bucket:          opts.Bucket,
+				Bearer:          resolved.BearerToken,
+				EndpointBaseURL: opts.EndpointBaseURL,
+			})
+		},
 		redactionDisabled: opts.RedactionDisabled,
 	}, nil
 }
@@ -175,7 +189,7 @@ func NewGCSTraceEmitter(ctx context.Context, opts GCSTraceEmitterOptions) (*GCST
 // Start initialises the trace with run metadata. Matches the
 // JSONLTraceEmitter contract exactly so the two emitters are
 // substitutable in tests and in the factory.
-func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
+func (e *ObjectTraceEmitter) Start(runID string, config *types.RunConfig) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -202,7 +216,7 @@ func (e *GCSTraceEmitter) Start(runID string, config *types.RunConfig) {
 }
 
 // RecordTurn appends a turn trace.
-func (e *GCSTraceEmitter) RecordTurn(turn types.TurnTrace) {
+func (e *ObjectTraceEmitter) RecordTurn(turn types.TurnTrace) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.turns = append(e.turns, turn)
@@ -211,17 +225,17 @@ func (e *GCSTraceEmitter) RecordTurn(turn types.TurnTrace) {
 // RecordTurnRecord is a no-op for GCS. The single-blob upload path
 // is summary-only by design — full transcript recording lives on the
 // JSONLTraceEmitter which streams events to a local file.
-func (e *GCSTraceEmitter) RecordTurnRecord(_ types.TurnRecord) {}
+func (e *ObjectTraceEmitter) RecordTurnRecord(_ types.TurnRecord) {}
 
 // RecordToolCall appends a tool call trace.
-func (e *GCSTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
+func (e *ObjectTraceEmitter) RecordToolCall(call types.ToolCallTrace) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.toolCalls = append(e.toolCalls, call)
 }
 
 // RecordPermissionDenial increments the run-level permission denial count.
-func (e *GCSTraceEmitter) RecordPermissionDenial() {
+func (e *ObjectTraceEmitter) RecordPermissionDenial() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.permissionDenials++
@@ -229,7 +243,7 @@ func (e *GCSTraceEmitter) RecordPermissionDenial() {
 
 // RecordVerification appends a verifier attempt for the uploaded trace
 // object.
-func (e *GCSTraceEmitter) RecordVerification(result types.VerificationResult) {
+func (e *ObjectTraceEmitter) RecordVerification(result types.VerificationResult) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.verificationResults = append(e.verificationResults, result)
@@ -238,7 +252,7 @@ func (e *GCSTraceEmitter) RecordVerification(result types.VerificationResult) {
 // RecordFinalAssistantText stores the run's final assistant text so the
 // uploaded trace object carries it. The loop forwards a value already
 // scrubbed and gated by the PhasePostTurn guard.
-func (e *GCSTraceEmitter) RecordFinalAssistantText(text string) {
+func (e *ObjectTraceEmitter) RecordFinalAssistantText(text string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.finalAssistantText = text
@@ -246,7 +260,7 @@ func (e *GCSTraceEmitter) RecordFinalAssistantText(text string) {
 
 // RecordStopDetails stores the run's final stop details so the uploaded
 // trace object carries them.
-func (e *GCSTraceEmitter) RecordStopDetails(details *types.StopDetails) {
+func (e *ObjectTraceEmitter) RecordStopDetails(details *types.StopDetails) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.stopDetails = details
@@ -254,7 +268,7 @@ func (e *GCSTraceEmitter) RecordStopDetails(details *types.StopDetails) {
 
 // RecordDegradedCapabilities stores the capabilities the run proceeded
 // without so the uploaded trace object carries them.
-func (e *GCSTraceEmitter) RecordDegradedCapabilities(degraded []types.DegradedCapability) {
+func (e *ObjectTraceEmitter) RecordDegradedCapabilities(degraded []types.DegradedCapability) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.degradedCapabilities = append([]types.DegradedCapability(nil), degraded...)
@@ -262,18 +276,18 @@ func (e *GCSTraceEmitter) RecordDegradedCapabilities(degraded []types.DegradedCa
 
 // RecordLedgerUsage stores the run's auxiliary and external guard usage
 // for the uploaded trace object.
-func (e *GCSTraceEmitter) RecordLedgerUsage(auxiliary, externalGuard types.TokenUsage) {
+func (e *ObjectTraceEmitter) RecordLedgerUsage(auxiliary, externalGuard types.TokenUsage) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.auxiliaryTokens = auxiliary
 	e.externalGuardTokens = externalGuard
 }
 
-func (e *GCSTraceEmitter) RecordCommandOutput(_ types.CommandOutputRecord) {}
+func (e *ObjectTraceEmitter) RecordCommandOutput(_ types.CommandOutputRecord) {}
 
 // RecordRepositoryGuidance stores the guidance records so the uploaded
 // trace object carries them.
-func (e *GCSTraceEmitter) RecordRepositoryGuidance(records []types.RepositoryGuidanceRecord) {
+func (e *ObjectTraceEmitter) RecordRepositoryGuidance(records []types.RepositoryGuidanceRecord) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.repositoryGuidance = append([]types.RepositoryGuidanceRecord(nil), records...)
@@ -281,7 +295,7 @@ func (e *GCSTraceEmitter) RecordRepositoryGuidance(records []types.RepositoryGui
 
 // RecordPostEditCheck accumulates a post-edit check record for the
 // uploaded trace object.
-func (e *GCSTraceEmitter) RecordPostEditCheck(record types.PostEditCheckRecord) {
+func (e *ObjectTraceEmitter) RecordPostEditCheck(record types.PostEditCheckRecord) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.postEditChecks = append(e.postEditChecks, scrubPostEditCheck(record, e.redactionDisabled))
@@ -289,13 +303,13 @@ func (e *GCSTraceEmitter) RecordPostEditCheck(record types.PostEditCheckRecord) 
 
 // RecordHookExecution accumulates a lifecycle hook result for the
 // uploaded trace object.
-func (e *GCSTraceEmitter) RecordHookExecution(_ context.Context, exec types.HookExecution) {
+func (e *ObjectTraceEmitter) RecordHookExecution(_ context.Context, exec types.HookExecution) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.hookResults = append(e.hookResults, scrubHookExecution(exec, e.redactionDisabled))
 }
 
-func (e *GCSTraceEmitter) RecordCommandOutputArchive(location string) {
+func (e *ObjectTraceEmitter) RecordCommandOutputArchive(location string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.commandOutputArchive = location
@@ -303,7 +317,7 @@ func (e *GCSTraceEmitter) RecordCommandOutputArchive(location string) {
 
 // RecordGitHandoff stores the run's git handoff for the RunTrace Finish
 // builds.
-func (e *GCSTraceEmitter) RecordGitHandoff(handoff types.GitHandoff) {
+func (e *ObjectTraceEmitter) RecordGitHandoff(handoff types.GitHandoff) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.gitHandoff = &handoff
@@ -311,7 +325,7 @@ func (e *GCSTraceEmitter) RecordGitHandoff(handoff types.GitHandoff) {
 
 // RecordWorkspaceExport stores the run's workspace export receipt for the
 // RunTrace Finish builds.
-func (e *GCSTraceEmitter) RecordWorkspaceExport(receipt types.ExportReceipt) {
+func (e *ObjectTraceEmitter) RecordWorkspaceExport(receipt types.ExportReceipt) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.workspaceExport = &receipt
@@ -319,7 +333,7 @@ func (e *GCSTraceEmitter) RecordWorkspaceExport(receipt types.ExportReceipt) {
 
 // RecordRunError stores the run's error text for the RunTrace Finish
 // builds.
-func (e *GCSTraceEmitter) RecordRunError(text string) {
+func (e *ObjectTraceEmitter) RecordRunError(text string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.runError = text
@@ -327,14 +341,14 @@ func (e *GCSTraceEmitter) RecordRunError(text string) {
 
 // RecordStructuredOutput stores the run's validated structured answer for
 // the RunTrace Finish builds.
-func (e *GCSTraceEmitter) RecordStructuredOutput(doc json.RawMessage) {
+func (e *ObjectTraceEmitter) RecordStructuredOutput(doc json.RawMessage) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.structuredOutput = append(json.RawMessage(nil), doc...)
 }
 
 // Finish builds the final RunTrace, marshals it as a single JSONL
-// line, and PUTs the bytes to gs://{bucket}/{objectPrefix}/{runID}.jsonl.
+// line, and uploads the bytes to the emitter's destination.
 // A run with zero turns still produces a single valid JSON line —
 // keeping the contract identical to JSONLTraceEmitter so downstream
 // consumers can ingest both emitters' output with one parser.
@@ -343,7 +357,7 @@ func (e *GCSTraceEmitter) RecordStructuredOutput(doc json.RawMessage) {
 // mutable fields; the HTTP upload runs lock-free so a concurrent
 // RecordTurn/RecordToolCall or a second Finish call cannot deadlock
 // against it.
-func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.RunTrace, error) {
+func (e *ObjectTraceEmitter) Finish(ctx context.Context, outcome string) (*types.RunTrace, error) {
 	e.mu.Lock()
 	runID := e.runID
 	cfg := e.config
@@ -421,37 +435,24 @@ func (e *GCSTraceEmitter) Finish(ctx context.Context, outcome string) (*types.Ru
 	}
 	data = append(data, '\n')
 
-	object := gcsObjectName(e.objectPrefix, runID)
-	if err := gcs.UploadObject(ctx, e.httpClient, gcs.UploadOptions{
-		Bucket:          e.bucket,
-		Object:          object,
-		Body:            data,
-		ContentType:     "application/x-ndjson",
-		Bearer:          e.bearer,
-		EndpointBaseURL: e.endpointBaseURL,
-	}); err != nil {
-		return trace, fmt.Errorf("gcs trace emitter: upload trace: %w", err)
+	if err := e.upload(ctx, runID, data); err != nil {
+		return trace, err
 	}
 
 	return trace, nil
 }
 
-// Probe verifies the credential can access the configured bucket for a
-// dry-run preflight via a read-only bucket-metadata GET. It uploads
-// nothing, so a dry-run leaves no trace object behind. A 403/404/401
-// surfaces with the GCS diagnostic so a missing bucket or an
-// insufficiently-scoped credential is caught before the run ends and
-// silently drops its trace.
-func (e *GCSTraceEmitter) Probe(ctx context.Context) error {
-	return gcs.BucketAccessible(ctx, e.httpClient, gcs.BucketProbeOptions{
-		Bucket:          e.bucket,
-		Bearer:          e.bearer,
-		EndpointBaseURL: e.endpointBaseURL,
-	})
+// Probe checks the destination for a dry-run preflight without writing
+// to it, so a dry-run leaves no trace object behind. For GCS it is a
+// read-only bucket-metadata GET, so a missing bucket or an
+// insufficiently-scoped credential surfaces with the GCS diagnostic
+// before the run ends and silently drops its trace.
+func (e *ObjectTraceEmitter) Probe(ctx context.Context) error {
+	return e.probe(ctx)
 }
 
 // Close is a no-op — the in-memory buffer is released when the emitter
 // is GC'd, and there is no file handle to release. Implementing Close
 // satisfies the io.Closer protocol that the factory uses to register
 // owned closers.
-func (e *GCSTraceEmitter) Close() error { return nil }
+func (e *ObjectTraceEmitter) Close() error { return nil }

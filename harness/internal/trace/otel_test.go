@@ -465,7 +465,7 @@ func TestOTelTraceEmitter_TraceReferenceReportsUnsampledSpan(t *testing.T) {
 func TestNonOTelEmitters_DoNotProvideTraceReference(t *testing.T) {
 	for name, e := range map[string]TraceEmitter{
 		"jsonl":  &JSONLTraceEmitter{},
-		"gcs":    &GCSTraceEmitter{},
+		"gcs":    &ObjectTraceEmitter{},
 		"nested": &NestedJSONLEmitter{},
 	} {
 		t.Run(name, func(t *testing.T) {

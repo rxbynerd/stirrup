@@ -87,7 +87,7 @@ func TestOTelTraceEmitter_StartWithContextDropsCallerCancellation(t *testing.T) 
 func TestTraceEmitter_OnlyOTelEmitterImplementsContextStarter(t *testing.T) {
 	for name, e := range map[string]TraceEmitter{
 		"jsonl":  &JSONLTraceEmitter{},
-		"gcs":    &GCSTraceEmitter{},
+		"gcs":    &ObjectTraceEmitter{},
 		"nested": &NestedJSONLEmitter{},
 	} {
 		t.Run(name, func(t *testing.T) {
