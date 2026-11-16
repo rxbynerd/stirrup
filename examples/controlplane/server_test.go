@@ -153,6 +153,26 @@ func TestHandle_ReportsSessionPhases(t *testing.T) {
 	check.Contains(errOut.String(), "[heartbeat] constructing +")
 }
 
+func TestHandle_ReportsBuildFailureClass(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
+	srv, _, errOut := testServer(t, permissionDeny, "")
+	stream := &fakeStream{events: []*harnessv1.HarnessEvent{
+		{Type: "ready", HarnessVersion: "v1"},
+		{Type: "error", Message: "building harness: pod not ready", BuildFailure: &harnessv1.BuildFailure{
+			Reason: "sandbox_image",
+			Phase:  &harnessv1.SessionPhase{Phase: "constructing", Step: "sandbox_ready"},
+		}},
+		{Type: "done", StopReason: "error"},
+	}}
+
+	res, err := srv.handle(context.Background(), stream)
+	must.NoError(err)
+	check.False(res.Succeeded())
+	check.Contains(errOut.String(), "[build_failure] sandbox_image during constructing/sandbox_ready\n")
+	check.Contains(errOut.String(), "[error] building harness: pod not ready")
+}
+
 func TestHandle_DoneOutcomeDecidesSuccess(t *testing.T) {
 	tests := []struct {
 		name string

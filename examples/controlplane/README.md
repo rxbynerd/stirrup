@@ -64,7 +64,9 @@ under lazy tool loading, each search that loads tools as
 `session_liveness` names the session's phase on every heartbeat. A change is
 printed as `[phase] <phase>[/<step>] (<previous> took <duration>)`, for
 example `[phase] running (constructing/sandbox_ready took 41.2s)`, and a
-heartbeat within a phase as `[heartbeat] <phase>[/<step>] +<duration>`. The
+heartbeat within a phase as `[heartbeat] <phase>[/<step>] +<duration>`. A
+task that cannot be built into a run is reported as
+`[build_failure] <reason> during <phase>[/<step>]` before its `[error]` line. The
 example does not reap a silent harness; see
 [Detecting a stalled or orphaned run](../../docs/integration-guide.md#detecting-a-stalled-or-orphaned-run).
 

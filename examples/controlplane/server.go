@@ -220,6 +220,13 @@ func (s *server) handle(ctx context.Context, stream runStream) (result, error) {
 		case "warning":
 			writef(s.errOut, "[warning] %s\n", escapeLine(ev.GetMessage()))
 		case "error":
+			if f := ev.GetBuildFailure(); f != nil {
+				where := escapeLine(f.GetPhase().GetPhase())
+				if step := f.GetPhase().GetStep(); step != "" {
+					where += "/" + escapeLine(step)
+				}
+				writef(s.errOut, "[build_failure] %s during %s\n", escapeLine(f.GetReason()), where)
+			}
 			writef(s.errOut, "[error] %s\n", escapeLine(ev.GetMessage()))
 		case "heartbeat":
 			if line, changed := phase.observe(ev.GetSessionPhase(), time.Now()); changed {
