@@ -159,6 +159,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			CaptureContentMaxBytes: int(pc.TraceEmitter.CaptureContentMaxBytes),
 			Platform:               pc.TraceEmitter.Platform,
 			PlatformOptions:        maps.Clone(pc.TraceEmitter.PlatformOptions),
+			HTTPSPut:               httpsPutConfigFromProto(pc.TraceEmitter.GetHttpsPut()),
 		}
 		if archive := pc.TraceEmitter.GetArchive(); archive != nil {
 			rc.TraceEmitter.Archive = &types.TraceArchiveConfig{
@@ -205,6 +206,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			Bucket:                     pc.ResultSink.GetBucket(),
 			ObjectPrefix:               pc.ResultSink.GetObjectPrefix(),
 			OrderingKey:                pc.ResultSink.GetOrderingKey(),
+			HTTPSPut:                   httpsPutConfigFromProto(pc.ResultSink.GetHttpsPut()),
 		}
 		if pc.ResultSink.Credential != nil {
 			rc.ResultSink.Credential = credentialConfigFromProto(pc.ResultSink.Credential)
@@ -430,6 +432,17 @@ func modelRouterConfigFromProto(pc *pb.ModelRouterConfig) types.ModelRouterConfi
 	}
 }
 
+func httpsPutConfigFromProto(pc *pb.HttpsPutConfig) *types.HTTPSPutConfig {
+	if pc == nil {
+		return nil
+	}
+	out := &types.HTTPSPutConfig{URLRef: pc.GetUrlRef()}
+	if len(pc.GetHeaders()) > 0 {
+		out.Headers = maps.Clone(pc.GetHeaders())
+	}
+	return out
+}
+
 func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 	ec := types.ExecutorConfig{
 		Type:              pc.Type,
@@ -448,6 +461,7 @@ func executorConfigFromProto(pc *pb.ExecutorConfig) types.ExecutorConfig {
 		v := *pc.WorkspaceExportRequired
 		ec.WorkspaceExportRequired = &v
 	}
+	ec.WorkspaceExportHTTPSPut = httpsPutConfigFromProto(pc.WorkspaceExportHttpsPut)
 	if pc.SandboxIdentity != nil {
 		ec.SandboxIdentity = &types.SandboxIdentityConfig{
 			Source:   pc.SandboxIdentity.GetSource(),

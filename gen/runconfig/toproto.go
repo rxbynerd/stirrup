@@ -234,6 +234,7 @@ func (e *encoder) runConfig(rc *types.RunConfig) *pb.RunConfig {
 			OrderingKey:                rs.OrderingKey,
 			Attributes:                 maps.Clone(rs.Attributes),
 			Credential:                 credentialConfigToProto(rs.Credential),
+			HttpsPut:                   httpsPutConfigToProto(rs.HTTPSPut),
 		}
 	}
 	if tce := rc.ToolChoiceEscalation; tce != nil {
@@ -397,6 +398,13 @@ func (e *encoder) modelRouterConfig(c *types.ModelRouterConfig) *pb.ModelRouterC
 	}
 }
 
+func httpsPutConfigToProto(c *types.HTTPSPutConfig) *pb.HttpsPutConfig {
+	if c == nil {
+		return nil
+	}
+	return &pb.HttpsPutConfig{UrlRef: c.URLRef, Headers: maps.Clone(c.Headers)}
+}
+
 func (e *encoder) executorConfig(c *types.ExecutorConfig) *pb.ExecutorConfig {
 	pc := &pb.ExecutorConfig{
 		Type:                    c.Type,
@@ -411,6 +419,7 @@ func (e *encoder) executorConfig(c *types.ExecutorConfig) *pb.ExecutorConfig {
 		K8SEgressProxyUrl:       c.K8sEgressProxyURL,
 		WorkspaceExportTo:       c.WorkspaceExportTo,
 		WorkspaceExportRequired: clonePtr(c.WorkspaceExportRequired),
+		WorkspaceExportHttpsPut: httpsPutConfigToProto(c.WorkspaceExportHTTPSPut),
 	}
 	if si := c.SandboxIdentity; si != nil {
 		pc.SandboxIdentity = &pb.SandboxIdentityConfig{
@@ -518,6 +527,7 @@ func (e *encoder) traceEmitterConfig(c *types.TraceEmitterConfig) *pb.TraceEmitt
 		CaptureContentMaxBytes: e.int32("traceEmitter.captureContentMaxBytes", c.CaptureContentMaxBytes),
 		Platform:               c.Platform,
 		PlatformOptions:        maps.Clone(c.PlatformOptions),
+		HttpsPut:               httpsPutConfigToProto(c.HTTPSPut),
 	}
 	if a := c.Archive; a != nil {
 		if a.Credential != nil {

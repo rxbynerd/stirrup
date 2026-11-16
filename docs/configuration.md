@@ -183,7 +183,11 @@ all collector contact. The workspace-export probe (`gs://` destinations)
 and the `gcs` trace probe authenticate via the same
 `gcp-workload-identity` default the real run uses, so both fail outside a
 GCP runtime that provides a metadata server unless an explicit credential
-is configured.
+is configured. For an
+[HTTPS PUT destination](#https-put-destinations) the workspace-export
+step resolves the URL reference and checks the URL's shape, but sends
+nothing: an upload is the only request such a URL answers. The
+`https-put` trace probe does the same.
 
 The report lists each step with one of four statuses:
 
@@ -249,7 +253,7 @@ fail the run:
 |---|---|
 | `--no-probe-provider` | The provider metadata probe (all configured providers). |
 | `--no-probe-mcp` | The MCP `initialize` / `tools/list` handshake for every configured server. |
-| `--no-probe-trace` | The trace-emitter reachability probe (`otel` flush, `gcs` bucket check). |
+| `--no-probe-trace` | The trace-emitter reachability probe (`otel` flush, `gcs` bucket check, `https-put` reference resolution). |
 | `--no-probe-egress` | The egress-allowlist DNS resolution (container executor in `allowlist` network mode). |
 | `--no-probe-executor` | The `executor-probe` step. For the `container` executor it is the engine probe (socket ping + image-present); for `k8s` and `k8s-sandbox` it is the cluster access check. The step then records `skip`; no engine or API server is contacted. No effect on `local`/`api` executors, which construct without an engine. |
 | `--dry-run-timeout` | Not a gate — bounds the total preflight wall-clock. Defaults to `30s`. |
@@ -608,7 +612,7 @@ the none executor has no capability to back the rest.
 | Flag | Default | Notes |
 |---|---|---|
 | `--trace <path>` | (none) | JSONL trace path. Implies `--trace-emitter=jsonl` unless overridden. |
-| `--trace-emitter` | `jsonl` | One of `jsonl`, `otel`, `gcs`. |
+| `--trace-emitter` | `jsonl` | One of `jsonl`, `otel`, `gcs`, `https-put`. `https-put` uploads the run's JSONL trace line with one HTTP `PUT` and takes its destination from `traceEmitter.httpsPut` in `--config`; see [HTTPS PUT destinations](#https-put-destinations). |
 | `--otel-endpoint` | (none) | OTLP endpoint. Falls back to the platform profile's trace endpoint, then to `localhost:4317`. For `http/protobuf` use the gateway base path (e.g. `https://otlp-gateway-prod-us-east-0.grafana.net/otlp`): the exporter appends `/v1/traces`, `/v1/metrics`, and `/v1/logs`, and uses a path that already ends in the signal's own segment as given. Metrics and logs inherit this endpoint, so a per-signal URL belongs in `--otel-metrics-endpoint` or `observability.logsExport.endpoint` instead. The `OTEL_EXPORTER_OTLP_ENDPOINT` variable is not consulted for traces or metrics; see [`observability-cloud.md`](observability-cloud.md#precedence). |
 | `--otel-protocol` | (none) | OTLP wire protocol: `""` (defaults to grpc, or to the protocol the platform profile requires), `grpc`, `http/protobuf`. Applies to traces, metrics, and logs. HTTP/JSON is intentionally not supported, and `OTEL_EXPORTER_OTLP_PROTOCOL` is not read. See [`observability-cloud.md`](observability-cloud.md). |
 | `--otel-header` | (none) | Repeatable `key=value` HTTP header attached to every OTLP export request. Values may be `secret://` references resolved at exporter init — never pass raw secrets. Requires `--otel-protocol=http/protobuf`, or an `--otel-platform` that requires it (validation rejects headers on the plaintext gRPC path). Explicit flags replace any `headers` map from `--config`. The `OTEL_EXPORTER_OTLP_HEADERS` env var is the SDK-native fallback when no headers are configured. |
@@ -703,8 +707,8 @@ parent (`00`) suppresses export of every span in it, although
 `sampled: false`. An `OTEL_TRACES_SAMPLER` value that is not
 `parentbased_*` replaces that behaviour; see
 [`observability-cloud.md`](observability-cloud.md#trace-context-exchanged-with-a-control-plane).
-The `jsonl` and `gcs` emitters record no spans, so the flags do not
-change their trace files.
+The `jsonl`, `gcs` and `https-put` emitters record no spans, so the
+flags do not change their trace files.
 
 The flags set the run's context, not its config. They are registered
 on `stirrup harness` only, never appear in a `RunConfig`, and are
@@ -754,8 +758,8 @@ see a structured record.
 `RunResult.traceReference` identifies the run's OTel root span:
 `traceId` (32 lowercase hex characters), `runSpanId` (16 lowercase hex
 characters) and `sampled` (the trace flags' sampled bit). It is set
-when `traceEmitter.type` is `otel` and omitted for the `jsonl` and
-`gcs` emitters, which record no OTel span. The same value reaches a
+when `traceEmitter.type` is `otel` and omitted for the `jsonl`, `gcs`
+and `https-put` emitters, which record no OTel span. The same value reaches a
 gRPC control plane on the `run_started` event and the `done` summary;
 see [`integration-guide.md`](integration-guide.md#events-from-the-harness).
 Under `--transport stdio`, the CLI default, the `run_started` event is
@@ -836,6 +840,7 @@ end-of-run. There is no CLI flag; the block is set in the `RunConfig`
 | `stdout-json` | One `STIRRUP_RESULT <json>` line on stdout (see [Run output](#run-output)). | — |
 | `gcs` | One object, `gs://{bucket}/{objectPrefix}{runId}.result.json`, holding the `RunResult` JSON. | `bucket` (required), `objectPrefix`, `credential` |
 | `gcp-pubsub` | One Pub/Sub message whose data is the `RunResult` JSON. | `topic` (required), `attributes`, `orderingKey`, `credential` |
+| `https-put` | One HTTP `PUT` of the `RunResult` JSON to the URL `httpsPut.urlRef` resolves to: a presigned object-store URL or an endpoint the control plane serves. | `httpsPut` (required) |
 
 `maxFinalAssistantTextBytes` applies to every type. Every other field
 is rejected on a type that does not use it.
@@ -855,9 +860,18 @@ is rejected on a type that does not use it.
 }
 ```
 
-The `gcs` and `gcp-pubsub` sinks deliver the same JSON document as
-`stdout-json`, without the `STIRRUP_RESULT ` sentinel and without the
-250 KiB line cap, which exists only for log transports.
+```json
+{
+  "resultSink": {
+    "type": "https-put",
+    "httpsPut": { "urlRef": "secret://file:///var/run/stirrup/result-url" }
+  }
+}
+```
+
+The `gcs`, `gcp-pubsub` and `https-put` sinks deliver the same JSON
+document as `stdout-json`, without the `STIRRUP_RESULT ` sentinel and
+without the 250 KiB line cap, which exists only for log transports.
 
 #### Field rules
 
@@ -865,6 +879,10 @@ Validation checks each field's shape, so a malformed value fails at
 boot rather than after the run's work is done. Whether the bucket or
 topic exists and whether the credential may write to it are only
 discovered at delivery; `--dry-run` does not probe the result sink.
+An `https-put` sink's URL reference is resolved and checked when the
+harness is constructed, so a reference that is unset or resolves to an
+unusable URL also fails at boot; whether the URL accepts the upload is
+discovered at delivery.
 
 - `bucket` must pass the same shape check as `traceEmitter.bucket`.
   `objectPrefix` must be valid UTF-8 of at most 883 bytes, so the
@@ -894,6 +912,10 @@ discovered at delivery; `--dry-run` does not probe the result sink.
   `gcs` trace emitter. The service account needs
   `roles/storage.objectCreator` on the bucket for `gcs`, or
   `roles/pubsub.publisher` on the topic for `gcp-pubsub`.
+- `httpsPut` follows the rules in
+  [HTTPS PUT destinations](#https-put-destinations): `urlRef` is a
+  `secret://` reference, never an inline URL, and `headers` may add
+  what the destination requires. The sink takes no `credential`.
 
 `maxFinalAssistantTextBytes` has no upper bound. Pub/Sub rejects a
 publish request over 10 MB, and the message data is base64-encoded,
@@ -901,8 +923,8 @@ so a cap above about 7 MB can make a `gcp-pubsub` delivery fail.
 
 #### Delivery
 
-`stirrup harness` and `stirrup job` deliver to a `gcs` or
-`gcp-pubsub` sink after the run's trace is finished and before its
+`stirrup harness` and `stirrup job` deliver to a `gcs`, `gcp-pubsub`
+or `https-put` sink after the run's trace is finished and before its
 `done` event, for the primary run and every follow-up run. The Go
 embedding API (`harnessapi`) does not deliver to these sinks.
 
@@ -911,9 +933,11 @@ attempt is bounded at 30 s and the whole delivery at 60 s, so `done`
 can be held back by up to a minute. Transport errors, credential
 errors, and HTTP 408, 429 and 5xx responses are retried. Pub/Sub 409
 (`ABORTED`) and 499 (`CANCELLED`) are retried too, matching Google's
-Pub/Sub client libraries. Other statuses fail at once. Each retried
-attempt is logged at warn level, and a success is logged at info level
-with the object URI or the Pub/Sub message ID.
+Pub/Sub client libraries. Other statuses fail at once, as does an
+`https-put` reference that does not resolve to a usable URL. Each
+retried attempt is logged at warn level, and a success is logged at
+info level with the object URI, the Pub/Sub message ID, or the
+`https-put` destination's origin.
 
 If every attempt fails, the harness logs the error and sends a
 `warning` event whose message starts `result sink:`, ahead of the
@@ -940,10 +964,26 @@ A `gcp-pubsub` retry after a lost acknowledgement publishes the same
 message again, so delivery is at-least-once. A repeat carries the
 same data as the original.
 
+The `https-put` sink names one object rather than one per run ID. Every
+run in a session, follow-ups included, uploads to the URL the reference
+resolves to when that run ends, so a control plane that wants each
+run's result replaces the referenced value between runs (see
+[Follow-up runs and HTTPS PUT](#follow-up-runs-and-https-put)). Whether
+an upload may replace an existing object is the destination's decision.
+To make it create-only, as the `gcs` sink is, add the store's
+conditional header to `httpsPut.headers`, for example
+`"If-None-Match": "*"` on Amazon S3 or Azure Blob Storage; a presigned
+URL must have been signed for that header where the store requires it.
+A retry after an attempt that was sent but not answered can then be
+refused with `412`, and the failure message says the object is probably
+this run's result but cannot be confirmed.
+
 #### Trust boundary
 
 These sinks are only as trustworthy as the isolation between the agent
-and the credential they use. With the `local` executor, or any
+and the credential they use. For `https-put` the credential is the URL
+itself, held in the variable or file its reference names, which the
+`local` executor's commands can read. With the `local` executor, or any
 sandbox that can reach the metadata server or a `gcp-default` key
 file, the agent's commands can obtain the same credential. They can
 then create an object under the run's name before the harness does,
@@ -969,18 +1009,20 @@ At end-of-run the executor's workspace can be tarred, gzipped, and
 uploaded to a GCS URI — the result-collection surface for serverless
 targets with no persistent filesystem (see
 [`cloud-run-jobs.md`](cloud-run-jobs.md#shape-b-workspace-tarball-from-gcs)
-for the operator walkthrough).
+for the operator walkthrough) — or, outside Google Cloud, to an
+[HTTPS PUT destination](#https-put-destinations).
 
 | Flag | Default | Notes |
 |---|---|---|
-| `--export-workspace-to` | (none) | Destination URI for the workspace tarball (e.g. `gs://bucket/runs/<runId>/workspace.tar.gz`). Only `gs://` is supported in v1. Overrides `executor.workspaceExportTo` from `--config` when explicitly set; an explicit empty value clears the field. JSON path: `executor.workspaceExportTo`. |
+| `--export-workspace-to` | (none) | Destination URI for the workspace tarball (e.g. `gs://bucket/runs/<runId>/workspace.tar.gz`). Only `gs://` is accepted here; an HTTPS destination is configured with `executor.workspaceExportHttpsPut` and has no flag. Overrides `executor.workspaceExportTo` from `--config` when explicitly set; an explicit empty value clears the field. JSON path: `executor.workspaceExportTo`. |
 | `--export-workspace-required` | `true` when a destination is set | Whether a failed workspace export turns a successful run into outcome `handoff_failed` and a non-zero exit. `--export-workspace-required=false` records the failure in `RunResult.workspaceExport` without failing the run. Requires a destination. JSON path: `executor.workspaceExportRequired`. A gRPC control plane sets `executor.workspaceExportRequired` (proto `ExecutorConfig.workspace_export_required`) in the `task_assignment`'s `RunConfig`; `stirrup job` applies it to every run, and leaving it unset keeps the destination default. |
 
 The export runs even when the run itself failed, so the workspace
-state stays inspectable after a non-zero exit. Uploads authenticate
-via the `gcp-workload-identity` credential source — the GCE/GKE
-metadata server that Cloud Run, GKE Workload Identity, and plain GCE
-VMs expose. There is no credential override for the exporter in v1.
+state stays inspectable after a non-zero exit. `gs://` uploads
+authenticate via the `gcp-workload-identity` credential source — the
+GCE/GKE metadata server that Cloud Run, GKE Workload Identity, and
+plain GCE VMs expose. There is no credential override for the `gs://`
+exporter in v1.
 
 With a follow-up grace window configured, every run exports once it
 completes. The primary run uploads to the configured URI verbatim;
@@ -989,7 +1031,129 @@ inserted as the path segment before the object name
 (`gs://bucket/runs/r1/workspace.tar.gz` →
 `gs://bucket/runs/r1/<followUpRunId>/workspace.tar.gz`), so later
 runs never overwrite the primary tarball. The same
-`--export-workspace-required` policy applies to every run.
+`--export-workspace-required` policy applies to every run. An HTTPS PUT
+destination names one object and behaves differently; see
+[Follow-up runs](#follow-up-runs-and-https-put).
+
+### HTTPS PUT destinations
+
+An `httpsPut` block names a destination the harness uploads one object
+to with a single HTTP `PUT`: a presigned object-store URL (Amazon S3,
+Cloudflare R2, Google Cloud Storage, Azure Blob Storage) or an endpoint
+the control plane serves itself. No cloud credential travels and no
+vendor SDK is involved. Three surfaces take the block:
+
+- `executor.workspaceExportHttpsPut` uploads the workspace tarball. It
+  is mutually exclusive with `executor.workspaceExportTo`, shares its
+  executor restriction and `executor.workspaceExportRequired` policy,
+  and produces the same receipt.
+- `resultSink.httpsPut`, with `resultSink.type: "https-put"`, uploads
+  the `RunResult` JSON (see [Result sinks](#result-sinks)).
+- `traceEmitter.httpsPut`, with `traceEmitter.type: "https-put"`,
+  uploads the run's trace: the same single JSONL line the `gcs` emitter
+  writes, holding the `RunTrace` with its `Redact()`-ed `RunConfig`.
+
+The block has no CLI flag: it is set through `--config` or a
+`task_assignment`.
+
+```json
+"executor": {
+  "type": "k8s",
+  "workspaceExportHttpsPut": {
+    "urlRef": "secret://file:///var/run/stirrup/export-url",
+    "headers": { "x-ms-blob-type": "BlockBlob" }
+  }
+}
+```
+
+| Field | Notes |
+|---|---|
+| `urlRef` | Required. A `secret://` reference that resolves, in the harness's own environment, to the destination URL. An inline URL is rejected. |
+| `headers` | Optional, at most 32, each value at most 8 KiB. Sent on the `PUT`. A value is plaintext or a `secret://` reference. A name that conventionally carries a credential must be a reference: `Authorization`, `Authentication`, `Cookie`, `Token`, `ApiKey`, `Api-Key`, `Key`, `Secret`, `Signature`, `Password`, `Credential`, `Session`, and any name ending in `-token`, `-key`, `-apikey`, `-auth`, `-secret`, `-signature`, `-password` or `-credential` (underscores read as hyphens). `Host`, `Content-Length`, `Transfer-Encoding` and the hop-by-hop headers belong to the HTTP client and are rejected. A `Content-Type` entry replaces the harness's own. |
+
+**The URL is a capability.** Whoever holds a presigned URL can write the
+object, so the URL is handled like an API key: it never appears in
+`RunConfig`. The reference is resolved through the same secret store as
+`apiKeyRef` (an environment variable, a file, or an SSM parameter), so
+the URL is never written in the `RunConfig`: the config names where the
+deployment keeps it. The URL and every header value are kept out of
+logs, traces, events and the `RunResult`:
+
+- `RunConfig.Redact()` rewrites `urlRef` and every header value, so a
+  recorded config carries only the header names.
+- The export receipt's `uri` is the URL's origin (scheme and host), and
+  is empty when the reference did not resolve.
+- An upload failure reports the origin, the HTTP status, and the store's
+  own error code when the response carries one (`HTTP 403 Forbidden
+  (SignatureDoesNotMatch)`). The response body is otherwise discarded,
+  because an object store echoes the request's signature in it.
+
+**The resolved URL** must use `https://`, carry a host, and carry no
+userinfo or fragment. `http://` is accepted only for a loopback host
+(`localhost`, a name ending in `.localhost`, `127.0.0.0/8`, `::1`) that
+also resolves to a loopback address, which keeps local development and
+tests off TLS without sending a capability across a network in clear
+text. The reference is resolved once when the harness is constructed, so
+a reference that is unset or resolves to an unusable URL fails the run
+before its first turn, and again each time the harness uploads. A
+file-backed reference can therefore be replaced while the run is in
+progress; the presigned URL in place when the run ends must still be
+valid.
+
+**The request** is one `PUT` whose body is the object, with
+`Content-Length` set and a `Content-Type` of `application/gzip` for a
+workspace tarball, `application/json` for a `RunResult` or
+`application/x-ndjson` for a trace. Any `2xx` response is success. The client follows no
+redirect (a `3xx` is a failure), uses no proxy, and refuses to connect
+to a cloud metadata address: any link-local address (such as
+`169.254.169.254`), AWS's IPv6 service range `fd00:ec2::/32`, Alibaba
+Cloud's `100.100.100.200`, and any of these behind the NAT64 prefix
+`64:ff9b::/96`. Other private addresses are allowed, since a control
+plane's endpoint is commonly in-cluster. Each upload uses its own connection. The client allows
+30 s to connect, 10 s for the TLS handshake and 60 s for the response
+headers once the body is sent. A workspace upload
+is bounded at 5 minutes overall, the same budget the whole workspace
+handoff has, and the tarball at 1 GiB. The upload is attempted once. A
+`RunResult` upload is bounded at 30 s per attempt and retried as
+[Delivery](#delivery) describes. A trace upload is bounded at 60 s and
+attempted once; as with the `gcs` emitter, a trace that cannot be
+uploaded fails the run's finish: the process exits non-zero, and the
+failure is the run's `error` when the run has no earlier one. The
+`https-put` emitter keeps the
+command-output archive on local disk unless `traceEmitter.archive`
+names a destination (see
+[Command output capture](#command-output-capture)).
+
+Under `--dry-run` the destination is resolved and checked but not
+contacted.
+
+| Executor | `executor.workspaceExportTo` (`gs://`) | `executor.workspaceExportHttpsPut` |
+|---|---|---|
+| `local`, `container`, `k8s`, `k8s-sandbox` | Yes | Yes |
+| `api`, `none` | No (no workspace) | No (no workspace) |
+
+For the sandboxed executors the archive is produced inside the sandbox
+and uploaded by the harness, so the sandbox needs no route to the
+destination and never sees the URL. The `local` executor gives no such
+separation: the agent's commands run in the harness's own environment
+and can read the variable or file a reference names, and can replace a
+file. Because references are resolved again at upload time, a replaced
+file sends the workspace, together with every configured header, to a
+URL the agent chose. A run whose upload must be trusted belongs in a
+sandboxed executor.
+
+#### Follow-up runs and HTTPS PUT
+
+A presigned URL names exactly one object, so the harness cannot derive a
+per-run destination the way it does under `gs://`. Every run in a
+session uploads to whatever URL the reference resolves to when that run
+ends. A control plane that wants each run's archive replaces the
+referenced value (for example the mounted file) between runs; when the
+value is unchanged, a follow-up's upload replaces the earlier object, or
+is refused if the store or URL forbids a second write, which fails a
+required export. Each run's receipt carries the SHA-256 of what it
+uploaded. The `https-put` result sink and trace emitter behave the
+same way: one object each, uploaded to by every run.
 
 ### Dry-run
 
@@ -1076,7 +1240,7 @@ configuration space — the common cases. Anything below requires
 | `permissionPolicy` | `policy-engine` requires `policyFile`; the optional `fallback` field (`allow-all`, `deny-all`, `deny-side-effects`, `ask-upstream`) defaults to `deny-side-effects` when unset. Chained policy engines are rejected. |
 | `codeScanner` | `composite` requires `codeScanner.scanners` (each entry from the non-composite set). |
 | `guardRail` | `composite` requires `guardRail.stages`. Per-phase restriction (`phases`), bespoke criteria, and the classifier timeout are file-only. An empty `phases` runs the guard at all three phases, except that `shieldstral` then checks only `pre_turn` and `post_turn`; `pre_tool` is opt-in (see [`guardrails.md`](guardrails.md#shieldstral)). |
-| `traceEmitter` | `bucket` / `objectPrefix` / `credential` (the `gcs` emitter's routing — selectable via `--trace-emitter gcs` but configurable only by file). |
+| `traceEmitter` | `bucket` / `objectPrefix` / `credential` (the `gcs` emitter's routing — selectable via `--trace-emitter gcs` but configurable only by file), and `httpsPut` (the `https-put` emitter's destination, likewise file-only). |
 | `provider` | Multi-provider routing via `providers{}` plus a `modelRouter` of type `dynamic` or `per-mode`. |
 | `tools.mcpServers` | Remote MCP server registration. |
 | `tools.controlPlane` | Control-plane-fulfilled tools (gRPC transport only). See [Control-plane tools](#control-plane-tools). |
@@ -1948,7 +2112,7 @@ instead.
 | Same, but the run's outcome was already non-`success` (e.g. `max_turns`, `error`) | The original outcome, unchanged | A `postRun` failure never masks the primary failure cause; it is still visible in `RunTrace.HookResults` and `RunResult.hookFailures`. |
 | A hook with `continueOnError: true` fails or times out | The phase's outcome is unaffected | Recorded as a transport `warning` event and in `HookResults`; the remaining hooks in the phase still run. |
 
-Every trace emitter (`jsonl`, `otel`, `gcs`) records each hook's result
+Every trace emitter (`jsonl`, `otel`, `gcs`, `https-put`) records each hook's result
 in `RunTrace.HookResults`. The `otel` emitter also exports one `hook`
 span per execution under its `hooks.preRun` / `hooks.postRun` phase
 span, and attaches the output tail only when `captureContent` is on;

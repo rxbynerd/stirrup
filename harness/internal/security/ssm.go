@@ -152,6 +152,11 @@ func collectSecretRefs(config *types.RunConfig) []string {
 		}
 	}
 	refs = appendGuardRailSecretRefs(refs, config.GuardRail)
+	refs = append(refs, config.Executor.WorkspaceExportHTTPSPut.SecretRefs()...)
+	if config.ResultSink != nil {
+		refs = append(refs, config.ResultSink.HTTPSPut.SecretRefs()...)
+	}
+	refs = append(refs, config.TraceEmitter.HTTPSPut.SecretRefs()...)
 	return refs
 }
 

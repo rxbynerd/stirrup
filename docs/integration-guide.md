@@ -137,7 +137,11 @@ status.
 When a build fails because a file named by `provider.replayFile`,
 `permissionPolicy.policyFile` or `provider.gcpCredentialsFile` (or the
 same field of a `providers` entry) cannot be used from the harness
-host, the `error` event names only the field, whatever the cause:
+host, the `error` event names only the field, whatever the cause. A
+`secret://file://` reference in `provider.apiKeyRef`,
+`executor.workspaceExportHttpsPut.urlRef`, `resultSink.httpsPut.urlRef`
+or `traceEmitter.httpsPut.urlRef`, or in one of their `headers`, is
+reported the same way:
 `building harness: provider.replayFile unavailable on the harness
 host; the harness log has the detail`. A control plane therefore
 cannot use those fields to probe the harness filesystem. The detail is
@@ -977,7 +981,10 @@ re-provisioning the sandbox.
   `gs://bucket/runs/r1/<followUpRunId>/workspace.tar.gz`), so successive
   tarballs never overwrite each other. The follow-up's run ID is the
   `runId` on its `RunResult`. Export failures follow the same
-  `executor.workspaceExportRequired` policy as the primary run.
+  `executor.workspaceExportRequired` policy as the primary run. Under
+  `executor.workspaceExportHttpsPut` there is one object: every run
+  uploads to the URL its reference resolves to at that moment (see
+  [`configuration.md`](configuration.md#follow-up-runs-and-https-put)).
 - A `cancel` ends the session wherever it lands: during a run it
   cancels that run and no grace window opens afterwards; during the
   grace window it closes the stream promptly without an extra `done`.
@@ -1552,10 +1559,10 @@ Four independent channels; use the ones the topology supports:
 
 | Channel | Carries | Topology |
 |---|---|---|
-| `done` event | Outcome in `stop_reason`; run summary, including the trace reference, in `trace` | gRPC. The primary terminal signal for a control plane, sent after the git handoff, workspace export, trace upload, and any `gcs` or `gcp-pubsub` result delivery. |
-| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage (with cache and reasoning breakdown, see [`trace-inspection.md`](trace-inspection.md#token-usage)), duration, `finalAssistantText` (capped at 128 KiB by default), verifier verdict, command-output archive pointer, `traceReference` | Any (`resultSink.type: "stdout-json"`); `--output json` is the CLI equivalent. The line lands on process stdout, so a job control plane must collect Pod logs if it needs this detail. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. Setting `resultSink.type` to `gcp-pubsub` or `gcs` instead delivers the same JSON as one Pub/Sub message or one GCS object per run, with bounded retry. A delivery that still fails is reported as a `warning` starting `result sink:` before `done` (see [`configuration.md`](configuration.md#delivery)). |
-| Trace emitter | Full event-by-event record (`jsonl` file, `gcs` object `gs://bucket/prefix/<runId>.jsonl`, or `otel` spans/metrics) | Any. JSONL schema: [`trace-inspection.md`](trace-inspection.md). Production builds embed a `Redact()`-ed `RunConfig`; debug builds can explicitly relax trace redaction. |
-| Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`) | Any. Required by default: a failed export turns a successful run into `handoff_failed`; `executor.workspaceExportRequired: false` only records it. |
+| `done` event | Outcome in `stop_reason`; run summary, including the trace reference, in `trace` | gRPC. The primary terminal signal for a control plane, sent after the git handoff, workspace export, trace upload, and any `gcs`, `gcp-pubsub` or `https-put` result delivery. |
+| `STIRRUP_RESULT` stdout line / `resultSink` | `RunResult` JSON: outcome, token usage (with cache and reasoning breakdown, see [`trace-inspection.md`](trace-inspection.md#token-usage)), duration, `finalAssistantText` (capped at 128 KiB by default), verifier verdict, command-output archive pointer, `traceReference` | Any (`resultSink.type: "stdout-json"`); `--output json` is the CLI equivalent. The line lands on process stdout, so a job control plane must collect Pod logs if it needs this detail. Parse the **last** matching line — the sentinel is defence against a model echoing a fake one. Setting `resultSink.type` to `gcp-pubsub` or `gcs` instead delivers the same JSON as one Pub/Sub message or one GCS object per run, with bounded retry; `https-put` delivers it with one HTTP `PUT` to a URL supplied as a secret reference, for a control plane outside Google Cloud. A delivery that still fails is reported as a `warning` starting `result sink:` before `done` (see [`configuration.md`](configuration.md#delivery)). |
+| Trace emitter | Full event-by-event record (`jsonl` file, `gcs` object `gs://bucket/prefix/<runId>.jsonl`, `https-put` upload of the same object to a URL supplied as a secret reference, or `otel` spans/metrics) | Any. JSONL schema: [`trace-inspection.md`](trace-inspection.md). Production builds embed a `Redact()`-ed `RunConfig`; debug builds can explicitly relax trace redaction. |
+| Workspace export | `tar.gz` of the sandbox workspace to `gs://…` (`executor.workspaceExportTo`) or to an HTTPS URL with one `PUT` (`executor.workspaceExportHttpsPut`) | Any. Required by default: a failed export turns a successful run into `handoff_failed`; `executor.workspaceExportRequired: false` only records it. |
 
 For OTel specifically: `sessionName` labels the run in logs and
 carries on every span as `gen_ai.conversation.id` and `session.id`
@@ -1570,6 +1577,53 @@ that fills unset exporter settings; option keys are checked when the
 harness builds its exporters, so an unknown key fails the run at start
 rather than at `ValidateRunConfig`. Backends and protocol matrix:
 [`observability-cloud.md`](observability-cloud.md).
+
+#### Collecting a workspace outside Google Cloud
+
+Goal: receive the sandbox's workspace on a control plane that is not on
+Google Cloud, including from the `k8s` executor, whose sandbox Pod
+nothing outside can mount.
+
+1. Mint an upload URL for the run: a presigned `PUT` URL from the object
+   store, or a URL on an endpoint the control plane serves.
+2. Provision it in the harness's environment, not in the `RunConfig`:
+   on Kubernetes, a Secret mounted into the harness Pod (or exposed as
+   an environment variable).
+3. Reference it from the task:
+
+   ```json
+   "executor": {
+     "type": "k8s",
+     "workspaceExportHttpsPut": {
+       "urlRef": "secret://file:///var/run/stirrup/export-url"
+     }
+   }
+   ```
+
+4. Read the receipt on `done.trace.workspace_export`: `status`, `bytes`,
+   `sha256` and `files` describe what was uploaded, and `uri` is the
+   destination's origin only.
+
+The archive is produced inside the sandbox and uploaded by the harness
+Pod, so the sandbox needs neither a route to the destination nor a
+credential, and the control plane needs no `pods/exec` permission. A
+harness that predates the field ignores it without notice, so confirm
+`executor.workspaceExportHttpsPut.urlRef` is listed in
+`ready.config_fields` before relying on it. Field rules, timeouts and
+follow-up behaviour:
+[`configuration.md`](configuration.md#https-put-destinations).
+
+The run's `RunResult` can travel the same way: set `resultSink` to
+`{"type": "https-put", "httpsPut": {"urlRef": "secret://…"}}` with a
+second upload URL, and confirm `resultSink.httpsPut.urlRef` is in
+`ready.config_fields`. Delivery and retry rules:
+[`configuration.md`](configuration.md#delivery).
+
+The trace takes a third URL: `traceEmitter` set to
+`{"type": "https-put", "httpsPut": {"urlRef": "secret://…"}}`, gated on
+`traceEmitter.httpsPut.urlRef` in `ready.config_fields`. With all three
+set, a control plane outside Google Cloud receives the workspace, the
+answer and the complete record without collecting Pod logs.
 
 ### Linking a run to the control plane's own page
 
@@ -1654,7 +1708,7 @@ topology):
 
 Everything else on `RunConfig` is expressible in a
 `task_assignment`, including the executor's
-`workspaceExportTo`, `k8sEgressProxyUrl`,
+`workspaceExportTo`, `workspaceExportHttpsPut`, `k8sEgressProxyUrl`,
 `sandboxIdentity`, and `gitProxy` blocks, plus `resultSink`,
 `toolChoiceEscalation`, `correlation`, `observability.logsExport`,
 `observability.serviceName`, `tools.profile`, `tools.commandOutput`,

@@ -47,6 +47,7 @@ func secretFixtures() []secretFixture {
 		{"pem_private_key", pemKey("EC PRIVATE KEY", pemBodyLines(3), "\n"), pemBodyLines(3)[2]},
 		{"secret_ref", "secret:" + "//provider/api-key", "provider/api-key"},
 		{"api_key_header", "x-api-key: " + "0123456789abcdefABCDEF", "0123456789abcdefABCDEF"},
+		{"presigned_signature", "https://b.s3.amazonaws.com/k?X-Amz-Expires=900&X-Amz-Signature=" + strings.Repeat("0a1b2c3d", 8), strings.Repeat("0a1b2c3d", 8)},
 		{"generic_hex_secret", "api_key = " + "0123456789abcdef0123456789abcdef", "0123456789abcdef0123456789abcdef"},
 		{"oidc_jwt", fatJWTFixture(), "c2lnbmF0dXJlLXZhbHVlLTAxMjM0NTY3ODk"},
 		{"gcp_access_token", "ya29." + "A0ARrdaMfakeTokenValue_0123456789", "A0ARrdaMfakeTokenValue_0123456789"},

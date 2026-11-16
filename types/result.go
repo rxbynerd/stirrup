@@ -140,7 +140,9 @@ const (
 
 // ExportReceipt describes one workspace export attempt.
 type ExportReceipt struct {
-	// URI is the destination object URI.
+	// URI is the destination object URI. For an HTTPS PUT destination it
+	// is the URL's origin (scheme and host) only, and empty when the URL
+	// reference did not resolve.
 	URI string `json:"uri"`
 
 	// Status is one of the ExportStatus* constants.

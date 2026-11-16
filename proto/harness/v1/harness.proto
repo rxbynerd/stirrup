@@ -1198,12 +1198,15 @@ message ResultSinkConfig {
   //                   gs://{bucket}/{object_prefix}{runId}.result.json.
   //   "gcp-pubsub"  — publishes the RunResult JSON as one message on
   //                   topic, with a "runId" message attribute.
-  // The gcs and gcp-pubsub sinks deliver after the trace is finished and
-  // before the run's "done", making up to three attempts for transient
-  // failures; a delivery that still fails is logged and reported as a
-  // "warning" event starting "result sink:" before "done", and does not
-  // change the run's outcome. The gcs sink never replaces an existing
-  // object.
+  //   "https-put"   — uploads the RunResult JSON with one HTTP PUT to
+  //                   the URL https_put.url_ref resolves to.
+  // The gcs, gcp-pubsub and https-put sinks deliver after the trace is
+  // finished and before the run's "done", making up to three attempts
+  // for transient failures; a delivery that still fails is logged and
+  // reported as a "warning" event starting "result sink:" before "done",
+  // and does not change the run's outcome. The gcs sink never replaces
+  // an existing object. The https-put sink names one object, so every
+  // run of a session uploads to the URL its reference resolves to then.
   string type = 1;
 
   // Required for "gcp-pubsub". The full topic resource name,
@@ -1238,6 +1241,10 @@ message ResultSinkConfig {
   // "gcp-workload-identity" credential. Accepted types:
   // "gcp-workload-identity" and "gcp-default".
   CredentialConfig credential = 8;
+
+  // Required for "https-put"; rejected by validation on every other
+  // type. The destination the RunResult JSON is uploaded to.
+  HttpsPutConfig https_put = 9;
 }
 
 // LogsExportConfig opts the run's structured logs into OTLP export
@@ -1697,7 +1704,9 @@ message GitHandoff {
 // ExportReceipt mirrors types.ExportReceipt: the result of one run's
 // workspace export.
 message ExportReceipt {
-  // The destination object URI.
+  // The destination object URI. For an HTTPS PUT destination, the URL's
+  // origin (scheme and host) only; empty when the URL reference did not
+  // resolve.
   string uri = 1;
 
   // "uploaded" when a non-empty archive reached the destination, "empty"
@@ -2429,7 +2438,8 @@ message ExecutorConfig {
   // Optional. Destination URI for a tarball of the executor's workspace,
   // uploaded at the end of every run, whatever its outcome, before the
   // run's "done" event. Only the "gs://bucket/path" scheme is accepted
-  // today; the bucket path must be non-empty. Rejected for the "api" and
+  // here, with a non-empty bucket path; an HTTPS destination goes in
+  // workspace_export_https_put. Rejected for the "api" and
   // "none" executors, neither of which has a workspace. A workspace with
   // no files uploads an empty archive and reports export status "empty";
   // a missing workspace is an export failure.
@@ -2453,11 +2463,41 @@ message ExecutorConfig {
 
   // Optional. Whether a failed workspace export fails an otherwise
   // successful run with outcome "handoff_failed". Unset defaults to true
-  // when workspace_export_to is set. Rejected when workspace_export_to is
-  // empty.
+  // when an export destination is set. Rejected when neither
+  // workspace_export_to nor workspace_export_https_put is set.
   optional bool workspace_export_required = 18;
 
-  // Next available field number: 19.
+  // Optional. Exports the workspace as workspace_export_to does, but
+  // uploads the archive with one HTTP PUT to the URL url_ref resolves
+  // to. Mutually exclusive with workspace_export_to, and bound by the
+  // same executor restriction. The receipt's uri is the URL's origin
+  // (scheme and host), never the URL.
+  HttpsPutConfig workspace_export_https_put = 19;
+
+  // Next available field number: 20.
+}
+
+// HttpsPutConfig mirrors types.HTTPSPutConfig: a destination the harness
+// uploads one object to with a single HTTP PUT, such as a presigned
+// object-store URL or an endpoint the control plane serves. The URL is a
+// capability: it is supplied as a secret reference, resolved in the
+// harness's own environment each time it uploads, and never written to a
+// log, trace, event or RunResult.
+message HttpsPutConfig {
+  // Required. A "secret://" reference resolving to the destination URL.
+  // An inline URL is rejected. The resolved URL must use https://, or
+  // http:// with a loopback host, and carry no userinfo or fragment.
+  string url_ref = 1;
+
+  // Optional. Headers sent on the PUT request; at most 32. Values are
+  // plaintext or a "secret://" reference. Names that conventionally
+  // carry a credential must be references: Authorization,
+  // Authentication, Cookie, Token, ApiKey, Api-Key, and names ending in
+  // -token, -key, -apikey, -auth, -secret, -signature, -password or
+  // -credential. Headers the HTTP client owns (Host,
+  // Content-Length, Transfer-Encoding and the hop-by-hop headers) are
+  // rejected. A Content-Type entry replaces the harness's own.
+  map<string, string> headers = 2;
 }
 
 // SandboxIdentityConfig requests a short-lived, control-plane-issued
@@ -2698,6 +2738,13 @@ message TraceEmitterConfig {
   //             "run" span with child spans for turns, tool calls, provider
   //             streaming, context compaction, verification, permission checks,
   //             and git operations. The wire protocol is selected by `protocol`.
+  //   "gcs"   — upload the run's JSONL trace line to
+  //             gs://{bucket}/{object_prefix}{runId}.jsonl. Requires bucket.
+  //   "https-put" — upload the run's JSONL trace line with one HTTP PUT
+  //             to the URL https_put.url_ref resolves to. Requires
+  //             https_put. The destination names one object, so every
+  //             run of a session uploads to the URL its reference
+  //             resolves to then.
   string type = 1;
 
   // For "jsonl": filesystem path to the output trace file.
@@ -2794,6 +2841,11 @@ message TraceEmitterConfig {
   // reported as the RunResult's commandOutputArchive. See
   // docs/configuration.md#command-output-capture.
   TraceArchiveConfig archive = 14;
+
+  // For "https-put": the destination the JSONL trace line is uploaded
+  // to. Required when type == "https-put"; rejected by validation for
+  // every other type.
+  HttpsPutConfig https_put = 15;
 
   // Credential override for the "gcs" emitter is intentionally NOT
   // surfaced on the wire today. The runtime resolves credentials via

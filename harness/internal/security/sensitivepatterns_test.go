@@ -242,6 +242,25 @@ func TestDetectSensitive_SecretRefIsWarn(t *testing.T) {
 	must.Equal(TierWarn, f.Tier)
 }
 
+// A presigned URL signature reports at warn tier, and an ordinary URL
+// reports nothing.
+func TestDetectSensitive_PresignedSignatureIsWarn(t *testing.T) {
+	t.Run("presigned url", func(t *testing.T) {
+		must := require.New(t)
+		fs := DetectSensitive("download from https://b.s3.amazonaws.com/k?X-Amz-Expires=900&X-Amz-Signature=" + strings.Repeat("0a1b2c3d", 8))
+		f, ok := findByName(fs, "secret/presigned_signature")
+		must.True(ok, "expected secret/presigned_signature finding, got %v", fs)
+		must.Equal(TierWarn, f.Tier)
+	})
+	for _, content := range ordinarySignatureURLs() {
+		t.Run(content, func(t *testing.T) {
+			must := require.New(t)
+			fs := DetectSensitive(content)
+			must.False(hasFinding(fs, "secret/presigned_signature"), "ordinary text reported: %v", fs)
+		})
+	}
+}
+
 func TestDetectSensitive_BearerProse(t *testing.T) {
 	t.Run("prose mention does not latch", func(t *testing.T) {
 		must := require.New(t)
@@ -397,6 +416,7 @@ func TestPrefilterLiterals_StayInScrubberSources(t *testing.T) {
 		"azure_storage_key":     azureKeyPrefilterLits,
 		"api_key_header":        apiKeyHeaderPrefilterLits,
 		"generic_hex_secret":    genericHexPrefilterLits,
+		"presigned_signature":   presignedPrefilterLits,
 	} {
 		t.Run(name, func(t *testing.T) {
 			must := require.New(t)

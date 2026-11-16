@@ -214,6 +214,47 @@ func TestNeedsSSM_DetectsSSMReferences(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "SSM in the HTTPS PUT workspace export URL",
+			config: &types.RunConfig{
+				Executor: types.ExecutorConfig{
+					WorkspaceExportHTTPSPut: &types.HTTPSPutConfig{URLRef: "secret://ssm:///runs/export-url"},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "SSM in an HTTPS PUT workspace export header",
+			config: &types.RunConfig{
+				Executor: types.ExecutorConfig{
+					WorkspaceExportHTTPSPut: &types.HTTPSPutConfig{
+						URLRef:  "secret://EXPORT_URL",
+						Headers: map[string]string{"Authorization": "secret://ssm:///runs/export-auth"},
+					},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "SSM in the HTTPS PUT result sink URL",
+			config: &types.RunConfig{
+				ResultSink: &types.ResultSinkConfig{
+					Type:     "https-put",
+					HTTPSPut: &types.HTTPSPutConfig{URLRef: "secret://ssm:///runs/result-url"},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "SSM in the HTTPS PUT trace emitter URL",
+			config: &types.RunConfig{
+				TraceEmitter: types.TraceEmitterConfig{
+					Type:     "https-put",
+					HTTPSPut: &types.HTTPSPutConfig{URLRef: "secret://ssm:///runs/trace-url"},
+				},
+			},
+			want: true,
+		},
+		{
 			name: "SSM in VCS backend",
 			config: &types.RunConfig{
 				Executor: types.ExecutorConfig{

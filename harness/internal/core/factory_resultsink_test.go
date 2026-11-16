@@ -9,7 +9,7 @@ import (
 	"github.com/rxbynerd/stirrup/types"
 )
 
-func TestNewResultSink_BuildsRemoteSinksWithGCPCredentials(t *testing.T) {
+func TestNewResultSink_BuildsEachSinkWithItsDependencies(t *testing.T) {
 	cases := []struct {
 		name     string
 		cfg      *types.ResultSinkConfig
@@ -22,6 +22,10 @@ func TestNewResultSink_BuildsRemoteSinksWithGCPCredentials(t *testing.T) {
 			Credential: &types.CredentialConfig{Type: "gcp-default"},
 		}, (*resultsink.PubSubSink)(nil)},
 		{"stdout-json needs no credential", &types.ResultSinkConfig{Type: "stdout-json"}, (*resultsink.StdoutJSONSink)(nil)},
+		{"https-put needs no credential", &types.ResultSinkConfig{
+			Type:     "https-put",
+			HTTPSPut: &types.HTTPSPutConfig{URLRef: "secret://RESULT_URL"},
+		}, (*resultsink.HTTPSPutSink)(nil)},
 		{"nil config", nil, resultsink.NoneSink{}},
 	}
 	for _, tc := range cases {

@@ -147,6 +147,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	if err != nil {
 		return nil, markBuildFailure(types.BuildFailureCredential, fmt.Errorf("build secret store: %w", err))
 	}
+	if err := checkHTTPSPutDestinations(ctx, config, secrets); err != nil {
+		return nil, err
+	}
 
 	// 1. Model router. Needs only the provider TYPE (a string), not the
 	// constructed adapter, so it precedes buildComponents.
@@ -950,10 +953,14 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 	}
 	cred, err := src.Resolve(ctx)
 	if err != nil {
-		if _, static := src.(*credential.StaticSource); static {
+		_, static := src.(*credential.StaticSource)
+		if static {
 			err = &APIKeyRefError{Ref: cfg.APIKeyRef, Err: err}
 		}
 		err = fmt.Errorf("resolve credentials: %w", err)
+		if static && security.IsFileSecretRef(cfg.APIKeyRef) {
+			return nil, &HostFileError{Field: "provider.apiKeyRef", Err: err}
+		}
 		if cfg.Credential != nil && cfg.Credential.Type == "gcp-service-account" {
 			return nil, &HostFileError{Field: "provider.gcpCredentialsFile", Err: err}
 		}
@@ -2448,7 +2455,7 @@ func otelEmitterOptions(cfg types.TraceEmitterConfig, exporters platform.Exporte
 // for every emitter type — so a release binary builds every emitter with
 // redaction on regardless of what a caller passes in. See
 // docs/security.md#debug-builds.
-func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, exporters platform.Exporters, resourceOpts observability.ResourceOptions, debugRedactionDisabled bool) (trace.TraceEmitter, error) {
+func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, secrets security.SecretStore, exporters platform.Exporters, resourceOpts observability.ResourceOptions, debugRedactionDisabled bool) (trace.TraceEmitter, error) {
 	effectiveRedactionDisabled := debugRedactionDisabled && debugbuild.DebugBuildEnabled()
 	switch cfg.Type {
 	case "otel":
@@ -2465,6 +2472,12 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, export
 			CredentialSource:  credSrc,
 			RedactionDisabled: effectiveRedactionDisabled,
 		})
+	case "https-put":
+		return trace.NewHTTPSPutTraceEmitter(trace.HTTPSPutTraceEmitterOptions{
+			Target:            cfg.HTTPSPut,
+			Secrets:           secrets,
+			RedactionDisabled: effectiveRedactionDisabled,
+		})
 	case "jsonl", "":
 		var w io.Writer
 		if cfg.FilePath != "" {
@@ -2479,7 +2492,7 @@ func buildTraceEmitter(ctx context.Context, cfg types.TraceEmitterConfig, export
 		}
 		return trace.NewJSONLTraceEmitter(w, effectiveRedactionDisabled), nil
 	default:
-		return nil, fmt.Errorf("unsupported trace emitter type: %q (supported: jsonl, otel, gcs)", cfg.Type)
+		return nil, fmt.Errorf("unsupported trace emitter type: %q (supported: jsonl, otel, gcs, https-put)", cfg.Type)
 	}
 }
 
@@ -2519,19 +2532,34 @@ func buildGCPCredentialSource(cfg *types.CredentialConfig) (credential.Source, e
 	}
 }
 
+// secretStoreInitTimeout bounds building a secret store outside loop
+// construction, where the only slow step is loading AWS configuration
+// for an SSM reference.
+const secretStoreInitTimeout = 10 * time.Second
+
 // NewResultSink builds the result sink cfg selects. The gcs and
 // gcp-pubsub sinks authenticate with the same credential resolution as
-// the gcs trace emitter.
+// the gcs trace emitter; the https-put sink resolves its destination
+// through the same secret store as the rest of the run.
 func NewResultSink(cfg *types.ResultSinkConfig) (resultsink.ResultSink, error) {
-	var creds credential.Source
-	if cfg.IsRemote() {
+	var deps resultsink.Dependencies
+	if cfg.UsesGCPCredential() {
 		source, err := buildGCPCredentialSource(cfg.Credential)
 		if err != nil {
 			return nil, fmt.Errorf("resultSink credential: %w", err)
 		}
-		creds = source
+		deps.Credentials = source
 	}
-	return resultsink.NewResultSink(cfg, creds)
+	if cfg != nil && cfg.Type == "https-put" {
+		ctx, cancel := context.WithTimeout(context.Background(), secretStoreInitTimeout)
+		defer cancel()
+		secrets, err := security.NewAutoSecretStore(ctx, &types.RunConfig{ResultSink: cfg})
+		if err != nil {
+			return nil, fmt.Errorf("resultSink secret store: %w", err)
+		}
+		deps.Secrets = secrets
+	}
+	return resultsink.NewResultSink(cfg, deps)
 }
 
 // resolveCompatProfile maps the closed enum of supported

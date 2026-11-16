@@ -53,7 +53,7 @@ attribute value before delegation. `LogValuer` values are resolved
 first; errors, `fmt.Stringer` values and byte slices become scrubbed
 strings, groups are scrubbed recursively, and any other composite value
 (map, slice, struct) is rendered as one scrubbed JSON string. Numeric,
-boolean, time and duration values are unchanged. Nineteen regex patterns
+boolean, time and duration values are unchanged. Twenty regex patterns
 are scrubbed, covering:
 
 - Anthropic API keys
@@ -102,6 +102,11 @@ are scrubbed, covering:
   whose path has more than eight space-separated parts, starts with `-`,
   or holds a quote or shell syntax is not recognised either
 - API-key header values
+- The signature and session-token query parameters of presigned
+  object-store URLs (`X-Amz-Signature`, `X-Amz-Security-Token`,
+  `X-Goog-Signature`, and `sig` or `signature` after a word boundary
+  or a JSON-escaped `&`). The parameter and its value are replaced and
+  the rest of the URL stays readable
 - Key/value-anchored 32-character hex secrets
 - `secret://` references themselves, through the reference syntax the
   secret stores accept (letters, digits and `_./:@+~%=-`), except in a
@@ -491,6 +496,7 @@ Every `net/http` provider adapter and the MCP client uses an explicit
 | Provider streaming (Bedrock, AWS SDK client) | SDK defaults (30 s dial, 10 s TLS handshake) plus a 120 s idle read on the connection, set by the adapter because the SDK applies none to Bedrock Runtime; no total cap |
 | MCP client | 30 s |
 | Web fetch tool | 30 s |
+| HTTPS PUT upload ([`configuration.md`](configuration.md#https-put-destinations)) | 30 s dial, 10 s TLS handshake, 60 s response header, and a total cap sized to the object (5 minutes for a workspace tarball, 30 s per attempt for a `RunResult`, 60 s for a trace); no redirects, no proxy, cloud metadata addresses (including every link-local address) refused at dial time |
 
 `stirrup harness` and `stirrup job` run every provider call under the
 run context, whose deadline is the RunConfig `timeout`.
@@ -589,7 +595,9 @@ out:
    issued; the resolved IP is checked against the blocklist.
 3. **IP block list:** RFC 1918 private ranges, RFC 6598 carrier-grade
    NAT (`100.64.0.0/10`), loopback (127/8), link-local (169.254/16),
-   and multicast (224/4 and similar) are rejected. This prevents
+   and multicast (224/4 and similar) are rejected. An address under the
+   NAT64 prefix `64:ff9b::/96` is judged by the IPv4 address it embeds.
+   This prevents
    cloud-metadata exfiltration (`169.254.169.254`) and lateral
    movement to internal services — including deployment targets that
    route the CGNAT range to internal subnets.
@@ -736,7 +744,10 @@ The filter blocks:
 
 A successful `run_command` therefore cannot leak the harness's
 own credentials, even by accident, even if the model asks the
-shell to print them.
+shell to print them. A file-backed `secret://file://` reference is not
+covered: the agent can read or replace the file, and a replaced HTTPS
+PUT destination file redirects the upload
+([`configuration.md`](configuration.md#https-put-destinations)).
 
 ## Container hardening
 

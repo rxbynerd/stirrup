@@ -75,7 +75,7 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.String("edit-strategy", "", "Edit strategy: whole-file, search-replace, udiff, multi (composite available only via --config). Defaults to multi when unset.")
 	f.String("verifier", "none", "Verifier: none, test-runner, llm-judge (composite available only via --config)")
 	f.String("git-strategy", "none", "Git strategy: none, deterministic")
-	f.String("trace-emitter", "jsonl", "Trace emitter: jsonl, otel, gcs")
+	f.String("trace-emitter", "jsonl", "Trace emitter: jsonl, otel, gcs, https-put (https-put takes its destination from traceEmitter.httpsPut in --config)")
 	f.String("otel-endpoint", "", "OTLP endpoint for the otel trace emitter (default: localhost:4317 for grpc; full URL ending in the gateway base path for http/protobuf, e.g. https://otlp-gateway-prod-us-east-0.grafana.net/otlp)")
 	f.String("otel-protocol", "", "OTLP wire protocol for the otel trace emitter: \"\" (default — the --otel-platform's required protocol, else grpc), grpc, http/protobuf. HTTP/JSON is not supported; managed gateways like Grafana Cloud use http/protobuf. See docs/observability-cloud.md.")
 	f.StringArray("otel-header", nil, "Repeatable key=value HTTP header attached to every OTLP export request (e.g. --otel-header Authorization=secret://LANGFUSE_AUTH). Values may be secret:// references resolved at exporter init; never pass raw secrets. Requires --otel-protocol=http/protobuf, or an --otel-platform that requires it (the gRPC path would send credentials in plaintext). Mirrors traceEmitter.headers; the OTEL_EXPORTER_OTLP_HEADERS env var is the SDK-native fallback when no headers are configured.")
@@ -111,8 +111,8 @@ func addRunConfigFlags(cmd *cobra.Command) {
 	f.Duration("provider-retry-max-delay", 0, "Per-attempt sleep ceiling for the default provider (also caps Retry-After hints). Applies only to the default provider; per-named-provider retry policy requires --config. Hard ceiling: 60s. Default (when unset): 16s.")
 	f.Duration("provider-retry-wall-clock", 0, "Wall-clock budget for the entire retry sequence on the default provider. Applies only to the default provider; per-named-provider retry policy requires --config. Hard ceiling: 300s. Default (when unset): 90s.")
 
-	f.String("export-workspace-to", "", "Upload the executor workspace as a gzipped tarball to this URI at the end of every run, before its done event (e.g. gs://bucket/runs/<runId>/workspace.tar.gz). Only gs:// is supported in v1. Mirrors executor.workspaceExportTo.")
-	f.Bool("export-workspace-required", true, "Whether a failed workspace export turns a successful run into outcome handoff_failed (non-zero exit). Defaults to true whenever --export-workspace-to is set; pass --export-workspace-required=false to only record the failure. Left unset, the --config value applies. Requires --export-workspace-to. Mirrors executor.workspaceExportRequired.")
+	f.String("export-workspace-to", "", "Upload the executor workspace as a gzipped tarball to this URI at the end of every run, before its done event (e.g. gs://bucket/runs/<runId>/workspace.tar.gz). Only gs:// is accepted; an HTTPS PUT destination is set with executor.workspaceExportHttpsPut in --config. Mirrors executor.workspaceExportTo.")
+	f.Bool("export-workspace-required", true, "Whether a failed workspace export turns a successful run into outcome handoff_failed (non-zero exit). Defaults to true whenever an export destination is set; pass --export-workspace-required=false to only record the failure. Left unset, the --config value applies. Requires an export destination (--export-workspace-to, or executor.workspaceExportTo or executor.workspaceExportHttpsPut in --config). Mirrors executor.workspaceExportRequired.")
 
 	f.Int("max-tool-parallel", 0, "Maximum number of async tool calls dispatched concurrently in a single turn. Range: 1-16. 0 uses the library default (4).")
 

@@ -37,7 +37,7 @@ stirrup/
       sandboxidentity/       # Control-plane sandbox identity token: exchange, env/credential-helper composition, expiry-driven refresh
       transport/             # Transport: stdio, gRPC bidi streaming, null (sub-agents)
       guard/                 # GuardRail: none, granite-guardian, shieldstral, cloud-judge, composite, phase-gated
-      trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC or OTLP/HTTP)
+      trace/                 # TraceEmitter: JSONL, OpenTelemetry (OTLP/gRPC or OTLP/HTTP), one-object upload (GCS, HTTPS PUT)
       observability/         # Structured logging (slog + ScrubHandler), OTel metrics
       observability/otlp/    # OTLP exporter construction for traces, metrics, logs (endpoint, TLS, headers, HTTP client)
       observability/platform/ # Platform profiles (traceEmitter.platform): registry, Resolve, Apply precedence, cloudwatch (SigV4), langfuse (langfuse.* attributes), phoenix (OpenInference); the only package that names a vendor
@@ -45,6 +45,7 @@ stirrup/
       security/              # SecretStore, LogScrubber, input validation, judge-prompt data fences
       jsonextract/           # Nonce-bound JSON verdict extraction from free-form model output (guard + verifier)
       mcp/                   # MCP client: remote tool discovery via Streamable HTTP
+      httpsput/              # One-object HTTP PUT upload to a secret-reference URL (workspace export, result sink and trace outside Google Cloud); errors name only the origin
       invariants/            # Test-only go/ast checks for cross-package properties: run ledger, scrubbing, sandbox boundary, byte bounds, proto mirror, outcomes
   eval/                      # Eval framework
     cmd/eval/main.go         # CLI: run, compare, baseline, mine-failures, drift, compare-to-production

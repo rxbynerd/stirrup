@@ -127,6 +127,99 @@ func TestBuildProvider_UnresolvedAPIKeyRefNamesTheReference(t *testing.T) {
 	must.ErrorContains(err, `apiKeyRef "secret://STIRRUP_TEST_UNSET_KEY"`)
 }
 
+// TestBuildProvider_UnreadableFileAPIKeyRefIsAHostFileError pins that a
+// file-backed key reference which does not resolve reaches a control plane
+// as its field alone, while the APIKeyRefError stays in the chain for the
+// CLI hint.
+func TestBuildProvider_UnreadableFileAPIKeyRefIsAHostFileError(t *testing.T) {
+	must := require.New(t)
+	path := filepath.Join(t.TempDir(), "absent-key")
+	cfg := types.ProviderConfig{Type: "anthropic", APIKeyRef: "secret://file://" + path}
+
+	_, err := buildProvider(context.Background(), cfg, security.NewEnvSecretStore())
+
+	var hostFile *HostFileError
+	must.ErrorAs(err, &hostFile)
+	must.Equal("provider.apiKeyRef", hostFile.Field)
+	must.NotContains(hostFile.Redacted(), path)
+	must.ErrorContains(err, path, "the logged error keeps the detail")
+	var keyErr *APIKeyRefError
+	must.ErrorAs(err, &keyErr)
+}
+
+// TestCheckHTTPSPutDestinations_FileReferenceFailuresAreHostFileErrors
+// pins that a file-backed destination reference that fails, whether
+// unreadable or holding no usable value, reaches a control plane as its
+// field alone, while an environment reference keeps its detail.
+func TestCheckHTTPSPutDestinations_FileReferenceFailuresAreHostFileErrors(t *testing.T) {
+	dir := t.TempDir()
+	notURL := filepath.Join(dir, "not-a-url")
+	require.New(t).NoError(os.WriteFile(notURL, []byte("ftp://uploads.example/key\n"), 0o600))
+	badHeader := filepath.Join(dir, "bad-header")
+	require.New(t).NoError(os.WriteFile(badHeader, []byte("\n"), 0o600))
+	urlFile := filepath.Join(dir, "url")
+	require.New(t).NoError(os.WriteFile(urlFile, []byte("https://uploads.example/key\n"), 0o600))
+	cases := []struct {
+		name      string
+		cfg       types.HTTPSPutConfig
+		wantField string
+	}{
+		{name: "missing url file", cfg: types.HTTPSPutConfig{URLRef: "secret://file://" + filepath.Join(dir, "absent")}, wantField: "executor.workspaceExportHttpsPut.urlRef"},
+		{name: "url file is a directory", cfg: types.HTTPSPutConfig{URLRef: "secret://file://" + dir}, wantField: "executor.workspaceExportHttpsPut.urlRef"},
+		{name: "url file holds no usable url", cfg: types.HTTPSPutConfig{URLRef: "secret://file://" + notURL}, wantField: "executor.workspaceExportHttpsPut.urlRef"},
+		{
+			name:      "missing header file",
+			cfg:       types.HTTPSPutConfig{URLRef: "secret://file://" + urlFile, Headers: map[string]string{"Authorization": "secret://file://" + filepath.Join(dir, "absent")}},
+			wantField: "executor.workspaceExportHttpsPut.headers[Authorization]",
+		},
+		{
+			name:      "header file holds no usable value",
+			cfg:       types.HTTPSPutConfig{URLRef: "secret://file://" + urlFile, Headers: map[string]string{"Authorization": "secret://file://" + badHeader}},
+			wantField: "executor.workspaceExportHttpsPut.headers[Authorization]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			cfg := &types.RunConfig{}
+			cfg.Executor.WorkspaceExportHTTPSPut = &tc.cfg
+			err := checkHTTPSPutDestinations(context.Background(), cfg, security.NewEnvSecretStore())
+			var hostFile *HostFileError
+			must.ErrorAs(err, &hostFile)
+			must.Equal(tc.wantField, hostFile.Field)
+			must.NotContains(hostFile.Redacted(), dir)
+		})
+	}
+	t.Run("result sink url file", func(t *testing.T) {
+		must := require.New(t)
+		cfg := &types.RunConfig{ResultSink: &types.ResultSinkConfig{Type: "https-put", HTTPSPut: &types.HTTPSPutConfig{URLRef: "secret://file://" + filepath.Join(dir, "absent")}}}
+		err := checkHTTPSPutDestinations(context.Background(), cfg, security.NewEnvSecretStore())
+		var hostFile *HostFileError
+		must.ErrorAs(err, &hostFile)
+		must.Equal("resultSink.httpsPut.urlRef", hostFile.Field)
+	})
+	t.Run("trace emitter url file", func(t *testing.T) {
+		must := require.New(t)
+		cfg := &types.RunConfig{}
+		cfg.TraceEmitter.Type = "https-put"
+		cfg.TraceEmitter.HTTPSPut = &types.HTTPSPutConfig{URLRef: "secret://file://" + filepath.Join(dir, "absent")}
+		err := checkHTTPSPutDestinations(context.Background(), cfg, security.NewEnvSecretStore())
+		var hostFile *HostFileError
+		must.ErrorAs(err, &hostFile)
+		must.Equal("traceEmitter.httpsPut.urlRef", hostFile.Field)
+	})
+	t.Run("environment reference", func(t *testing.T) {
+		must := require.New(t)
+		cfg := &types.RunConfig{}
+		cfg.Executor.WorkspaceExportHTTPSPut = &types.HTTPSPutConfig{URLRef: "secret://STIRRUP_TEST_UNSET_EXPORT_URL"}
+		err := checkHTTPSPutDestinations(context.Background(), cfg, security.NewEnvSecretStore())
+		var hostFile *HostFileError
+		must.NotErrorAs(err, &hostFile)
+		must.ErrorContains(err, "executor.workspaceExportHttpsPut: resolve urlRef")
+		must.ErrorContains(err, "STIRRUP_TEST_UNSET_EXPORT_URL")
+	})
+}
+
 // TestBuildProvider_CancelledReplayLoadIsNotAHostFileError pins that a
 // build cancelled while the recording loads reports the cancellation, not
 // an unusable replay file.

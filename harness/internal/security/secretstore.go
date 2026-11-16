@@ -15,6 +15,11 @@ const (
 	redactedPlaceholder = "[REDACTED]"
 )
 
+// IsFileSecretRef reports whether ref names a file on the harness host.
+func IsFileSecretRef(ref string) bool {
+	return strings.HasPrefix(ref, fileSchemePrefix)
+}
+
 // SecretStore resolves secret references to their plaintext values.
 type SecretStore interface {
 	Resolve(ctx context.Context, ref string) (string, error)

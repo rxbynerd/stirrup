@@ -155,7 +155,7 @@ func buildComponents(
 		sink.ok("permission-policy", permissionPolicyDetail(config.PermissionPolicy.Type, pp))
 	}
 
-	te, err := buildTraceEmitter(ctx, config.TraceEmitter, exporters, resourceOpts, debugRedactionDisabled)
+	te, err := buildTraceEmitter(ctx, config.TraceEmitter, secrets, exporters, resourceOpts, debugRedactionDisabled)
 	if err != nil {
 		if sink != nil {
 			sink.failStep("trace-emitter", err, traceHint(config.TraceEmitter.Type))

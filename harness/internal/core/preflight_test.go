@@ -687,6 +687,43 @@ func TestPreflight_WorkspaceExport_SkipsWithoutExportTarget(t *testing.T) {
 	must.Equal(PreflightSkip, st)
 }
 
+func TestPreflight_WorkspaceExport_HTTPSPutResolvesWithoutContactingTheDestination(t *testing.T) {
+	must := require.New(t)
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	t.Setenv("TEST_PREFLIGHT_EXPORT_URL", "https://uploads.example/bucket/workspace.tar.gz?X-Amz-Signature=deadbeefcafe")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Executor.WorkspaceExportHTTPSPut = &types.HTTPSPutConfig{URLRef: "secret://TEST_PREFLIGHT_EXPORT_URL"}
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+	must.NoError(err)
+
+	st, ok := stepStatus(report, "workspace-export")
+	must.True(ok, "workspace-export step missing")
+	must.Equal(PreflightOK, st)
+	detail, _ := stepDetail(report, "workspace-export")
+	must.Contains(detail, "https://uploads.example")
+	must.NotContains(detail, "deadbeefcafe")
+	must.NotContains(detail, "workspace.tar.gz")
+}
+
+func TestPreflight_WorkspaceExport_HTTPSPutUnresolvedReferenceFails(t *testing.T) {
+	must := require.New(t)
+	t.Setenv("TEST_PREFLIGHT_KEY", "sk-test")
+	srv, _ := metadataOnlyServer(t)
+	defer srv.Close()
+
+	cfg := preflightTestConfig(t, srv.URL+"/v1")
+	cfg.Executor.WorkspaceExportHTTPSPut = &types.HTTPSPutConfig{URLRef: "secret://TEST_PREFLIGHT_EXPORT_URL_NOT_SET"}
+	report, err := Preflight(context.Background(), cfg, PreflightOptions{})
+	must.NoError(err)
+
+	st, ok := stepStatus(report, "workspace-export")
+	must.True(ok, "workspace-export step missing")
+	must.Equal(PreflightFail, st)
+}
+
 func TestPreflight_NilConfigErrors(t *testing.T) {
 	must := require.New(t)
 	_, err := Preflight(context.Background(), nil, PreflightOptions{})

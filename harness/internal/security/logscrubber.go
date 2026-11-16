@@ -70,6 +70,12 @@ var secretPatterns = []namedPattern{
 	// know stirrup emits — adding more variants here is preferable to a
 	// permissive token catch-all.
 	{"api_key_header", regexp.MustCompile(`(?i)\b(?:api-key|x-api-key|Ocp-Apim-Subscription-Key)[ \t]*:[ \t]*[A-Za-z0-9._~+/=-]+`)},
+	// presigned_signature matches the signature and session-token query
+	// parameters of a presigned object-store URL (S3, GCS, Azure SAS,
+	// CloudFront), which make the URL a credential until it expires. The
+	// generic names need a word boundary or a JSON-escaped "&" before them,
+	// and the match stops before the "&" of the next parameter.
+	{"presigned_signature", regexp.MustCompile(`(?i)(?:X-Amz-Signature|X-Amz-Security-Token|X-Goog-Signature|\bsig(?:nature)?|\\u0026sig(?:nature)?)=[A-Za-z0-9%/+=_-]{16,}`)},
 	{"generic_hex_secret", regexp.MustCompile(`(?i)\b(?:api[_-]?key|token|secret|client[_-]?secret|access[_-]?token|auth[_-]?token|password)\b` + kvSep + `["']?[a-f0-9]{32}["']?`)},
 	// oidc_jwt matches a three-segment JWT whose header begins with
 	// "eyJ" (the base64url prefix of `{"`). Federation flows propagate

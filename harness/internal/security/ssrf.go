@@ -61,6 +61,54 @@ var cgnatNet = func() *net.IPNet {
 	return n
 }()
 
+// nat64Net is the RFC 6052 well-known NAT64 prefix. A NAT64 translator
+// forwards 64:ff9b::a.b.c.d to the IPv4 address a.b.c.d, so an address in
+// it is classified by the IPv4 address it embeds.
+var nat64Net = mustParseCIDR("64:ff9b::/96")
+
+// awsServiceNet holds AWS's IPv6 instance services: IMDS at fd00:ec2::254
+// and the EKS Pod Identity Agent at fd00:ec2::23.
+var awsServiceNet = mustParseCIDR("fd00:ec2::/32")
+
+// alibabaMetadataIP is Alibaba Cloud's instance-metadata endpoint.
+var alibabaMetadataIP = net.ParseIP("100.100.100.200")
+
+func mustParseCIDR(cidr string) *net.IPNet {
+	_, n, err := net.ParseCIDR(cidr)
+	if err != nil {
+		panic(err)
+	}
+	return n
+}
+
+// nat64EmbeddedIPv4 returns the IPv4 address ip embeds under the NAT64
+// well-known prefix, or nil when ip is not in that prefix.
+func nat64EmbeddedIPv4(ip net.IP) net.IP {
+	if ip.To4() != nil {
+		return nil
+	}
+	ip16 := ip.To16()
+	if ip16 == nil || !nat64Net.Contains(ip16) {
+		return nil
+	}
+	return net.IPv4(ip16[12], ip16[13], ip16[14], ip16[15])
+}
+
+// IsCloudMetadataIP reports whether ip can reach a cloud instance-metadata
+// or credential endpoint: any link-local address (169.254.169.254 and
+// fe80::/10), AWS's IPv6 service range, Alibaba Cloud's metadata address,
+// or one of those behind the NAT64 well-known prefix. It is the narrower
+// guard for clients that may reach private addresses but never metadata.
+func IsCloudMetadataIP(ip net.IP) bool {
+	if v4 := nat64EmbeddedIPv4(ip); v4 != nil {
+		ip = v4
+	}
+	return ip.IsLinkLocalUnicast() ||
+		ip.IsLinkLocalMulticast() ||
+		awsServiceNet.Contains(ip) ||
+		ip.Equal(alibabaMetadataIP)
+}
+
 // IsLoopbackHost reports whether host is a loopback target — the literal
 // "localhost"/"*.localhost" names or a loopback IP literal. It is the single
 // definition shared by every loopback-exemption site (the MCP connect-time
@@ -79,9 +127,16 @@ func IsLoopbackHost(host string) bool {
 }
 
 // IsPublicIP reports whether ip is a globally routable unicast address —
-// i.e. not loopback, private (incl. RFC 6598 CGNAT), multicast, link-local,
-// or unspecified.
+// i.e. not loopback, private (incl. RFC 6598 CGNAT), multicast, link-local
+// or unspecified, nor a cloud metadata address. An address under the NAT64
+// well-known prefix is classified by the IPv4 address it embeds.
 func IsPublicIP(ip net.IP) bool {
+	if v4 := nat64EmbeddedIPv4(ip); v4 != nil {
+		return IsPublicIP(v4)
+	}
+	if IsCloudMetadataIP(ip) {
+		return false
+	}
 	if v4 := ip.To4(); v4 != nil && cgnatNet.Contains(v4) {
 		return false
 	}
