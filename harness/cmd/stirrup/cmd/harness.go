@@ -1527,11 +1527,11 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	imageAdmission, err := resolveImageAdmissionPolicy(f, os.Getenv)
-	if err != nil {
-		return err
-	}
 	if dryRun {
+		imageAdmission, err := resolveImageAdmissionPolicy(f, os.Getenv)
+		if err != nil {
+			return err
+		}
 		outPath, _ := f.GetString("output-runconfig")
 		dryRunOpts := dryRunOptionsFromFlags(f)
 		dryRunOpts.ImageAdmission = imageAdmission
@@ -1543,6 +1543,11 @@ func runHarness(cmd *cobra.Command, args []string) error {
 	// never writes on a validation failure.
 	if outPath, _ := f.GetString("output-runconfig"); outPath != "" {
 		return writeOutputRunConfig(outPath, cfg)
+	}
+
+	imageAdmission, err := resolveImageAdmissionPolicy(f, os.Getenv)
+	if err != nil {
+		return err
 	}
 
 	// Safe to read raw: PreRunE already rejected an explicitly-set flag on

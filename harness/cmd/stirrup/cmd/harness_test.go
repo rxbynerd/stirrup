@@ -5661,3 +5661,17 @@ func TestApplyOverrides_SameProviderKeepsItsFields(t *testing.T) {
 
 	must.Equal(want, cfg.Provider)
 }
+
+func TestRunHarness_OutputRunConfigIgnoresMalformedImageAllowlist(t *testing.T) {
+	must := require.New(t)
+	t.Setenv("STIRRUP_IMAGE_ALLOWLIST", "ghcr.io/Acme/")
+	outPath := filepath.Join(t.TempDir(), "out.json")
+
+	cmd := newTestHarnessCommand()
+	must.NoError(cmd.Flags().Set("output-runconfig", outPath))
+	must.NoError(cmd.Flags().Set("prompt", "test prompt"))
+
+	must.NoError(runHarness(cmd, nil))
+	_, err := os.Stat(outPath)
+	must.NoError(err)
+}
