@@ -357,10 +357,13 @@ func (h *otelToolSpan) End(end ToolSpanEnd) {
 }
 
 // StartSubAgentSpan opens the "invoke_agent stirrup.subagent" span for a
-// sub-agent run under parent, the spawning tool call's context.
+// sub-agent run under parent, the spawning tool call's context. Run IDs
+// repeat across follow-up turns, so a prompt left by an earlier sub-agent
+// under the same ID is discarded.
 func (e *OTelTraceEmitter) StartSubAgentSpan(parent context.Context, start SubAgentSpanStart) AgentSpan {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	delete(e.subRunSystemInstructions, start.RunID)
 	if e.rootCtx == nil {
 		return nil
 	}

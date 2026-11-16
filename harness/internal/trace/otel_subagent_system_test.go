@@ -148,6 +148,34 @@ func TestSubAgentChatSpan_DeeperSubRunKeepsOwnKey(t *testing.T) {
 	check.NotContains(got[0], "child prompt\"", "the grandchild's span carries only its own prompt")
 }
 
+func TestSubAgentChatSpan_ReusedRunIDDoesNotInheritUnfinishedPrompt(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	emitter, exporter := newTestOTelEmitterWithCapture()
+	emitter.Start("run-parent", nil)
+
+	abandoned := NewNestedJSONLEmitter(emitter, "run-parent", context.Background())
+	abandoned.Start("run-child", &types.RunConfig{RunID: "run-child"})
+	abandoned.RecordSystemInstructions("abandoned prompt")
+
+	reused := NewNestedJSONLEmitter(emitter, "run-parent", context.Background())
+	reused.Start("run-child", &types.RunConfig{RunID: "run-child"})
+	chat := reused.StartChatSpan(reused.RootContext(), ChatSpanStart{})
+	must.NotNil(chat)
+	chat.End(ChatSpanEnd{
+		Summary: &types.TurnTrace{StopReason: "end_turn"},
+		Record:  &types.TurnRecord{},
+	})
+	_, err := reused.Finish(context.Background(), "success")
+	must.NoError(err)
+	_, err = emitter.Finish(context.Background(), "success")
+	must.NoError(err)
+
+	got := chatSpanSystemInstructions(exporter)
+	must.Len(got, 1, "chat spans")
+	check.NotContains(got[0], "abandoned prompt")
+}
+
 func TestOTelTraceEmitter_SubRunSystemInstructionsDroppedWhenAgentSpanEnds(t *testing.T) {
 	must := require.New(t)
 	emitter, _ := newTestOTelEmitterWithCapture()
