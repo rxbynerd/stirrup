@@ -29,6 +29,9 @@ runs the agentic loop with the pre-established transport.
 Required environment variables:
   CONTROL_PLANE_ADDR          gRPC address of the control plane
   CONTROL_PLANE_SESSION_ID    Session ID for correlation (optional)
+  CONTROL_PLANE_REQUIRE_SESSION_ID
+                              "true" refuses to start without a non-empty
+                              CONTROL_PLANE_SESSION_ID (optional)
   STIRRUP_FOLLOWUP_GRACE      Follow-up grace period in seconds (optional)
   STIRRUP_SESSION_DEADLINE    Session length in seconds the sandbox must outlive;
                               set to the Job's activeDeadlineSeconds (optional)
@@ -99,6 +102,13 @@ func runJob(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("CONTROL_PLANE_ADDR environment variable is required")
 	}
 
+	// Session ID (if set) lets the control plane correlate this stream with
+	// the session that launched the subprocess.
+	sessionID, err := sessionIDFromEnv()
+	if err != nil {
+		return err
+	}
+
 	tlsCfg, err := controlPlaneTLSFromEnv()
 	if err != nil {
 		return err
@@ -132,9 +142,6 @@ func runJob(cmd *cobra.Command, args []string) error {
 	}
 	defer func() { _ = tp.Close() }()
 
-	// Session ID (if set) lets the control plane correlate this stream with
-	// the session that launched the subprocess.
-	sessionID := os.Getenv("CONTROL_PLANE_SESSION_ID")
 	if err := tp.Emit(readyEvent(sessionID, version.Version())); err != nil {
 		return fmt.Errorf("failed to send ready event: %w", err)
 	}
@@ -298,6 +305,26 @@ func runJob(cmd *cobra.Command, args []string) error {
 	// A non-success outcome (runErr == nil) must still fail the process so
 	// the job orchestrator can decide whether to retry or alert.
 	return runOutcomeError(runTrace, interrupted())
+}
+
+// sessionIDFromEnv reads CONTROL_PLANE_SESSION_ID. With
+// CONTROL_PLANE_REQUIRE_SESSION_ID true, an unset or empty ID fails the job
+// before it dials, so a deployment cannot open a stream the control plane
+// cannot correlate; a value that is not a boolean fails it too.
+func sessionIDFromEnv() (string, error) {
+	sessionID := os.Getenv("CONTROL_PLANE_SESSION_ID")
+	raw, present := os.LookupEnv("CONTROL_PLANE_REQUIRE_SESSION_ID")
+	if !present {
+		return sessionID, nil
+	}
+	required, err := strconv.ParseBool(raw)
+	if err != nil {
+		return "", fmt.Errorf("CONTROL_PLANE_REQUIRE_SESSION_ID must be true or false, got %q", raw)
+	}
+	if required && strings.TrimSpace(sessionID) == "" {
+		return "", fmt.Errorf("CONTROL_PLANE_SESSION_ID is required because CONTROL_PLANE_REQUIRE_SESSION_ID is true")
+	}
+	return sessionID, nil
 }
 
 // followUpGraceSeconds resolves the follow-up window: the task's

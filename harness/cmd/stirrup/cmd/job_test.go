@@ -53,6 +53,61 @@ func TestRunJob_MissingControlPlaneAddrIsPlain(t *testing.T) {
 	must.NotContains(err.Error(), "\x1b[", "job error must not contain ANSI escapes (log aggregators ingest it verbatim)")
 }
 
+func TestSessionIDFromEnv_RequirementIsOptIn(t *testing.T) {
+	cases := []struct {
+		name      string
+		sessionID string
+		require   *string
+		wantID    string
+		wantErr   string
+	}{
+		{name: "not required and unset", wantID: ""},
+		{name: "not required and set", sessionID: "sess-1", wantID: "sess-1"},
+		{name: "required and set", sessionID: "sess-1", require: ptrTo("true"), wantID: "sess-1"},
+		{name: "required and empty", require: ptrTo("true"), wantErr: "CONTROL_PLANE_SESSION_ID is required"},
+		{name: "required and blank", sessionID: "  ", require: ptrTo("1"), wantErr: "CONTROL_PLANE_SESSION_ID is required"},
+		{name: "explicitly not required", require: ptrTo("false"), wantID: ""},
+		{name: "not a boolean", sessionID: "sess-1", require: ptrTo("yes please"), wantErr: `CONTROL_PLANE_REQUIRE_SESSION_ID must be true or false, got "yes please"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			t.Setenv("CONTROL_PLANE_SESSION_ID", tc.sessionID)
+			if tc.require != nil {
+				t.Setenv("CONTROL_PLANE_REQUIRE_SESSION_ID", *tc.require)
+			} else {
+				unsetEnv(t, "CONTROL_PLANE_REQUIRE_SESSION_ID")
+			}
+
+			got, err := sessionIDFromEnv()
+
+			if tc.wantErr != "" {
+				must.ErrorContains(err, tc.wantErr)
+				return
+			}
+			must.NoError(err)
+			must.Equal(tc.wantID, got)
+		})
+	}
+}
+
+func TestRunJob_RequiredSessionIDMissingFailsBeforeDialling(t *testing.T) {
+	must := require.New(t)
+	srv := newRecordingControlPlane(&pb.RunConfig{Mode: "execution"})
+	startControlPlane(t, srv)
+	t.Setenv("CONTROL_PLANE_SESSION_ID", "")
+	t.Setenv("CONTROL_PLANE_REQUIRE_SESSION_ID", "true")
+
+	err := runJob(jobCmd, nil)
+
+	must.ErrorContains(err, "CONTROL_PLANE_SESSION_ID is required")
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	must.Nil(srv.ready, "the job never opened a stream")
+}
+
+func ptrTo(s string) *string { return &s }
+
 // fakeControlPlane implements just enough of HarnessServiceServer to drive
 // runJob through the assignment wait and into a task_assignment carrying
 // the given RunConfig. It then keeps the stream open until the harness
