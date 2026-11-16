@@ -650,6 +650,11 @@ func (rc RunConfig) Redact() RunConfig {
 		sink.Attributes = attrs
 		redacted.ResultSink = &sink
 	}
+	if redacted.ResultSink != nil && redacted.ResultSink.HTTPSPut != nil {
+		sink := *redacted.ResultSink
+		sink.HTTPSPut = sink.HTTPSPut.redacted()
+		redacted.ResultSink = &sink
+	}
 	if redacted.GuardRail != nil {
 		gr := redactGuardRailConfig(*redacted.GuardRail)
 		redacted.GuardRail = &gr
@@ -1510,8 +1515,9 @@ type TraceArchiveConfig struct {
 type ResultSinkConfig struct {
 	// Type selects the adapter: "none" (disabled, default), "stdout-json"
 	// (writes "STIRRUP_RESULT <json>" to stdout at end-of-run), "gcs"
-	// (writes one object per run) or "gcp-pubsub" (publishes one message
-	// per run).
+	// (writes one object per run), "gcp-pubsub" (publishes one message
+	// per run) or "https-put" (uploads the result to HTTPSPut with one
+	// HTTP PUT per run).
 	Type string `json:"type"`
 
 	// Topic is the full Pub/Sub topic resource name,
@@ -1549,12 +1555,22 @@ type ResultSinkConfig struct {
 	// for the "gcs" and "gcp-pubsub" sinks, with the same accepted types
 	// as TraceEmitterConfig.Credential. Rejected on any other type.
 	Credential *CredentialConfig `json:"credential,omitempty"`
+
+	// HTTPSPut is the destination of the "https-put" sink. Required for
+	// "https-put"; rejected on any other type.
+	HTTPSPut *HTTPSPutConfig `json:"httpsPut,omitempty"`
 }
 
 // IsRemote reports whether c selects a sink that delivers over the
-// network with a credential (gcs, gcp-pubsub), which the harness sends
-// to before the run's "done". Nil-safe.
+// network (gcs, gcp-pubsub, https-put), which the harness sends to
+// before the run's "done". Nil-safe.
 func (c *ResultSinkConfig) IsRemote() bool {
+	return c.UsesGCPCredential() || (c != nil && c.Type == "https-put")
+}
+
+// UsesGCPCredential reports whether c selects a sink that authenticates
+// with a Google Cloud credential (gcs, gcp-pubsub). Nil-safe.
+func (c *ResultSinkConfig) UsesGCPCredential() bool {
 	return c != nil && (c.Type == "gcs" || c.Type == "gcp-pubsub")
 }
 
@@ -2388,6 +2404,7 @@ var validResultSinkTypes = map[string]bool{
 	"stdout-json": true,
 	"gcp-pubsub":  true,
 	"gcs":         true,
+	"https-put":   true,
 }
 
 // resultSinkCredentialTypes are the credential types the gcs and
@@ -6147,14 +6164,20 @@ func validateResultSinkConfig(cfg *ResultSinkConfig, errs *[]string) {
 	rejectOn("bucket", cfg.Bucket != "", "gcs")
 	rejectOn("objectPrefix", cfg.ObjectPrefix != "", "gcs")
 	rejectOn("credential", cfg.Credential != nil, "gcs", "gcp-pubsub")
+	rejectOn("httpsPut", cfg.HTTPSPut != nil, "https-put")
 
 	switch cfg.Type {
 	case "gcs":
 		validateGCSResultSink(cfg, errs)
 	case "gcp-pubsub":
 		validatePubSubResultSink(cfg, errs)
+	case "https-put":
+		if cfg.HTTPSPut == nil {
+			*errs = append(*errs, "resultSink type \"https-put\" requires httpsPut")
+		}
+		validateHTTPSPutConfig("resultSink.httpsPut", cfg.HTTPSPut, errs)
 	}
-	if cfg.Credential != nil && cfg.IsRemote() {
+	if cfg.Credential != nil && cfg.UsesGCPCredential() {
 		validateCredentialConfig(cfg.Credential, "resultSink.credential", errs)
 		if cfg.Credential.Type != "" && !resultSinkCredentialTypes[cfg.Credential.Type] {
 			*errs = append(*errs, fmt.Sprintf(

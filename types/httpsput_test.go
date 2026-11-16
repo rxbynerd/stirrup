@@ -207,3 +207,82 @@ func TestExecutorConfig_ExportRequiredDefaultsToTrueForAnHTTPSPutDestination(t *
 	check.False(cfg.ExportRequired())
 	check.False(ExecutorConfig{}.ExportsWorkspace())
 }
+
+func resultSinkErrors(cfg *ResultSinkConfig) []string {
+	var errs []string
+	validateResultSinkConfig(cfg, &errs)
+	return errs
+}
+
+func TestValidateResultSinkConfig_AcceptsAnHTTPSPutSink(t *testing.T) {
+	check := assert.New(t)
+	cfg := &ResultSinkConfig{
+		Type:     "https-put",
+		HTTPSPut: &HTTPSPutConfig{URLRef: "secret://RESULT_URL", Headers: map[string]string{"If-None-Match": "*"}},
+	}
+	check.Empty(resultSinkErrors(cfg))
+	check.True(cfg.IsRemote())
+	check.False(cfg.UsesGCPCredential())
+}
+
+func TestValidateResultSinkConfig_RejectsHTTPSPutMisuse(t *testing.T) {
+	target := &HTTPSPutConfig{URLRef: "secret://RESULT_URL"}
+	cases := []struct {
+		name string
+		cfg  *ResultSinkConfig
+		want string
+	}{
+		{"missing block", &ResultSinkConfig{Type: "https-put"}, `resultSink type "https-put" requires httpsPut`},
+		{"inline URL", &ResultSinkConfig{Type: "https-put", HTTPSPut: &HTTPSPutConfig{URLRef: inlinePresignedURL}}, "resultSink.httpsPut.urlRef must be a secret reference"},
+		{"block on gcs", &ResultSinkConfig{Type: "gcs", Bucket: "stirrup-results", HTTPSPut: target}, `resultSink.httpsPut is only valid when type is "https-put"`},
+		{"block on stdout-json", &ResultSinkConfig{Type: "stdout-json", HTTPSPut: target}, `resultSink.httpsPut is only valid when type is "https-put"`},
+		{"bucket on https-put", &ResultSinkConfig{Type: "https-put", HTTPSPut: target, Bucket: "stirrup-results"}, `resultSink.bucket is only valid when type is "gcs"`},
+		{"credential on https-put", &ResultSinkConfig{Type: "https-put", HTTPSPut: target, Credential: &CredentialConfig{Type: "gcp-default"}}, "resultSink.credential is only valid when type is"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			errs := resultSinkErrors(tc.cfg)
+			must.Len(errs, 1)
+			must.Contains(errs[0], tc.want)
+			must.NotContains(errs[0], "deadbeefcafe")
+		})
+	}
+}
+
+func TestResultSinkConfig_IsRemoteAndUsesGCPCredentialByType(t *testing.T) {
+	cases := map[string][2]bool{
+		"none":        {false, false},
+		"stdout-json": {false, false},
+		"gcs":         {true, true},
+		"gcp-pubsub":  {true, true},
+		"https-put":   {true, false},
+	}
+	for typ, want := range cases {
+		t.Run(typ, func(t *testing.T) {
+			check := assert.New(t)
+			cfg := &ResultSinkConfig{Type: typ}
+			check.Equal(want[0], cfg.IsRemote(), "IsRemote")
+			check.Equal(want[1], cfg.UsesGCPCredential(), "UsesGCPCredential")
+		})
+	}
+	check := assert.New(t)
+	check.False((*ResultSinkConfig)(nil).IsRemote())
+	check.False((*ResultSinkConfig)(nil).UsesGCPCredential())
+}
+
+func TestRunConfigRedact_HidesTheHTTPSPutResultSinkDestination(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cfg := RunConfig{ResultSink: &ResultSinkConfig{
+		Type:     "https-put",
+		HTTPSPut: &HTTPSPutConfig{URLRef: "secret://RESULT_URL", Headers: map[string]string{"Authorization": "secret://RESULT_AUTH"}},
+	}}
+
+	got := cfg.Redact().ResultSink
+	must.NotNil(got)
+	must.NotNil(got.HTTPSPut)
+	check.Equal("secret://[REDACTED]", got.HTTPSPut.URLRef)
+	check.Equal(map[string]string{"Authorization": "secret://[REDACTED]"}, got.HTTPSPut.Headers)
+	check.Equal("secret://RESULT_URL", cfg.ResultSink.HTTPSPut.URLRef, "the live config is untouched")
+}

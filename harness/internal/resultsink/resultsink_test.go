@@ -340,11 +340,12 @@ func TestNewResultSink_SelectsSinkByType(t *testing.T) {
 		{"stdout-json", &types.ResultSinkConfig{Type: "stdout-json"}, (*StdoutJSONSink)(nil)},
 		{"gcs", &types.ResultSinkConfig{Type: "gcs", Bucket: "stirrup-results"}, (*GCSSink)(nil)},
 		{"gcp-pubsub", &types.ResultSinkConfig{Type: "gcp-pubsub", Topic: testTopic}, (*PubSubSink)(nil)},
+		{"https-put", &types.ResultSinkConfig{Type: "https-put", HTTPSPut: &types.HTTPSPutConfig{URLRef: "secret://RESULT_URL"}}, (*HTTPSPutSink)(nil)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			sink, err := NewResultSink(tc.cfg, &tokenSource{token: "t"})
+			sink, err := NewResultSink(tc.cfg, Dependencies{Credentials: &tokenSource{token: "t"}, Secrets: tableSecrets{}})
 			must.NoError(err)
 			must.IsType(tc.wantType, sink)
 		})
@@ -359,14 +360,20 @@ func TestNewResultSink_RemoteTypesRequireCredentialSource(t *testing.T) {
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
 			must := require.New(t)
-			_, err := NewResultSink(cfg, nil)
+			_, err := NewResultSink(cfg, Dependencies{})
 			must.ErrorContains(err, "credential source is required")
 		})
 	}
 }
 
+func TestNewResultSink_HTTPSPutRequiresASecretStore(t *testing.T) {
+	must := require.New(t)
+	_, err := NewResultSink(&types.ResultSinkConfig{Type: "https-put", HTTPSPut: &types.HTTPSPutConfig{URLRef: "secret://RESULT_URL"}}, Dependencies{})
+	must.ErrorContains(err, "secret store is required")
+}
+
 func TestNewResultSink_UnknownTypeRejected(t *testing.T) {
 	must := require.New(t)
-	_, err := NewResultSink(&types.ResultSinkConfig{Type: "kinesis"}, nil)
+	_, err := NewResultSink(&types.ResultSinkConfig{Type: "kinesis"}, Dependencies{})
 	must.ErrorContains(err, "unsupported resultSink.type")
 }

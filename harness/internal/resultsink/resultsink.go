@@ -3,7 +3,7 @@
 // closed set is documented in types.ResultSinkConfig and validated by
 // types.ValidateRunConfig. "stdout-json" writes a sentinel-prefixed
 // line to stdout; "gcs" and "gcp-pubsub" deliver the same JSON to Google
-// Cloud with bounded retry.
+// Cloud, and "https-put" to an HTTPS URL, with bounded retry.
 //
 // The result sink is distinct from the trace emitter (which carries
 // the run's *evidence* — full JSONL trace and spans). The sink carries
@@ -25,6 +25,7 @@ import (
 	"sync"
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
+	"github.com/rxbynerd/stirrup/harness/internal/security"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -263,10 +264,17 @@ func marshalResultLine(result types.RunResult) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// NewResultSink returns the ResultSink selected by cfg. creds
-// authenticates the gcs and gcp-pubsub sinks and is ignored by the
-// others.
-func NewResultSink(cfg *types.ResultSinkConfig, creds credential.Source) (ResultSink, error) {
+// Dependencies are what the remote sinks need beyond their config.
+type Dependencies struct {
+	// Credentials authenticates the gcs and gcp-pubsub sinks.
+	Credentials credential.Source
+	// Secrets resolves the https-put sink's destination.
+	Secrets security.SecretStore
+}
+
+// NewResultSink returns the ResultSink selected by cfg, taking from deps
+// what that sink needs and ignoring the rest.
+func NewResultSink(cfg *types.ResultSinkConfig, deps Dependencies) (ResultSink, error) {
 	if cfg == nil {
 		return NoneSink{}, nil
 	}
@@ -279,14 +287,19 @@ func NewResultSink(cfg *types.ResultSinkConfig, creds credential.Source) (Result
 		return NewGCSSink(GCSSinkOptions{
 			Bucket:           cfg.Bucket,
 			ObjectPrefix:     cfg.ObjectPrefix,
-			CredentialSource: creds,
+			CredentialSource: deps.Credentials,
 		})
 	case "gcp-pubsub":
 		return NewPubSubSink(PubSubSinkOptions{
 			Topic:            cfg.Topic,
 			OrderingKey:      cfg.OrderingKey,
 			Attributes:       cfg.Attributes,
-			CredentialSource: creds,
+			CredentialSource: deps.Credentials,
+		})
+	case "https-put":
+		return NewHTTPSPutSink(HTTPSPutSinkOptions{
+			Target:  cfg.HTTPSPut,
+			Secrets: deps.Secrets,
 		})
 	default:
 		return nil, fmt.Errorf("unsupported resultSink.type: %q", cfg.Type)

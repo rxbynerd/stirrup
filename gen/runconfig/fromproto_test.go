@@ -1573,6 +1573,31 @@ func TestRunConfigFromProto_CopiesTheHTTPSPutWorkspaceExportDestination(t *testi
 	check.Nil(runConfigFromProto(&pb.RunConfig{Executor: &pb.ExecutorConfig{Type: "k8s"}}).Executor.WorkspaceExportHTTPSPut)
 }
 
+func TestRunConfigFromProto_CopiesTheHTTPSPutResultSinkDestination(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	raw, err := proto.Marshal(&pb.RunConfig{ResultSink: &pb.ResultSinkConfig{
+		Type: "https-put",
+		HttpsPut: &pb.HttpsPutConfig{
+			UrlRef:  "secret://RESULT_URL",
+			Headers: map[string]string{"If-None-Match": "*"},
+		},
+	}})
+	must.NoError(err, "marshal")
+	var decoded pb.RunConfig
+	must.NoError(proto.Unmarshal(raw, &decoded), "unmarshal")
+
+	sink := runConfigFromProto(&decoded).ResultSink
+	must.NotNil(sink)
+	check.Equal("https-put", sink.Type)
+	must.NotNil(sink.HTTPSPut)
+	check.Equal("secret://RESULT_URL", sink.HTTPSPut.URLRef)
+	check.Equal(map[string]string{"If-None-Match": "*"}, sink.HTTPSPut.Headers)
+	check.True(sink.IsRemote())
+
+	check.Nil(runConfigFromProto(&pb.RunConfig{ResultSink: &pb.ResultSinkConfig{Type: "gcs"}}).ResultSink.HTTPSPut)
+}
+
 // TestRunConfigFromProto_WorkspaceExportRequiredTriState pins that an
 // unset workspace_export_required stays nil (so the destination default
 // applies) and that both explicit values survive the wire and translate.

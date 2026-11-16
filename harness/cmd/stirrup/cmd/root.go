@@ -296,9 +296,9 @@ func emitRunResult(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace
 }
 
 // resultDelivery is the core.ResultDelivery `stirrup harness` and
-// `stirrup job` inject: it sends each run's RunResult to a gcs or
-// gcp-pubsub sink before the run's "done", so a failure reaches the
-// control stream while the control plane is still listening.
+// `stirrup job` inject: it sends each run's RunResult to a remote sink
+// (gcs, gcp-pubsub or https-put) before the run's "done", so a failure
+// reaches the control stream while the control plane is still listening.
 type resultDelivery struct{}
 
 var _ core.ResultDelivery = resultDelivery{}
@@ -479,8 +479,8 @@ func followUpExportURI(base, runID string) string {
 // postRunPolicy is the per-run finalisation `stirrup harness` and
 // `stirrup job` apply to the primary run and to every follow-up run
 // alike: emit the run's result locally. The workspace export and any
-// gcs or gcp-pubsub result delivery have already run inside the loop,
-// before "done".
+// remote result delivery have already run inside the loop, before
+// "done".
 type postRunPolicy struct {
 	// emit publishes the run's RunResult (and any stderr summary).
 	emit func(ctx context.Context, cfg *types.RunConfig, rt *types.RunTrace)

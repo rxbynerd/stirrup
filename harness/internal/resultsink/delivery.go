@@ -12,6 +12,7 @@ import (
 
 	"github.com/rxbynerd/stirrup/harness/internal/credential"
 	"github.com/rxbynerd/stirrup/harness/internal/gcs"
+	"github.com/rxbynerd/stirrup/harness/internal/httpsput"
 	"github.com/rxbynerd/stirrup/types"
 )
 
@@ -66,6 +67,10 @@ func retryable(err error) bool {
 	var gcsStatus *gcs.UploadStatusError
 	if errors.As(err, &gcsStatus) {
 		return transientStatus(gcsStatus.StatusCode)
+	}
+	var putStatus *httpsput.StatusError
+	if errors.As(err, &putStatus) {
+		return putStatus.Transient()
 	}
 	var status *statusError
 	if errors.As(err, &status) {

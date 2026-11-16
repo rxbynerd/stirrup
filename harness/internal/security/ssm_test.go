@@ -235,6 +235,16 @@ func TestNeedsSSM_DetectsSSMReferences(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "SSM in the HTTPS PUT result sink URL",
+			config: &types.RunConfig{
+				ResultSink: &types.ResultSinkConfig{
+					Type:     "https-put",
+					HTTPSPut: &types.HTTPSPutConfig{URLRef: "secret://ssm:///runs/result-url"},
+				},
+			},
+			want: true,
+		},
+		{
 			name: "SSM in VCS backend",
 			config: &types.RunConfig{
 				Executor: types.ExecutorConfig{

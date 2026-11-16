@@ -1198,12 +1198,15 @@ message ResultSinkConfig {
   //                   gs://{bucket}/{object_prefix}{runId}.result.json.
   //   "gcp-pubsub"  — publishes the RunResult JSON as one message on
   //                   topic, with a "runId" message attribute.
-  // The gcs and gcp-pubsub sinks deliver after the trace is finished and
-  // before the run's "done", making up to three attempts for transient
-  // failures; a delivery that still fails is logged and reported as a
-  // "warning" event starting "result sink:" before "done", and does not
-  // change the run's outcome. The gcs sink never replaces an existing
-  // object.
+  //   "https-put"   — uploads the RunResult JSON with one HTTP PUT to
+  //                   the URL https_put.url_ref resolves to.
+  // The gcs, gcp-pubsub and https-put sinks deliver after the trace is
+  // finished and before the run's "done", making up to three attempts
+  // for transient failures; a delivery that still fails is logged and
+  // reported as a "warning" event starting "result sink:" before "done",
+  // and does not change the run's outcome. The gcs sink never replaces
+  // an existing object. The https-put sink names one object, so every
+  // run of a session uploads to the URL its reference resolves to then.
   string type = 1;
 
   // Required for "gcp-pubsub". The full topic resource name,
@@ -1238,6 +1241,10 @@ message ResultSinkConfig {
   // "gcp-workload-identity" credential. Accepted types:
   // "gcp-workload-identity" and "gcp-default".
   CredentialConfig credential = 8;
+
+  // Required for "https-put"; rejected by validation on every other
+  // type. The destination the RunResult JSON is uploaded to.
+  HttpsPutConfig https_put = 9;
 }
 
 // LogsExportConfig opts the run's structured logs into OTLP export

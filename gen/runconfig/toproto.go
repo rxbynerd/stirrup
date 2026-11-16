@@ -234,6 +234,7 @@ func (e *encoder) runConfig(rc *types.RunConfig) *pb.RunConfig {
 			OrderingKey:                rs.OrderingKey,
 			Attributes:                 maps.Clone(rs.Attributes),
 			Credential:                 credentialConfigToProto(rs.Credential),
+			HttpsPut:                   httpsPutConfigToProto(rs.HTTPSPut),
 		}
 	}
 	if tce := rc.ToolChoiceEscalation; tce != nil {

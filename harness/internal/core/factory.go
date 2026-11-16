@@ -2526,19 +2526,34 @@ func buildGCPCredentialSource(cfg *types.CredentialConfig) (credential.Source, e
 	}
 }
 
+// secretStoreInitTimeout bounds building a secret store outside loop
+// construction, where the only slow step is loading AWS configuration
+// for an SSM reference.
+const secretStoreInitTimeout = 10 * time.Second
+
 // NewResultSink builds the result sink cfg selects. The gcs and
 // gcp-pubsub sinks authenticate with the same credential resolution as
-// the gcs trace emitter.
+// the gcs trace emitter; the https-put sink resolves its destination
+// through the same secret store as the rest of the run.
 func NewResultSink(cfg *types.ResultSinkConfig) (resultsink.ResultSink, error) {
-	var creds credential.Source
-	if cfg.IsRemote() {
+	var deps resultsink.Dependencies
+	if cfg.UsesGCPCredential() {
 		source, err := buildGCPCredentialSource(cfg.Credential)
 		if err != nil {
 			return nil, fmt.Errorf("resultSink credential: %w", err)
 		}
-		creds = source
+		deps.Credentials = source
 	}
-	return resultsink.NewResultSink(cfg, creds)
+	if cfg != nil && cfg.Type == "https-put" {
+		ctx, cancel := context.WithTimeout(context.Background(), secretStoreInitTimeout)
+		defer cancel()
+		secrets, err := security.NewAutoSecretStore(ctx, &types.RunConfig{ResultSink: cfg})
+		if err != nil {
+			return nil, fmt.Errorf("resultSink secret store: %w", err)
+		}
+		deps.Secrets = secrets
+	}
+	return resultsink.NewResultSink(cfg, deps)
 }
 
 // resolveCompatProfile maps the closed enum of supported

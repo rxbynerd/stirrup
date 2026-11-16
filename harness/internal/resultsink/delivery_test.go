@@ -152,6 +152,10 @@ func TestDefaultRetryDelays_AllowThreeAttempts(t *testing.T) {
 	pubSubSink, err := NewPubSubSink(PubSubSinkOptions{Topic: testTopic, CredentialSource: &tokenSource{}})
 	must.NoError(err)
 	must.Equal(defaultRetryDelays, pubSubSink.retryDelays)
+
+	httpsPutSink, err := NewHTTPSPutSink(HTTPSPutSinkOptions{Target: &types.HTTPSPutConfig{URLRef: "secret://RESULT_URL"}, Secrets: tableSecrets{}})
+	must.NoError(err)
+	must.Equal(defaultRetryDelays, httpsPutSink.retryDelays)
 }
 
 func TestResolveBearer_NilBearerIsPermanent(t *testing.T) {

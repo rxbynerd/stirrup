@@ -20,6 +20,11 @@ func checkHTTPSPutDestinations(ctx context.Context, config *types.RunConfig, sec
 			return httpsPutDestinationError("executor.workspaceExportHttpsPut", err)
 		}
 	}
+	if sink := config.ResultSink; sink != nil && sink.Type == "https-put" {
+		if _, err := httpsput.Resolve(ctx, secrets, sink.HTTPSPut); err != nil {
+			return fmt.Errorf("resultSink.httpsPut: %w", err)
+		}
+	}
 	return nil
 }
 

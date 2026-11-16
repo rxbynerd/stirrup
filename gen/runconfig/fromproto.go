@@ -205,6 +205,7 @@ func runConfigFromProto(pc *pb.RunConfig) types.RunConfig {
 			Bucket:                     pc.ResultSink.GetBucket(),
 			ObjectPrefix:               pc.ResultSink.GetObjectPrefix(),
 			OrderingKey:                pc.ResultSink.GetOrderingKey(),
+			HTTPSPut:                   httpsPutConfigFromProto(pc.ResultSink.GetHttpsPut()),
 		}
 		if pc.ResultSink.Credential != nil {
 			rc.ResultSink.Credential = credentialConfigFromProto(pc.ResultSink.Credential)
