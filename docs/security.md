@@ -746,16 +746,21 @@ The container executor applies these defaults regardless of what
 - `CapDrop: ["ALL"]`
 - `SecurityOpt: ["no-new-privileges"]`
 - `ReadonlyRootfs: true` — the container's root filesystem is
-  immutable. All writable scratch is confined to the workspace
+  immutable. All writable space is confined to the workspace
   bind and the explicit tmpfs mounts below, so a compromised run
   cannot persist a payload outside the paths it actually needs.
-- `User: "65534:65534"` (nobody:nogroup) — the main process and
-  every `run_command` exec run unprivileged, so a container escape
-  lands on a non-root identity rather than uid 0.
+- `User: "65532:65532"` — the main process and every `run_command`
+  exec run as the unprivileged [sandbox identity](#sandbox-identity-and-scratch),
+  so a container escape lands on a non-root identity rather than uid 0.
+- The [scratch directory](#sandbox-identity-and-scratch): a
+  `/scratch` tmpfs mounted `nosuid,nodev` and executable, sized by
+  `resources.scratchMb`, holding `HOME` and `TMPDIR`.
 - A 256 MiB `/tmp` tmpfs and a 64 MiB `/dev/shm`, each mounted
-  `nosuid,nodev,noexec`. These provide the writable, non-executable
-  scratch a read-only rootfs otherwise denies; `noexec` stops a
-  dropped binary from being run out of scratch.
+  `nosuid,nodev,noexec`. Their `noexec` is hygiene, not a control:
+  `/workspace` and `/scratch` are writable and executable, so a
+  dropped binary can be run from either. A program that writes an
+  executable temporary file honours `TMPDIR` or writes under
+  `/scratch`.
 - `PidsLimit` from `resources.pids` (fork-bomb containment),
   alongside the CPU and memory limits from `resources`.
 - `NetworkMode: "none"` (overridden to `"bridge"` only when
@@ -785,6 +790,61 @@ mounts.
 
 Optional kernel-isolation runtime selection (`runc`, `runsc`, `kata*`)
 is documented in [`safety-rings.md`](safety-rings.md).
+
+### Sandbox identity and scratch
+
+The `container`, `k8s` and `k8s-sandbox` executors give a sandbox
+the same identity and the same writable paths, so one image works
+unchanged under each:
+
+- **Identity.** Every process runs as UID 65532 with primary GID
+  65532 (the distroless `nonroot` pair): `User: "65532:65532"` on
+  `container`, `runAsUser` and `runAsGroup` on the Kubernetes
+  executors, whose Pod `fsGroup` is also 65532.
+- **Scratch.** A size-capped directory at `/scratch`, outside
+  `/workspace`, that is writable and executable and mounted without
+  set-user-ID or device files (`nosuid,nodev` on `container`; the
+  Kubernetes executors' `allowPrivilegeEscalation: false` and dropped
+  capabilities cover the same ground).
+- **`HOME` and `TMPDIR`** are `/scratch/home` and `/scratch/tmp`,
+  set in the sandbox environment after every other variable the
+  executor injects, so they override an image's own `HOME`. The
+  executor creates both directories, mode `0700`, as the sandbox user
+  before the run starts; on Kubernetes this follows the runtime
+  diagnostics. Toolchain caches (the Go build cache, npm, pip, Cargo,
+  Bundler) and temporary binaries (`go test`, `go run`, native
+  extension builds) land there rather than in the workspace.
+
+Scratch is never committed and never exported: the deterministic git
+strategy and the workspace export read only `/workspace`. It is
+created empty with each sandbox and discarded with it. The executor
+creates `HOME` and `TMPDIR` with `mkdir` and without `-p`, so a
+sandbox whose scratch already holds either directory fails to start
+rather than handing a run caches that an earlier one left. No
+executor carries scratch across sandboxes, snapshots or warm pools;
+the `k8s-sandbox` executor refuses warm-pool adoption. Follow-up turns
+of one session reuse the session's sandbox, so they see the same
+scratch, as they see the same workspace.
+
+Scratch removes two things a run had before, and neither was a
+control:
+
+- **Visibility.** A program built and run in `/workspace` appears in
+  the diff and the workspace export; one built and run in scratch is
+  discarded unseen. The workspace record was already weak, since a
+  run can delete files before it ends.
+- **Friction.** A `noexec` `/tmp` slowed dependency code that
+  assumes it can execute from `/tmp`. An executable `HOME` and
+  `TMPDIR` remove that obstacle. `/workspace` was already writable
+  and executable, so no new ability to execute code is granted.
+
+The size cap is `executor.resources.scratchMb` (default 1024 MiB). The
+limit that enforces it differs by executor:
+
+| Executor | Scratch backing | How the cap applies |
+|---|---|---|
+| `container` | `tmpfs` | A hard limit: a write beyond it fails with `No space left on device`. Pages in the tmpfs count against the container's memory limit (`resources.memoryMb`), so a scratch that fills toward the memory limit gets the writing process killed for lack of memory; validation rejects a `scratchMb` above `memoryMb`. *Measured* under Podman: a 16 MiB tmpfs stopped a write at 16 MiB, and in a 32 MiB container a write into a 64 MiB tmpfs was killed with 31.7 MiB charged to the container as shared memory. |
+| `k8s`, `k8s-sandbox` | disk-backed `emptyDir` with `sizeLimit` | Enforced by kubelet eviction, not as a hard cap: writes succeed past the limit until the kubelet's next usage check evicts the Pod, which ends the run ([Kubernetes: local ephemeral storage](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#local-ephemeral-storage)). *Measured* on a local `kind` cluster: a Pod that wrote 32 MiB into a 16 MiB `emptyDir` was `Evicted` with ``Usage of EmptyDir volume "scratch" exceeds the limit "16Mi"``. Usage counts against the Pod's ephemeral storage (`resources.diskMb`); validation rejects a `scratchMb` above `diskMb`. Under `nitro-isolated` the workspace `emptyDir` shares the guest's disk, whose size `diskMb` bounds (see [Limits](executors/k8s.md#limits)); scratch is expected to share it too, but neither where scratch lands in the guest nor whether eviction enforces its `sizeLimit` there has been measured. |
 
 ### Runtime diagnostics on Kubernetes
 

@@ -140,7 +140,8 @@ The pieces and their lifecycle:
 - **The sandbox Pod** is created per run with a fixed, config-independent
   hardened `securityContext`: `allowPrivilegeEscalation: false`,
   `capabilities.drop: [ALL]`, `runAsNonRoot: true`, `runAsUser: 65532`
-  (the distroless "nonroot" UID), and `seccompProfile.type:
+  and `runAsGroup: 65532` (the distroless "nonroot" pair, the identity
+  the `container` executor also uses), and `seccompProfile.type:
   RuntimeDefault`. `automountServiceAccountToken` is **always** `false`,
   so the sandbox itself has no Kubernetes API access regardless of the
   ServiceAccount named. For the `k8s` executor, `enableServiceLinks` is
@@ -155,8 +156,14 @@ The pieces and their lifecycle:
   workspace is writable by the non-root UID for *any* image that ships a
   shell — the image need not pre-create a writable `/workspace`, and the
   volume is wiped per Pod. (This mirrors the container executor's writable
-  host bind mount; both hide any content an image bakes at that path.) A
-  `sandboxIdentity`-configured run adds a second, 64 KiB `medium: Memory`
+  host bind mount; both hide any content an image bakes at that path.)
+  A second, disk-backed `emptyDir` at `/scratch`, with a `sizeLimit` of
+  `executor.resources.scratchMb` (default 1024 MiB), holds `HOME`
+  (`/scratch/home`) and `TMPDIR` (`/scratch/tmp`), which the executor
+  sets in the environment and creates before the run starts; it is never
+  committed or exported (see
+  [Sandbox identity and scratch](../security.md#sandbox-identity-and-scratch)). A
+  `sandboxIdentity`-configured run adds a third, 64 KiB `medium: Memory`
   `emptyDir` at `/run/stirrup/sandbox-identity` for the token file the
   harness delivers and refreshes over `pods/exec` stdin — see
   [Sandbox identity token exposure](#sandbox-identity-token-exposure). The
@@ -876,6 +883,7 @@ only, so the `k8s` values are valid but not offered by completion.
 | `memoryMb` | `requests.memory` **and** `limits.memory` (Mi). |
 | `diskMb` | `requests.ephemeral-storage` **and** `limits.ephemeral-storage` (Mi). The API server defaults an absent request to the limit ([Kubernetes: requests and limits](https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/#requests-and-limits); *measured* on the 2026-11-13 EKS run, a Pod submitted with only the limit read back with an equal request), so the admitted Pod carries the request either way, and the scheduler counts it against a node's allocatable ephemeral storage. |
 | `pids` | **Logged and ignored.** Per-Pod PID limits are a kubelet setting (`--pod-max-pids`), not a container resource field. |
+| `scratchMb` | `sizeLimit` (Mi) of the `/scratch` `emptyDir`; unset means 1024. Not a container resource field: the kubelet enforces it by evicting the Pod, and the usage also counts against `diskMb`, which it must not exceed (see [Sandbox identity and scratch](../security.md#sandbox-identity-and-scratch)). |
 
 A nil or all-zero `resources` block leaves the Pod's requirements empty
 so it inherits namespace defaults. `nitro-isolated` is the exception:
@@ -1392,11 +1400,13 @@ Two RuntimeClass names are refused with a reason after the usual
   nothing declared left the size at 10,367,980 KiB. A declaration of 200 GiB on `m5d.xlarge` did not become
   Ready within 90 s.
 - **Writable paths.** The root filesystem is not writable by the
-  sandbox user (UID 65532); `/tmp` and `/workspace` are, and `HOME` is
-  `/` (*measured*). A toolchain that writes a cache under `HOME`, such
-  as Go's build cache, fails unless its cache directories point under
-  `/workspace`; in the 2026-11-13 EKS run's Go task the agent set
-  `GOCACHE`, `GOPATH` and `HOME` under `/workspace`.
+  sandbox user (UID 65532); `/tmp` and `/workspace` are (*measured* on
+  the 2026-11-13 EKS run, when `HOME` was unset and resolved to `/`).
+  The executor mounts `/scratch` and sets `HOME` and `TMPDIR` under it,
+  as on every runtime (see
+  [Sandbox identity and scratch](../security.md#sandbox-identity-and-scratch)),
+  so a toolchain cache does not need pointing into `/workspace`. That
+  layout and `runAsGroup: 65532` have not been run on EKS.
 - **Memory.** AWS documentation gives a minimum of 256 MiB per sandbox
   ([EC2 Nitro Sandboxes](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/amazon-ec2-nitro-sandboxes.html));
   validation does not enforce it. *Measured:* a 256Mi request booted a

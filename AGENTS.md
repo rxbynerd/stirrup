@@ -142,7 +142,7 @@ See [`docs/providers.md`](docs/providers.md) for full per-adapter configuration 
 
 The container executor (`executor/container.go`, `executor/container_api.go`) uses the Docker Engine REST API directly over a Unix socket, with no Docker SDK dependency. Docker and Podman are both supported through the Engine API.
 
-Container lifecycle: created at executor init with a bounded `sleep`, `AutoRemove`, and `stirrup.sandbox`/`stirrup.run-id` labels; operations go through the exec or archive API; destroyed on `Close()`. Hardened with `CapDrop: ALL`, `no-new-privileges`, and `NetworkMode: none` by default. API keys never enter the container.
+Container lifecycle: created at executor init with a bounded `sleep`, `AutoRemove`, and `stirrup.sandbox`/`stirrup.run-id` labels; operations go through the exec or archive API; destroyed on `Close()`. Hardened with `CapDrop: ALL`, `no-new-privileges`, and `NetworkMode: none` by default. API keys never enter the container. The sandbox identity (65532:65532), the `/scratch` mount and its `HOME`/`TMPDIR` setup are shared with the Kubernetes executors through `executor/scratch.go`.
 
 ### MCP client
 

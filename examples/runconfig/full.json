@@ -48,7 +48,8 @@
       "cpus": 2.0,
       "memoryMb": 2048,
       "diskMb": 8192,
-      "pids": 256
+      "pids": 256,
+      "scratchMb": 1024
     }
   },
   "editStrategy": {

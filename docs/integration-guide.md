@@ -650,7 +650,11 @@ container instead of the harness host.
 ```
 
 - The container is hardened unconditionally: `CapDrop ALL`,
-  `no-new-privileges`, a read-only rootfs, and the nobody uid.
+  `no-new-privileges`, a read-only rootfs, and the unprivileged
+  `65532:65532` identity. `HOME` and `TMPDIR` sit in a writable,
+  executable `/scratch` directory that is never committed or exported,
+  sized by `resources.scratchMb`
+  ([Sandbox identity and scratch](security.md#sandbox-identity-and-scratch)).
   `runtime: "runsc"` (gVisor) adds a kernel boundary when that OCI
   runtime is installed on the host.
 - Sandbox executors require an explicit `network` block. Use

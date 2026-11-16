@@ -1295,12 +1295,15 @@ rather than an opaque admission rejection.
 Beneath the runtime choice, the executor applies a fixed hardened
 `securityContext` to every sandbox Pod regardless of config:
 `allowPrivilegeEscalation: false`, `capabilities.drop: [ALL]`,
-`runAsNonRoot: true`, `runAsUser: 65532`, and `seccompProfile.type:
-RuntimeDefault`. `automountServiceAccountToken` is always `false`, so the
-sandbox has no Kubernetes API access of its own. These are the
-process-level equivalents of the `container` executor's unconditional
-`CapDrop: ALL` + `no-new-privileges`, and they satisfy the `restricted`
-Pod Security Standard the reference namespace enforces.
+`runAsNonRoot: true`, `runAsUser: 65532`, `runAsGroup: 65532`, and
+`seccompProfile.type: RuntimeDefault`. `automountServiceAccountToken` is
+always `false`, so the sandbox has no Kubernetes API access of its own.
+These are the process-level equivalents of the `container` executor's
+unconditional `CapDrop: ALL` + `no-new-privileges` and its
+`65532:65532` user, and they satisfy the `restricted` Pod Security
+Standard the reference namespace enforces. Both executor families also
+give the sandbox the same `HOME`, `TMPDIR` and `/scratch` directory
+([Sandbox identity and scratch](security.md#sandbox-identity-and-scratch)).
 
 ### Ring 2 — egress proxy becomes a NetworkPolicy + proxy Deployment
 
