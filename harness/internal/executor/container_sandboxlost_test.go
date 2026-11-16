@@ -86,7 +86,7 @@ func TestContainerExecutor_Exec_KeepsFailureWhenContainerIsNotEnded(t *testing.T
 				var lost *SandboxLostError
 				check.NotErrorAs(err, &lost)
 			}
-			check.NoError(exec.SandboxLost())
+			must.NoError(exec.SandboxLost())
 			check.Equal(int32(2), creates.Load())
 		})
 	}

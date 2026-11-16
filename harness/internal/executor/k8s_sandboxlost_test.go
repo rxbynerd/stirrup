@@ -183,7 +183,7 @@ func TestPodExecCore_Exec_ReportsLostSandboxAndShortCircuitsLaterCalls(t *testin
 	var lost *SandboxLostError
 	must.ErrorAs(err, &lost)
 	check.Equal("sandbox pod "+testK8sNamespace+"/"+testK8sPodName+" has failed: container agent was OOMKilled (exit code 137)", lost.State)
-	check.ErrorIs(err, errContainerNotFound)
+	must.ErrorIs(err, errContainerNotFound)
 	check.Contains(err.Error(), `container not found ("agent")`)
 	must.Equal(lost, core.SandboxLost())
 
@@ -219,7 +219,7 @@ func TestPodExecCore_Exec_KeepsTransientFailureWhenPodRuns(t *testing.T) {
 		var lost *SandboxLostError
 		check.NotErrorAs(err, &lost)
 	}
-	check.NoError(core.SandboxLost())
+	must.NoError(core.SandboxLost())
 	check.Equal(int32(2), execs.Load(), "a running Pod is contacted again")
 }
 
@@ -243,7 +243,7 @@ func TestPodExecCore_Exec_ExitStatusDoesNotReadPod(t *testing.T) {
 	must.NoError(err)
 	check.Equal(137, res.ExitCode)
 	check.Equal(0, countVerb(cs, "get", "pods"))
-	check.NoError(core.SandboxLost())
+	must.NoError(core.SandboxLost())
 }
 
 func TestPodExecCore_Exec_CancelledContextDoesNotReadPod(t *testing.T) {
@@ -268,5 +268,5 @@ func TestPodExecCore_Exec_CancelledContextDoesNotReadPod(t *testing.T) {
 	_, err := core.Exec(ctx, "sleep 10", time.Minute)
 	must.Error(err)
 	check.Equal(0, countVerb(cs, "get", "pods"))
-	check.NoError(core.SandboxLost())
+	must.NoError(core.SandboxLost())
 }
