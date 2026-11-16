@@ -1060,7 +1060,7 @@ empty then prefers the in-cluster config.
 
 #### 6 — Verify gVisor is in force
 
-With `--container-runtime gvisor` the executor runs the
+With `executor.runtime: gvisor` the executor runs the
 [gVisor runtime diagnostics](#gvisor-runtime-diagnostics) before the
 run starts. They have not been run on GKE Sandbox. A manual exec gives
 a second look: `uname -r` reports a synthetic kernel version (observed
@@ -1127,19 +1127,23 @@ What the diagnostics do not prove:
   whatever passes.
 - They are a single sample taken after readiness.
 - They identify gVisor, not its version, platform (`systrap`, `kvm`)
-  or flags.
+  or flags: a sandbox started with weakening flags such as
+  `--network=host` passes.
 
 **GKE Sandbox was not tested** (no paid cloud run). What may differ
 there:
 
 - The release string. GKE Sandbox reported `4.4.0` in June 2026, and a
-  gVisor issue filed in September 2026 against GKE 1.36 reports
-  `4.19.0-gvisor`. The check accepts any release before the build stamp.
+  gVisor issue filed in September 2026 against GKE 1.36
+  ([google/gvisor#14699](https://github.com/google/gvisor/issues/14699))
+  reports `4.19.0-gvisor`. The check accepts any release before the
+  build stamp.
 - `/proc/sentry-meminfo`. Nothing in GKE's documentation says whether
   its gVisor exposes the file. A gVisor build older than 2022-08 lacks
   it and fails `sentry_meminfo`. The `runsc` flag `--override-procs`
   replaces named `/proc` files with empty stubs; reading gVisor's source
-  suggests the file stays present and passes, but this was not run.
+  suggests `sentry-meminfo` stays present and passes, but this was not
+  run. A stubbed `version` is empty and fails `kernel_version`.
 - Node architecture. Only an arm64 node was measured.
 
 A failure on GKE Sandbox that names `sentry_meminfo` while
@@ -1157,7 +1161,8 @@ The events and their scrubbing are those of the
   a `/proc/version` of more than one non-empty line). Both content
   checks run before the first failure is reported, so `observed` holds
   every value that was read (`sentryMeminfo` is `absent` when the file
-  is missing); after an `exec` or framing failure it is empty.
+  is missing). A multi-line `/proc/version` leaves `kernelVersion` out,
+  and after an `exec` or framing failure `observed` is empty.
 
 The run error reads `runtime diagnostics for executor.runtime "gvisor"
 failed: <check>: <reason>`, and an interruption by the run's own
@@ -2299,7 +2304,7 @@ it, the probe uses the same kubeconfig resolution as a run:
 | `tear down pod <ns>/<pod> (run ID "<id>"): <cause>; retained egress NetworkPolicy <ns>/<pod>-egress` (also in the warning `sandbox teardown incomplete; retaining the egress NetworkPolicy (fail closed)`), or the same beginning `tear down sandbox` for `k8s-sandbox` | Pod termination was not confirmed within the teardown bound, the delete or the post-create lookup failed, the Pod under the name was not the run's or a replacement still carried the policy's selector label, a create with an unknown outcome found no Pod, the policy delete failed, or (for `k8s-sandbox`) the backing Pod was still present after the Sandbox was gone. The cause names which. | Follow [Cleaning up retained objects](#cleaning-up-retained-objects). |
 | Exec/file I/O fails with API errors | The orchestrator lacks `pods/exec` create. | Apply [`rbac.yaml`](../../examples/k8s/rbac.yaml) (or grant the verb). |
 | Egress not actually confined on `kind` or EKS Auto Mode | kindnet does not enforce NetworkPolicy; Auto Mode does not until its network policy controller is enabled, and with the controller enabled and a `DefaultAllow` NodeClass startup traffic escaped a policy once. | Use a NetworkPolicy-enforcing CNI (Cilium, Calico); on Auto Mode enable enforcement with a `DefaultDeny` NodeClass (measured once; see the [Enforcement caveat](#enforcement-caveat--networkpolicy-may-be-accepted-but-not-enforced)), or use a runtime that removes the guest network, such as [`nitro-isolated`](#network-mode-none-on-this-runtime). |
-| `runtime diagnostics for executor.runtime "gvisor" failed: kernel_version: kernel version "..." does not end in gVisor's build stamp ...` or `... failed: sentry_meminfo: ...` | The `gvisor` RuntimeClass, or the node's `runsc` handler, does not run gVisor, so the Pod ran on the host kernel; or the gVisor build differs from the measured ones. | `kubectl get runtimeclass gvisor -o jsonpath='{.handler}'` should print `runsc`; check the node's containerd runtime entry. See [gVisor runtime diagnostics](#gvisor-runtime-diagnostics) for what may differ on GKE Sandbox. |
+| `runtime diagnostics for executor.runtime "gvisor" failed: kernel_version: kernel version "..." does not end in gVisor's build stamp ...` or `... failed: sentry_meminfo: ...` | The `gvisor` RuntimeClass, or the node's runtime entry for its handler, does not run gVisor, so the Pod ran on the host kernel; or the gVisor build differs from the measured ones. | `kubectl get runtimeclass gvisor -o jsonpath='{.handler}'` prints `runsc` for a self-managed install (`gvisor` on GKE Sandbox, whose managed class is not to be replaced); check that the node's containerd entry for that handler runs `runsc`. See [gVisor runtime diagnostics](#gvisor-runtime-diagnostics) for what may differ on GKE Sandbox. |
 | Validation errors naming `executor.runtime="nitro-isolated"` | The run sets a network mode, resources, `sandboxIdentity` or `gitProxy` the runtime does not accept. | See [What the runtime accepts](#what-the-runtime-accepts); Nitro-specific run failures are under [Troubleshooting on Nitro](#troubleshooting-on-nitro). |
 
 ## Testing the executor against a real cluster
