@@ -530,3 +530,24 @@ func TestPrepareSubAgent_ReadOnlyChildWithoutBuiltInsIsRejected(t *testing.T) {
 }
 
 var _ permission.Transport = (*permissionRequestTransport)(nil)
+
+func TestPrepareSubAgent_ChildWithoutBuiltInsRecordsNoBuiltIn(t *testing.T) {
+	must := require.New(t)
+	registry := tool.NewRegistry()
+	registry.Register(tool.ControlPlaneTool(types.ControlPlaneToolConfig{
+		Name:        "ticket_lookup",
+		Description: "look up a ticket",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
+	}))
+	parent := buildSubAgentTestLoop(&mockProvider{})
+	parent.Tools = registry
+	parentConfig := buildTestConfig()
+
+	run, err := prepareSubAgent(context.Background(), parent, parentConfig, SubAgentConfig{Prompt: "look it up", Mode: "execution"})
+	must.NoError(err, "prepareSubAgent")
+
+	must.Equal([]string{"ticket_lookup"}, run.effectiveTools, "effective tools")
+	must.Empty(run.config.Tools.BuiltIn, "recorded tools.builtIn")
+	must.True(run.config.Tools.NoBuiltIn, "an empty recorded list would claim every built-in")
+	must.False(parentConfig.Tools.NoBuiltIn, "parent config mutated")
+}
