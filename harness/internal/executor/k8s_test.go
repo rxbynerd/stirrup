@@ -802,9 +802,9 @@ func TestK8sEgress_AllowlistRequiresProxyURL(t *testing.T) {
 // Calico) a Mode=="none" sandbox cannot reach the internet. It is gated by
 // STIRRUP_TEST_ENFORCE_EGRESS (in addition to the kubeconfig gate) so it is
 // skipped on kindnet, which fails open and is not a reliable enforcement
-// signal. The
-// companion shape test (TestK8sEgress_NoneInstallsDenyAllPolicy) always runs
-// and proves the policy object is correct; this proves the policy bites.
+// signal. The companion shape test (TestK8sEgress_NoneInstallsDenyAllPolicy)
+// always runs and proves the policy object is correct; this proves the
+// policy bites.
 //
 // The probe is a raw TCP connect to a literal public IP (1.1.1.1:443),
 // deliberately DNS-free: the deny-all policy also blocks DNS, so resolving a

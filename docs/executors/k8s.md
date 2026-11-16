@@ -918,7 +918,7 @@ stirrup harness \
 # network.mode comes from a RunConfig; use "none" for the smoke test.
 ```
 
-### kind + gVisor (sandboxed runtime, unenforced egress)
+### kind + gVisor (sandboxed runtime, egress not guaranteed)
 
 `scripts/dev/kind-up.sh` installs gVisor (`runsc` + the containerd shim)
 into the kind node and registers a `gvisor` RuntimeClass, so a Pod can
