@@ -17,8 +17,8 @@ in [`AGENTS.md`](AGENTS.md).
 - **[just](https://github.com/casey/just)** for the convenience targets
   in the [`Justfile`](Justfile). Optional but used throughout this doc.
 - **[Buf](https://buf.build)** if you touch any `.proto` files.
-  Generated Go code lives in `gen/`, a separate Go module, and must be
-  regenerated whenever the proto schema changes.
+  Generated Go code lives in `gen/harness/v1/`, in the separate `gen`
+  Go module, and must be regenerated whenever the proto schema changes.
 - **`golangci-lint` v2** if you want to reproduce CI's lint job locally.
 - **Docker or Podman** if you intend to exercise the container executor
   or run the published image. Both are supported via the same Engine
@@ -30,8 +30,9 @@ The repository is a Go workspace (`go.work`) composed of five modules:
 
 - `types/` — shared types, `RunConfig` validation, and the `version`
   package. Zero external dependencies.
-- `gen/` — generated code from `proto/harness/v1/`. Edit the `.proto`,
-  not the generated Go.
+- `gen/` — generated code from `proto/harness/v1/` in `gen/harness/v1/`
+  (edit the `.proto`, not the generated Go), and the hand-written
+  `RunConfig` translator in `gen/runconfig/`.
 - `harness/` — the harness binary and its 12 components.
 - `eval/` — the eval CLI, judges, runner, and lakehouse adapters.
 - `examples/controlplane/` — a minimal control plane that drives

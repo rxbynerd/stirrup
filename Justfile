@@ -31,7 +31,7 @@ fuzz-scrub:
     go test ./harness/internal/security/ -run '^$' -fuzz '^FuzzScrubFenced$' -fuzztime 20s -fuzzminimizetime 0
 
 lint:
-    golangci-lint run ./harness/... ./types/... ./gen/runconfig/... ./eval/... ./examples/controlplane/...
+    golangci-lint run ./harness/... ./types/... ./gen/... ./eval/... ./examples/controlplane/...
 
 # Go module vulnerability scan, mirroring the CI govulncheck job.
 # govulncheck scans one module's build graph per invocation, so each

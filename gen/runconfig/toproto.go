@@ -155,7 +155,7 @@ func (e *encoder) runConfig(rc *types.RunConfig) *pb.RunConfig {
 		}
 	}
 	if !isZero(rc.ContextStrategy) {
-		pc.ContextStrategy = e.contextStrategy(&rc.ContextStrategy)
+		pc.ContextStrategy = e.contextStrategyConfig(&rc.ContextStrategy)
 	}
 	if !isZero(rc.Executor) {
 		pc.Executor = e.executorConfig(&rc.Executor)
@@ -267,7 +267,7 @@ func (e *encoder) runConfig(rc *types.RunConfig) *pb.RunConfig {
 	return pc
 }
 
-func (e *encoder) contextStrategy(c *types.ContextStrategyConfig) *pb.ContextStrategyConfig {
+func (e *encoder) contextStrategyConfig(c *types.ContextStrategyConfig) *pb.ContextStrategyConfig {
 	return &pb.ContextStrategyConfig{
 		Type:         c.Type,
 		MaxTokens:    e.int32("contextStrategy.maxTokens", c.MaxTokens),

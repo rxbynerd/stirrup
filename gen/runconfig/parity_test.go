@@ -365,7 +365,7 @@ func diffGoValues(path string, want, got reflect.Value, out *[]string) {
 		}
 		return
 	}
-	if reflect.DeepEqual(want.Interface(), got.Interface()) {
+	if assert.ObjectsAreEqual(want.Interface(), got.Interface()) {
 		return
 	}
 	if !want.IsZero() && got.IsZero() {
@@ -418,7 +418,7 @@ func jsonEqual(a, b []byte) bool {
 	if json.Unmarshal(a, &av) != nil || json.Unmarshal(b, &bv) != nil {
 		return false
 	}
-	return reflect.DeepEqual(av, bv)
+	return assert.ObjectsAreEqual(av, bv)
 }
 
 func jsonName(f reflect.StructField) string {

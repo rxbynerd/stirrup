@@ -107,11 +107,13 @@ func TestToProto_RejectsSchemasThatAreNotJSONObjects(t *testing.T) {
 		}},
 	}
 	for _, tc := range cases {
-		for _, raw := range []string{`null`, `[]`, `"schema"`, `{`} {
-			t.Run(tc.name+" "+raw, func(t *testing.T) {
+		for _, body := range []struct{ name, raw string }{
+			{"null", `null`}, {"array", `[]`}, {"string", `"schema"`}, {"truncated", `{`},
+		} {
+			t.Run(tc.name+" "+body.name, func(t *testing.T) {
 				must := require.New(t)
 				rc := grpcRunConfig()
-				tc.set(rc, json.RawMessage(raw))
+				tc.set(rc, json.RawMessage(body.raw))
 				_, err := ToProto(rc)
 				must.ErrorContains(err, tc.path)
 			})
@@ -188,6 +190,9 @@ func TestToProto_DoesNotAliasTheRunConfig(t *testing.T) {
 	check.Equal(want, rc, "mutating the message must not reach the RunConfig it came from")
 }
 
+// TestToProto_ValidatedConfigReachesTheHarnessUnchanged pins the
+// documented control-plane sequence: a config validated and sent with
+// ToProto decodes to the same config, which validates again unchanged.
 func TestToProto_ValidatedConfigReachesTheHarnessUnchanged(t *testing.T) {
 	must := require.New(t)
 	rc := &types.RunConfig{
