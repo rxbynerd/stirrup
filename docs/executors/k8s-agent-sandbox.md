@@ -231,7 +231,11 @@ backing Pod gone (see
 [the TTL GC backstop](#the-controller-owned-ttl-gc-backstop)). The
 limits listed under the `k8s` executor's
 [teardown edge cases](k8s.md#teardown-edge-cases), such as a force
-delete by another actor, apply here too.
+delete by another actor, apply here too, and so does the requirement
+for the
+[standing default-deny egress policy](k8s.md#standing-default-deny-egress):
+the Pod the controller creates carries `stirrup-sandbox=true`, so the
+reference manifest selects it.
 
 Enforcement still depends on the cluster CNI: a `NetworkPolicy`-enforcing
 CNI (GKE Dataplane V2, Cilium, Calico) is required for the policy to bite.

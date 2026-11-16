@@ -34,6 +34,11 @@
 #                                   garbage-collected. Without it the run is
 #                                   unaffected and such a policy stays.
 #
+#   These verbs cover every NetworkPolicy in the namespace, including the
+#   standing default-deny (sandbox-egress-default-deny.yaml); RBAC cannot name
+#   the random per-run policies. docs/executors/k8s.md ("Standing default-deny
+#   egress") describes an admission policy that narrows them.
+#
 # The Role is intentionally namespaced (not a ClusterRole): the orchestrator
 # operates within a single sandbox namespace. Bind one Role per namespace if
 # runs span several.

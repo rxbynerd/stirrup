@@ -5,9 +5,11 @@
 # selecting that single Pod by its unique stirrup.dev/pod label. This manifest
 # is a complementary standing baseline an operator can apply once: it selects
 # every Pod carrying stirrup-sandbox=true and confines its egress to DNS plus
-# the egress proxy. Applying both is additive and safe — NetworkPolicy egress
-# rules across policies that select the same Pod are OR-combined, and both
-# encode the same allowed peers.
+# the egress proxy. NetworkPolicy egress rules across policies that select the
+# same Pod are OR-combined, so this policy also gives runs in network mode
+# "none" DNS and the proxy, which their per-run deny-all cannot take away. The
+# required standing baseline is ../sandbox-egress-default-deny.yaml; apply
+# this one only in a namespace that runs allowlist mode alone.
 #
 # ENFORCEMENT CAVEAT: NetworkPolicy is only enforced by a CNI that implements
 # it. kindnet — the default CNI for `kind` clusters — enforces NetworkPolicy
