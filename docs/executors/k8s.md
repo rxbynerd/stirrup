@@ -2245,7 +2245,7 @@ defaulting to the kind-friendly values when a variable is unset:
 | `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT` | `30s` | Command timeout for the output-cap case, as a Go duration. A runtime that throttles exec output may need longer. At the platform default `log-bandwidth` of `2M` the `nitro-isolated` probes returned the cap error only with a `90s` timeout (an 11 MiB output took 44 s); the executor submits `20M`, where the output-cap case took 3.5 to 4.3 s on the 2026-11-13 EKS run, well inside the default `30s`. |
 | `STIRRUP_TEST_IMAGE` | `busybox:latest` | Sandbox image (amd64/multi-arch for the Sandbox pool; `curlimages/curl:latest` for the allowlist TLS test). |
 | `STIRRUP_TEST_EGRESS_PROXY_URL` | `…default.svc:8080` | Allowlist-mode proxy URL. |
-| `STIRRUP_TEST_ENFORCE_EGRESS` | *(unset → skip)* | Set to run the enforcement tests (`*_Enforced`); skipped otherwise so kindnet never produces a false negative. |
+| `STIRRUP_TEST_ENFORCE_EGRESS` | *(unset → skip)* | Set to run the enforcement tests (`*_Enforced`); skipped otherwise because kindnet fails open and is not a reliable enforcement signal. |
 
 ```sh
 # Example: full suite against GKE Sandbox via Connect Gateway.
