@@ -25,15 +25,22 @@ a PR that moves the tag and digest together; merging it is how
 base-layer patches reach the published images. A digest pin also
 means a rebuild alone never picks up a newer base.
 
-`ci.yml` additionally rebuilds and republishes the GHCR dev images
-(`:latest`, `:main`, `:sha-<7>`) from `main` every Monday at 04:17
-UTC. Builds run without a layer cache, so the sandbox image's
+`ci.yml` additionally rebuilds the GHCR dev images from `main` every
+Monday at 04:17 UTC and republishes them under `:main` and `:latest`.
+Builds run without a layer cache, so the sandbox image's
 `apt-get install` layer resolves `git` and `ca-certificates` against
 the current Debian archive even when no commit has landed. The
 scheduled run skips the eval gate, and it publishes to GHCR only, so
-it adds no Artifact Analysis scan cost. Release tags are immutable and
-are not rebuilt; a base-image fix for a released version ships in the
-next release.
+it adds no Artifact Analysis scan cost. It never overwrites a
+`:sha-<7>` tag: that tag is pushed by the first build of a commit,
+which records its digest as an `image-digest/<image>` commit status,
+and every later build of the same commit leaves it alone. Version tags
+(`:vX.Y.Z`) are immutable too: `release.yml` reuses an existing
+version tag's digest instead of rebuilding it, so a base-image fix for
+a released version ships in the next release. The scheduled
+`image-pins.yml` workflow fails if the digest behind either kind of
+tag changes; the tag table and the verification commands are in
+[`deployment.md`](deployment.md#container-images).
 
 The registry, IAM, and gating walkthrough below is written against the
 harness image; everything applies to the sandbox image identically
@@ -341,8 +348,8 @@ gcloud artifacts docker images list \
   --project=rubynerd-net
 ```
 
-After a tagged release, expect entries for `:latest`, `:vX.Y.Z`,
-and (on non-prerelease tags) `:X.Y`, each with a populated
+After a tagged release, expect entries for `:vX.Y.Z`, and (on
+non-prerelease tags) `:vX.Y` and `:latest`, each with a populated
 `DIGEST` column. Multi-arch builds show one entry per manifest
 list, not per platform. The pre-2026-05 `:main` / `:sha-<7>` dev
 tags are no longer pushed to GAR — those live on GHCR
@@ -425,9 +432,15 @@ necessary; neither is a substitute for the other.
 The Phase 2 steps in `release.yml::publish-container` (in order):
 
 1. **`docker/build-push-action`** keeps `sbom: true` and exposes
-   `id: docker-push`. The OCI in-toto SBOM attestation written by
-   buildx is for cosign/syft consumers walking the SLSA chain off
-   the registry directly; it does *not* substitute for `sbom load`.
+   `id: docker-push`; it is skipped when the version tag already
+   exists, and the `id: image` step resolves the pushed or reused
+   digest that every later step uses. The OCI in-toto SBOM
+   attestation written by buildx is for cosign/syft consumers walking
+   the SLSA chain off the registry directly; it does *not* substitute
+   for `sbom load`, and it is not the GitHub build-provenance
+   attestation that `actions/attest` stores for
+   `gh attestation verify` (see
+   [`deployment.md`](deployment.md#verify-what-you-run)).
 2. **`google-github-actions/setup-gcloud`** installs the `gcloud`
    CLI on PATH. The earlier `gcp-auth` step's access token is
    already exported into the runner environment, so `gcloud`

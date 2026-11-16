@@ -414,43 +414,171 @@ change): the broader control-plane design doc lives on the unmerged
 in the mutual-partial-trust posture recorded in that doc's §1.1. This
 document is normative for the wire contract in the meantime.
 
-## Container image
+## Container images
 
-Releases publish two image tags to GitHub Container Registry:
+Two images are published to GitHub Container Registry, with the same
+tag scheme:
 
-- `ghcr.io/rxbynerd/stirrup:<tag>` for tagged releases (`v1.2.3`).
-- `ghcr.io/rxbynerd/stirrup:main` from CI on every merge to `main`.
+- `ghcr.io/rxbynerd/stirrup`, the harness. It is
+  `gcr.io/distroless/static-debian12:nonroot`-based: a single
+  statically-linked binary, no shell, no package manager, runs as
+  `nonroot` (uid 65532).
+- `ghcr.io/rxbynerd/stirrup-sandbox`, the Debian-based image the
+  container, `k8s` and `k8s-sandbox` executors run agent workloads in.
 
-The image is `gcr.io/distroless/static-debian12:nonroot`-based: a
-single statically-linked binary, no shell, no package manager, runs
-as `nonroot` (uid 65532).
+| Tag | Published by | Moves? |
+|---|---|---|
+| `vX.Y.Z` (and pre-releases such as `v0.1.0-rc.1`) | `release.yml` | Never. A version tag is pushed once and never rebuilt. |
+| `sha-<7 hex>` | `ci.yml`, first build of a `main` commit | Never. Later builds of the same commit leave it alone. |
+| `vX.Y` | `release.yml`, non-pre-release tags | Yes, to the newest patch release. |
+| `main`, `latest` | `ci.yml` on every merge to `main` and the weekly rebuild; `release.yml` also sets `latest` | Yes. |
+
+Deployments pin by digest (`ghcr.io/rxbynerd/stirrup@sha256:…`), taking
+the digest from the release's `IMAGE_DIGESTS` asset or from a verified
+attestation (see [Verify what you run](#verify-what-you-run)). The
+scheduled `image-pins.yml` workflow fails when the digest behind any
+version tag or `sha-` tag changes. Release images are also mirrored to
+Google Artifact Registry under the same digest; see
+[`container-publishing.md`](container-publishing.md).
 
 ## Release process
 
-Releases are tag-driven via `.github/workflows/release.yml`. To cut
-one:
+Releases are tag-driven via `.github/workflows/release.yml`. A release
+tag is `v` followed by a Semantic Versioning 2.0.0 version without
+build metadata and without leading zeros (`v0.1.0`, `v0.1.0-rc.1`);
+the workflow rejects anything else. To cut one:
 
 ```sh
 git tag -a v1.2.3 -m "Release notes"
 git push origin v1.2.3
 ```
 
-`workflow_dispatch` against an existing tag re-runs the workflow for
-retries.
+To retry a run that failed part-way, re-run the failed jobs from the
+run page, or dispatch the workflow on the tag's own ref:
+
+```sh
+gh workflow run release.yml --ref v1.2.3 -f tag=v1.2.3
+```
+
+A dispatch from any other ref is rejected, so every signature and
+attestation for a release names the tagged workflow file. A re-run
+never rebuilds an image whose version tag already exists: it reuses the
+published digest after checking that the image was built from the
+tagged commit and that Artifact Registry serves the same digest.
 
 The workflow:
 
 1. Re-runs the verify job (build + test).
 2. Cross-compiles `stirrup` and `stirrup-eval` for
-   `linux/{amd64,arm64}` and `darwin/{amd64,arm64}` in parallel.
+   `linux/{amd64,arm64}` and `darwin/{amd64,arm64}` in parallel, and
+   checks that the linux/amd64 binary reports the release version.
 3. Generates SPDX and CycloneDX SBOMs.
-4. Aggregates artifacts under a single `SHA256SUMS` manifest.
-5. Publishes a GitHub Release. Tags containing `-`
-   (e.g. `v1.2.3-rc1`) are marked as prereleases automatically.
+4. Publishes both images, checks that the harness image reports the
+   release version, and attests their build provenance.
+5. Writes `IMAGE_DIGESTS` (one `<image>:<tag>@<digest>` line per
+   image) and a `SHA256SUMS` manifest over every asset, signs
+   `SHA256SUMS` with keyless cosign (`SHA256SUMS.sigstore.json`), and
+   attests the build provenance of every asset it lists.
+6. Tags the `types` and `gen` Go modules (`types/vX.Y.Z`,
+   `gen/vX.Y.Z`) at the release commit and checks that both resolve
+   through `proxy.golang.org`.
+7. Publishes a GitHub Release. Tags containing `-`
+   (e.g. `v1.2.3-rc.1`) are marked as prereleases automatically.
 
-Artifact signing (cosign / Sigstore) is intentionally out of scope
-for now; a commented-out signing seam sits in `release.yml` between
-the SHA256SUMS step and the release-create step.
+`types` and `gen` always release together, at the same commit and
+version as the binaries and images, so a control plane can require
+both with one version:
+
+```sh
+go get github.com/rxbynerd/stirrup/types@v1.2.3 github.com/rxbynerd/stirrup/gen@v1.2.3
+```
+
+The `harness`, `eval` and `examples/controlplane` modules are not
+tagged: they build the released binaries and are not meant to be
+imported (the embedding API is covered in
+[Embedding the harness](#embedding-the-harness)).
+
+## Verify what you run
+
+Every release can be checked by anyone with `cosign` (v3) and the
+GitHub CLI (`gh`; the flags below are those of gh 2.103), without
+access to the project. The commands below use `v1.2.3`; substitute the release being
+deployed. A signature or attestation proves where an artefact came
+from: that this repository's `release.yml`, running on GitHub-hosted
+runners for that tag, produced exactly these bytes. It says nothing
+about whether the artefact is safe to run. Reviewing the release, the
+[deployment posture](safety-rings.md) and the
+[vulnerability findings](container-publishing.md#phase-3--vulnerability-gating-on-releases)
+remains the operator's job.
+
+**Checksums file.** Download `SHA256SUMS` and
+`SHA256SUMS.sigstore.json` from the release, then:
+
+```sh
+cosign verify-blob \
+  --bundle SHA256SUMS.sigstore.json \
+  --certificate-identity https://github.com/rxbynerd/stirrup/.github/workflows/release.yml@refs/tags/v1.2.3 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  SHA256SUMS
+```
+
+The certificate identity is exact: it names the workflow file and the
+tag, so a signature made by any other workflow, branch or tag fails.
+
+**Release archive.** With the archive in the same directory as the
+verified `SHA256SUMS`:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+(`shasum -a 256 --check --ignore-missing SHA256SUMS` where
+`sha256sum` is not installed.) The
+archive also carries its own provenance attestation:
+
+```sh
+gh attestation verify stirrup-v1.2.3-linux-amd64.tar.gz \
+  --repo rxbynerd/stirrup \
+  --signer-workflow rxbynerd/stirrup/.github/workflows/release.yml \
+  --source-ref refs/tags/v1.2.3 \
+  --deny-self-hosted-runners
+```
+
+**Images.** Take the digests from `IMAGE_DIGESTS` (covered by the
+verified `SHA256SUMS`) and verify each image by digest:
+
+```sh
+grep 'IMAGE_DIGESTS$' SHA256SUMS | sha256sum --check -
+cat IMAGE_DIGESTS
+
+gh attestation verify oci://ghcr.io/rxbynerd/stirrup@sha256:<digest> \
+  --repo rxbynerd/stirrup \
+  --signer-workflow rxbynerd/stirrup/.github/workflows/release.yml \
+  --source-ref refs/tags/v1.2.3 \
+  --deny-self-hosted-runners
+
+gh attestation verify oci://ghcr.io/rxbynerd/stirrup-sandbox@sha256:<digest> \
+  --repo rxbynerd/stirrup \
+  --signer-workflow rxbynerd/stirrup/.github/workflows/release.yml \
+  --source-ref refs/tags/v1.2.3 \
+  --deny-self-hosted-runners
+```
+
+Verifying `oci://ghcr.io/rxbynerd/stirrup:v1.2.3` by tag also works,
+but checks whatever the tag points at when the command runs; deploy the
+digest that was verified, not the tag. The Artifact Registry copy of a
+release image has the same digest, so the same attestation covers it.
+
+The images also carry BuildKit's own SBOM attestation manifests, which
+are separate from these GitHub build-provenance attestations. `main`,
+`latest` and `sha-` images are not signed or attested; only release
+images are.
+
+**Go modules.** `go get` checks module contents against the public
+checksum database (`sum.golang.org`), so
+`go get github.com/rxbynerd/stirrup/types@v1.2.3` needs no extra step
+as long as `GOSUMDB` is not `off` and the module path is not covered by
+`GONOSUMDB`, `GOPRIVATE` or `GOINSECURE`.
 
 ## Version labels
 
@@ -465,6 +593,9 @@ The version label baked into binaries follows this convention:
 
 The labels are injected via `-ldflags` against
 `github.com/rxbynerd/stirrup/types/version.{version,commit}`.
+On a release build the `stirrup job` `ready` event's `harness_semver`
+is the label without its leading `v` (`1.2.3`); it is empty for `main`
+and `dev` builds.
 
 ## CI
 
@@ -478,8 +609,11 @@ The labels are injected via `-ldflags` against
   (GPT-6 Luna over OpenRouter), exits non-zero on regressions, uploads
   results as artifacts. A stronger-model sweep (Sonnet 5, Opus 4.8)
   runs at release time via `release.yml::eval-extended`.
-- **`publish-container`** — builds and pushes the image to GHCR on
-  the `main` branch only, after `verify` passes.
+- **`publish-container`** and **`publish-sandbox-container`** — build
+  and push the images to GHCR on the `main` branch only, after
+  `verify` passes. A commit's `sha-<7 hex>` tag is pushed once and its
+  digest recorded as an `image-digest/<image>` commit status; later
+  builds of the same commit move only `main` and `latest`.
 
 The Anthropic WIF smoke test (`smoke-anthropic.yml`) is a separate
 gated workflow that exercises the federation flow end-to-end.
@@ -510,7 +644,9 @@ Before deploying:
 5. Enforce a `Job.spec.activeDeadlineSeconds` slightly larger than
    `RunConfig.timeout` so K8s reaps any stuck Pod even if the
    harness's own wall-clock timeout fails to fire.
-6. Confirm the network path between job Pods and the control plane
+6. Pin the harness and sandbox images by digest and verify them as
+   described in [Verify what you run](#verify-what-you-run).
+7. Confirm the network path between job Pods and the control plane
    is trusted (private network or mesh mTLS) — the gRPC transport
    itself is plaintext and unauthenticated unless transport TLS is configured. See
    [Transport security posture](#transport-security-posture-v01).
