@@ -304,7 +304,8 @@ jobs:
           TAG: ${{ needs.validate-tag.outputs.tag }}
         run: |
           set -euo pipefail
-          PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          # --match skips the types/ and gen/ module tags on the same commits.
+          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${TAG}^" 2>/dev/null || true)
           if [ -n "$PREV" ]; then
             RANGE="${PREV}..${TAG}"
             HEADER="## Changes since ${PREV}"
@@ -315,8 +316,10 @@ jobs:
           {
             echo "$HEADER"
             echo
-            # Cap at 100 lines to keep first-tag changelogs readable.
-            git log --pretty=format:'- %s (%h)' --no-merges "$RANGE" | head -n 100
+            # --max-count caps a first-tag changelog at 100 lines. Piping
+            # into head instead fails the step under pipefail: git log
+            # dies of SIGPIPE once head exits.
+            git log --max-count=100 --pretty=format:'- %s (%h)' --no-merges "$RANGE"
             echo
           } > CHANGELOG.md
           cat CHANGELOG.md
