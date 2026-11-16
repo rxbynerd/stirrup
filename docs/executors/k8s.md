@@ -264,7 +264,8 @@ context deadline exceeded
 ```
 
 Once the Pod is Ready, the `k8s` executor waits for `pods/exec` to
-reach it before using it; the `k8s-sandbox` executor has no such wait. On a node that has just joined the cluster, a Pod can
+reach it before using it, and the `k8s-sandbox` executor runs the same
+wait once its Sandbox is Ready. On a node that has just joined the cluster, a Pod can
 be Ready before the kubelet's serving certificate is issued, and until
 then the API server cannot dial the kubelet, so every `exec` fails.
 *Measured* on the 2026-11-13 EKS run, a new node's certificate request
@@ -299,14 +300,19 @@ unable to upgrade connection: error dialing backend: remote error: tls: internal
 A cancellation or run deadline during the wait fails construction with
 `pod <ns>/<pod> exec reachability wait interrupted: <context error>`. The wait applies
 to every runtime of the `k8s` executor; for `nitro-isolated` it runs before the
-[runtime diagnostics](#runtime-diagnostics).
+[runtime diagnostics](#runtime-diagnostics). After the wait, and after the
+diagnostics where a runtime has them, the executor creates `HOME` and
+`TMPDIR` under `/scratch`; a failure there fails construction with
+`pod <ns>/<pod>: prepare sandbox scratch: ...` and tears the Pod down.
 
-The [`k8s-sandbox`](k8s-agent-sandbox.md) executor shares only the
-5-minute ceiling and the immediate failure on `Forbidden` or
-`Unauthorized`. It waits on the Sandbox's `Ready` condition and has none
-of the Pod states above, no progress lines, no admission check and no
-wait for `exec` to reach the Pod, so a permanently broken image there
-waits the full five minutes.
+The [`k8s-sandbox`](k8s-agent-sandbox.md) executor's readiness wait
+shares only the 5-minute ceiling and the immediate failure on
+`Forbidden` or `Unauthorized`. It waits on the Sandbox's `Ready`
+condition and has none of the Pod states above, no progress lines and
+no admission check, so a permanently broken image there waits the full
+five minutes. It then runs the same `exec` wait (its errors begin
+`sandbox <ns>/<name>` rather than `pod <ns>/<pod>`, and its log lines
+are the ones quoted above) and the same scratch setup.
 
 ### Admission check
 
@@ -2252,7 +2258,7 @@ defaulting to the kind-friendly values when a variable is unset:
 | `STIRRUP_TEST_NAMESPACE` | `default` | Sandbox namespace (use `stirrup-sandbox` for the restricted-PSS path). |
 | `STIRRUP_TEST_RUNTIME_CLASS` | *(empty)* | `executor.runtime` value for the generic tests (`gvisor` on GKE Sandbox — a no-RuntimeClass Pod is unschedulable on a fully tainted cluster). Runtime values equal RuntimeClass names except `nitro-isolated`, which the generic tests do not support; use `STIRRUP_TEST_NITRO_ISOLATED`. |
 | `STIRRUP_TEST_RUNTIME_CLASSES` | `,runc,gvisor` | Comma-separated `executor.runtime` values for `TestK8sRuntimeClass_Admitted` (e.g. `gvisor` alone on GKE). |
-| `STIRRUP_TEST_NITRO_ISOLATED` | *(unset → skip)* | Set to run the Nitro group on an EKS cluster with Nitro Sandboxes, pinned by `STIRRUP_TEST_NITRO_INSTANCE_TYPE` and `STIRRUP_TEST_NITRO_ARCH`. In `TestK8sNitroIsolated_EndToEnd` the Pod passes the whole-Pod admission check and the runtime diagnostics, then the group runs the generic exec, timeout, process-tree kill, output-cap, file round-trip, writable-workspace and teardown checks, probes for a guest network with `wget` (an image without `wget` fails the probe), and logs the workspace capacity. Once the Pod is constructed, the subtests share a fresh context sized from the sum of their timeouts (including `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT`), and the Pod's lifetime is the readiness ceiling plus the one-minute exec-reachability bound plus that sum; the group logs the budget when it starts. With the defaults its bounds add up to about 20 minutes, so run it with `-timeout 30m` as in the example below. `TestK8sNitroIsolated_DiskMbBoundsTheGuestDisk` declares `diskMb: 1024` and checks that the workspace is no larger than that and more than three quarters of it, that a write beyond it fails with `No space left on device`, and that the sandbox stays usable afterwards. Both skip everywhere else; both passed on the 2026-11-13 EKS run (see [Status](#status)). |
+| `STIRRUP_TEST_NITRO_ISOLATED` | *(unset → skip)* | Set to run the Nitro group on an EKS cluster with Nitro Sandboxes, pinned by `STIRRUP_TEST_NITRO_INSTANCE_TYPE` and `STIRRUP_TEST_NITRO_ARCH`. In `TestK8sNitroIsolated_EndToEnd` the Pod passes the whole-Pod admission check and the runtime diagnostics, then the group runs the generic exec, timeout, process-tree kill, output-cap, file round-trip, writable-workspace, scratch and teardown checks, probes for a guest network with `wget` (an image without `wget` fails the probe), and logs the workspace capacity. Once the Pod is constructed, the subtests share a fresh context sized from the sum of their timeouts (including `STIRRUP_TEST_OUTPUT_CAP_TIMEOUT`), and the Pod's lifetime is the readiness ceiling plus the one-minute exec-reachability bound plus that sum; the group logs the budget when it starts. With the defaults its bounds add up to about 20 minutes, so run it with `-timeout 30m` as in the example below. `TestK8sNitroIsolated_DiskMbBoundsTheGuestDisk` declares `diskMb: 1024` and checks that the workspace is no larger than that and more than three quarters of it, that a write beyond it fails with `No space left on device`, and that the sandbox stays usable afterwards. Both skip everywhere else; both passed on the 2026-11-13 EKS run (see [Status](#status)). |
 | `STIRRUP_TEST_NITRO_INSTANCE_TYPE` | `m5d.xlarge` | `node.kubernetes.io/instance-type` node selector for the Nitro group; pick a type from the [tested recipe](#tested-recipe). |
 | `STIRRUP_TEST_NITRO_ARCH` | `amd64` | `kubernetes.io/arch` node selector for the Nitro group. On `arm64` `TestK8sNitroIsolated_EndToEnd` fails its runtime diagnostics by design. |
 | `STIRRUP_TEST_NITRO_SOAK` | *(unset → skip)* | Duration (for example `75m`) for which `TestK8sNitroIsolated_Soak` holds one sandbox open, running a command every 30 seconds and a file round trip every three minutes; also needs `STIRRUP_TEST_NITRO_ISOLATED`. Pass a `-timeout` above the duration. |

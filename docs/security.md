@@ -833,20 +833,24 @@ and the harness's own git commands. A file under `HOME` can change how
 those behave without appearing in the diff, the commit or the export:
 `go env -w GOFLAGS=-run=^$` makes a failing `go test` exit 0, and a
 Python `.pth` file, `~/.npmrc` or `~/.cargo/config.toml` can do the
-same for other toolchains. Harness git commands override the global
-ignore and attributes files (`core.excludesFile` and
-`core.attributesFile` point at `/dev/null`), so a `HOME`-planted
-ignore entry cannot keep a workspace file out of the commit; other
-global git configuration in `HOME` still applies. The agent could
+same for other toolchains. On these executors the deterministic git
+strategy overrides the global ignore and attributes files
+(`core.excludesFile` and `core.attributesFile` point at `/dev/null`),
+so a `HOME`-planted ignore entry cannot keep a workspace file out of
+the commit; other global git configuration in `HOME` still applies, and
+the agent-facing git tools and the prompt's `git status` read all of
+it. Under the `local` executor `HOME` is the operator's, and the
+strategy honours its global ignores. The agent could
 already subvert an in-sandbox verifier by editing the tests, but that
 edit appears in the workspace; tampering through `HOME` does not.
 Verification an operator relies on belongs outside the sandbox, as the
 eval suite's `test-command` judge runs on the host against the
 workspace.
 
-On `container`, scratch also changes two things a run had before;
-the Kubernetes executors already had a writable, executable root
-filesystem and the image's own `/tmp`:
+On `container`, scratch also changes two things a run had before. The
+Kubernetes executors do not mount the root filesystem read-only, so
+there the image's own world-writable `/tmp` was already writable and
+executable:
 
 - **Visibility.** A program built and run in `/workspace` appears in
   the diff and the workspace export; one built and run in scratch is
