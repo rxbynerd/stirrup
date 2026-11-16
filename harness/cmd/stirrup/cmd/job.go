@@ -85,7 +85,7 @@ func readyEvent(sessionID, versionLabel string) types.HarnessEvent {
 		ID:             sessionID,
 		HarnessVersion: versionLabel,
 		HarnessSemver:  version.SemverOf(versionLabel),
-		Capabilities:   append(types.HarnessCapabilities(), types.CapabilitySessionLiveness),
+		Capabilities:   append(types.HarnessCapabilities(), types.CapabilitySessionLiveness, types.CapabilityBuildFailure),
 		ConfigFields:   transport.TaskAssignmentFieldPaths(),
 	}
 }
@@ -255,7 +255,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 		buildErr := fmt.Errorf("building harness: %w", err)
 		buildFailed := time.Since(started)
 		liveness.Stop()
-		emitTerminalFailure(tp, controlPlaneBuildError(buildErr), buildFailureOf(err), "error")
+		emitTerminalFailure(tp, controlPlaneBuildError(buildErr), buildFailureFor(err, ctx.Err() != nil), "error")
 		// Phase timings for the terminal-failure path, so a control plane
 		// reporting a missing "done" can name the phase that stalled.
 		// emit_returned marks the handoff to the transport, not delivery;
@@ -369,6 +369,17 @@ func controlPlaneBuildError(err error) error {
 		return fmt.Errorf("building harness: %s; the harness log has the detail", hostFile.Redacted())
 	}
 	return err
+}
+
+// buildFailureFor is the class the job reports for a failed build. A build
+// cut short by a shutdown signal is interrupted, whatever component was
+// running when the signal arrived.
+func buildFailureFor(err error, interrupted bool) *types.BuildFailure {
+	failure := buildFailureOf(err)
+	if interrupted {
+		failure.Reason = types.BuildFailureInterrupted
+	}
+	return failure
 }
 
 // buildFailureOf is the class BuildLoop gave err, or an unclassified

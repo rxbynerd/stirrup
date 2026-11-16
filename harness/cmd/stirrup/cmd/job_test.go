@@ -375,6 +375,30 @@ func TestEmitTerminalFailure_EmitsErrorThenDone(t *testing.T) {
 // failed "error" emit does not abandon the "done" event: "done" is the
 // terminal signal, so a control plane that missed the diagnostic still
 // needs the run closed out.
+func TestBuildFailureFor_ClassAndInterruption(t *testing.T) {
+	must := require.New(t)
+	sandboxReady := types.SessionPhase{Phase: types.SessionPhaseConstructing, Step: types.SessionStepSandboxReady}
+	built := &core.BuildError{Reason: types.BuildFailureSandboxNotReady, Step: types.SessionStepSandboxReady, Err: errors.New("pod not ready")}
+
+	must.Equal(&types.BuildFailure{Reason: types.BuildFailureSandboxNotReady, Phase: sandboxReady}, buildFailureFor(built, false))
+	must.Equal(&types.BuildFailure{Reason: types.BuildFailureInterrupted, Phase: sandboxReady}, buildFailureFor(built, true),
+		"a signal outranks the component's class but keeps the step")
+	must.Equal(&types.BuildFailure{Reason: types.BuildFailureUnclassified, Phase: types.SessionPhase{Phase: types.SessionPhaseConstructing}},
+		buildFailureFor(errors.New("not from BuildLoop"), false))
+}
+
+func TestEmitTerminalFailure_ErrorCarriesBuildFailure(t *testing.T) {
+	must := require.New(t)
+	tp := &recordingTransport{}
+	failure := &types.BuildFailure{Reason: types.BuildFailureCredential, Phase: types.SessionPhase{Phase: types.SessionPhaseConstructing}}
+
+	emitTerminalFailure(tp, errors.New("building harness: resolve credentials"), failure, "error")
+
+	must.Len(tp.events, 2)
+	must.Equal(failure, tp.events[0].BuildFailure)
+	must.Nil(tp.events[1].BuildFailure, "done carries no build failure")
+}
+
 func TestEmitTerminalFailure_EmitFailureStillAttemptsDone(t *testing.T) {
 	must := require.New(t)
 	tp := &recordingTransport{emitErr: errors.New("stream closed")}
@@ -483,7 +507,7 @@ func TestRunJob_ReadyAdvertisesCapabilitiesAndConfigFields(t *testing.T) {
 	ready := srv.ready
 	srv.mu.Unlock()
 	must.Equal("ready", ready.GetType(), "first event sent to the control plane")
-	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned", "lazy_tool_loading", "heartbeat_interval", "strict_task_assignment", "session_liveness"}
+	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned", "lazy_tool_loading", "heartbeat_interval", "strict_task_assignment", "session_liveness", "build_failure"}
 	must.Equal(want, ready.GetCapabilities())
 	must.Equal(transport.TaskAssignmentFieldPaths(), ready.GetConfigFields())
 	must.NotContains(ready.GetConfigFields(), "transport", "a field a task_assignment cannot carry is not advertised")

@@ -431,9 +431,9 @@ type HarnessEvent struct {
 }
 
 // BuildFailure classifies a task that could not be built into a run.
-// Reason is one of the BuildFailure* values; the set is closed, but
-// consumers treat a value they do not recognise as BuildFailureUnclassified.
-// Phase is where construction stopped.
+// Reason is one of the BuildFailure* values. Reasons are only ever added;
+// consumers preserve a value they do not recognise and handle it as
+// BuildFailureUnclassified. Phase is where construction stopped.
 type BuildFailure struct {
 	Reason string       `json:"reason"`
 	Phase  SessionPhase `json:"phase"`
@@ -471,8 +471,12 @@ const (
 	// reachable for commands, for example within the readiness timeout.
 	BuildFailureSandboxNotReady = "sandbox_not_ready"
 	// BuildFailureControlStreamLost: the control stream ended during
-	// construction.
+	// construction. Sent best-effort on a stream already found lost; the
+	// "done" stop_reason is authoritative.
 	BuildFailureControlStreamLost = "control_stream_lost"
+	// BuildFailureInterrupted: a shutdown signal cut construction short,
+	// whatever component was running.
+	BuildFailureInterrupted = "interrupted"
 	// BuildFailureUnclassified: any other construction failure; the
 	// error message has the detail.
 	BuildFailureUnclassified = "unclassified"
@@ -557,6 +561,9 @@ const (
 	// SessionPhase. Advertised by `stirrup job` only, so it is not in
 	// HarnessCapabilities.
 	CapabilitySessionLiveness = "session_liveness"
+	// CapabilityBuildFailure: the "error" sent when a task cannot be built
+	// into a run carries BuildFailure. Advertised by `stirrup job` only.
+	CapabilityBuildFailure = "build_failure"
 )
 
 // HarnessCapabilities returns the capabilities this harness advertises on

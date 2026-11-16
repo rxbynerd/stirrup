@@ -182,7 +182,8 @@ const (
 //	  - message:       human-readable error description. Followed by a
 //	                   "done" event carrying stop_reason "error".
 //	  - build_failure: why the task could not be built into a run; set by
-//	                   `stirrup job` on the "error" it sends when
+//	                   a harness advertising the "build_failure"
+//	                   capability on the "error" it sends when
 //	                   construction fails, before any run started.
 //
 //	"warning"
@@ -694,8 +695,8 @@ func (x *HarnessEvent) GetBuildFailure() *BuildFailure {
 // into a run.
 type BuildFailure struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The failure's class, from a closed set; treat a value that is not
-	// recognised as "unclassified":
+	// The failure's class. Values are only ever added: preserve one that is
+	// not recognised and handle it as "unclassified".
 	//
 	//	"config_invalid"            the RunConfig failed validation.
 	//	"host_file"                 a file the RunConfig names could not be
@@ -723,7 +724,10 @@ type BuildFailure struct {
 	//	                            reachable for commands, for example
 	//	                            within the readiness timeout.
 	//	"control_stream_lost"       the control stream ended during
-	//	                            construction.
+	//	                            construction; sent best-effort, and
+	//	                            "done" stop_reason is authoritative.
+	//	"interrupted"               a shutdown signal cut construction
+	//	                            short.
 	//	"unclassified"              any other construction failure; the
 	//	                            message has the detail.
 	Reason string `protobuf:"bytes,1,opt,name=reason,proto3" json:"reason,omitempty"`
