@@ -314,10 +314,10 @@ grants the `sandboxes` verbs and reduces `pods` to `get`:
 
 | Resource | `k8s` (rbac.yaml) | `k8s-sandbox` (rbac-agent-sandbox.yaml) |
 |---|---|---|
-| `agents.x-k8s.io/sandboxes` | — | `create, get, list, watch, delete` |
+| `agents.x-k8s.io/sandboxes` | — | `create, get, delete` |
 | `pods` | `create, get, delete` | `get` |
 | `pods/exec` | `create` | `create` |
-| `networking.k8s.io/networkpolicies` | `create, delete` | `create, delete` |
+| `networking.k8s.io/networkpolicies` | `create, delete, patch` | `create, delete` |
 
 On the `k8s-sandbox` path `pods` `get` is used only by teardown, to
 confirm the backing Pod is gone before the policy is removed;

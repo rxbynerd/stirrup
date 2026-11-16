@@ -651,22 +651,15 @@ func referenceRolePermissions(t *testing.T, manifest string) map[string]bool {
 }
 
 // TestK8sRequiredAccess_MatchesReferenceRoles pins the probe's permission list
-// to the reference Roles: every probed permission must be granted, and every
-// granted permission the probe does not check must be listed here with the
-// reason the executor does not use it.
+// to the reference Roles: each Role grants exactly the permissions the probe
+// checks, no fewer and no more.
 func TestK8sRequiredAccess_MatchesReferenceRoles(t *testing.T) {
 	tests := []struct {
 		executorType string
 		manifest     string
-		unprobed     map[string]string
 	}{
-		{"k8s", "rbac.yaml", map[string]string{
-			"get pods/log": "the executor reads no Pod logs; granted for operator debugging",
-		}},
-		{"k8s-sandbox", filepath.Join("agent-sandbox", "rbac-agent-sandbox.yaml"), map[string]string{
-			"list sandboxes.agents.x-k8s.io":  "the executor gets and deletes its own Sandbox by name and never lists",
-			"watch sandboxes.agents.x-k8s.io": "readiness is polled with get, not watched",
-		}},
+		{"k8s", "rbac.yaml"},
+		{"k8s-sandbox", filepath.Join("agent-sandbox", "rbac-agent-sandbox.yaml")},
 	}
 	for _, tt := range tests {
 		t.Run(tt.executorType, func(t *testing.T) {
@@ -678,10 +671,7 @@ func TestK8sRequiredAccess_MatchesReferenceRoles(t *testing.T) {
 				must.Truef(role[access.String()], "the probe checks %q but %s does not grant it", access, tt.manifest)
 				want[access.String()] = true
 			}
-			for k := range tt.unprobed {
-				want[k] = true
-			}
-			must.Equal(want, role, "%s grants permissions that are neither probed nor listed as unprobed", tt.manifest)
+			must.Equal(want, role, "%s grants permissions the probe does not check", tt.manifest)
 		})
 	}
 }
