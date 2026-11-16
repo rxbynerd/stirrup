@@ -1237,25 +1237,18 @@ jobs:
         working-directory: release
         run: sha256sum -c SHA256SUMS
 
-      - name: Refuse to replace a published release's assets
+      # Published assets are never replaced with different bytes. A
+      # dispatch rebuilds the SBOMs, which never reproduce, so when only
+      # they differ the published set is kept and the job goes on to the
+      # module tags and the image tags.
+      - name: Compare with the published release
+        id: published
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if ! assets=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null); then
-            echo "No release for ${TAG} yet."
-            exit 0
-          fi
-          if ! printf '%s\n' "$assets" | grep -qx SHA256SUMS; then
-            exit 0
-          fi
-          mkdir -p published
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir published
-          if ! cmp -s published/SHA256SUMS release/SHA256SUMS; then
-            echo "::error::release ${TAG} already publishes a different SHA256SUMS; published assets are never replaced"
-            diff published/SHA256SUMS release/SHA256SUMS || true
-            exit 1
-          fi
+          action=$(scripts/release/compare-published-release.sh "$TAG" release)
+          echo "action=${action}" >> "$GITHUB_OUTPUT"
 
       # types/ and gen/ are the modules a control plane imports. Both
       # receive every release version together, at the release commit;
@@ -1271,6 +1264,7 @@ jobs:
       # making it the highest-trust step in the workflow — pinning to
       # an immutable commit is non-negotiable here.
       - name: Create GitHub Release
+        if: steps.published.outputs.action == 'upload'
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ env.TAG }}
