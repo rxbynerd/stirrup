@@ -64,3 +64,19 @@ func TestPopulatedFieldPaths_ListsOnlyFieldsTheHarnessAccepts(t *testing.T) {
 	check.Contains(got, "executor.k8sNodeSelector.*")
 	check.Contains(got, "guardRail.stages.stages")
 }
+
+// TestPopulatedFieldPaths_WalksEveryListElement pins that each element of
+// a repeated field contributes its own fields, and that a sibling does
+// not use up the recursion allowance of the next.
+func TestPopulatedFieldPaths_WalksEveryListElement(t *testing.T) {
+	check := assert.New(t)
+	pc := &pb.RunConfig{
+		Tools: &pb.ToolsConfig{McpServers: []*pb.MCPServerConfig{{Name: "docs"}, {Uri: "https://mcp.example.com"}}},
+		Verifier: &pb.VerifierConfig{Verifiers: []*pb.VerifierConfig{
+			{Type: "test-runner"},
+			{Criteria: "passes"},
+		}},
+	}
+	got := PopulatedFieldPaths(pc)
+	check.Subset(got, []string{"tools.mcpServers.name", "tools.mcpServers.uri", "verifier.verifiers.type", "verifier.verifiers.criteria"})
+}

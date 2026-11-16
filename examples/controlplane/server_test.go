@@ -244,8 +244,8 @@ func TestLoadRunConfig_ParsesAndRejectsBadFiles(t *testing.T) {
 	})
 	t.Run("rejects other unknown fields", func(t *testing.T) {
 		must := require.New(t)
-		_, err := loadRunConfig(write(t, `{"runId":"r","promt":"typo"}`))
-		must.Error(err)
+		_, err := loadRunConfig(write(t, `{`+valid+`,"promt":"typo"}`))
+		must.ErrorContains(err, `unknown field "promt"`)
 	})
 	t.Run("rejects malformed JSON", func(t *testing.T) {
 		must := require.New(t)

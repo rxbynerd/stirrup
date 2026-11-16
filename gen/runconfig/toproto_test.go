@@ -3,6 +3,10 @@ package runconfig
 import (
 	"encoding/json"
 	"math"
+	"reflect"
+	"regexp"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -197,4 +201,133 @@ func TestToProto_ValidatedConfigReachesTheHarnessUnchanged(t *testing.T) {
 	got := FromProto(pc)
 	must.NoError(types.ValidateRunConfig(got))
 	must.Equal(rc, got)
+}
+
+// TestToProto_RangeChecksEveryInt32Field sets each int field of a full
+// RunConfig, one at a time, just outside and exactly at the int32
+// bounds, and checks ToProto rejects the first and accepts the second.
+func TestToProto_RangeChecksEveryInt32Field(t *testing.T) {
+	paths := intFieldPaths(t)
+	must := require.New(t)
+	must.Contains(paths, "heartbeatSeconds")
+	must.Contains(paths, "hooks.preRun.timeoutSeconds")
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			for _, bound := range []int{math.MaxInt32, math.MinInt32} {
+				must := require.New(t)
+				outside := bound + 1
+				if bound == math.MinInt32 {
+					outside = bound - 1
+				}
+				rc := filledRunConfig(t)
+				setIntField(t, rc, path, bound)
+				_, err := ToProto(rc)
+				must.NoError(err, "%s = %d is in range", path, bound)
+
+				rc = filledRunConfig(t)
+				setIntField(t, rc, path, outside)
+				_, err = ToProto(rc)
+				must.Error(err, "%s = %d is out of range", path, outside)
+				must.Contains(normalisedErrorPaths(err), path)
+			}
+		})
+	}
+}
+
+// intFieldPaths returns the JSON path of every int-typed field in a full
+// RunConfig, the fields ToProto narrows to int32.
+func intFieldPaths(t *testing.T) []string {
+	t.Helper()
+	seen := map[string]bool{}
+	walkIntFields(reflect.ValueOf(filledRunConfig(t)).Elem(), "", func(path string, _ reflect.Value) {
+		seen[path] = true
+	})
+	paths := make([]string, 0, len(seen))
+	for p := range seen {
+		paths = append(paths, p)
+	}
+	slices.Sort(paths)
+	return paths
+}
+
+// setIntField sets every int field at path in rc to v.
+func setIntField(t *testing.T, rc *types.RunConfig, path string, v int) {
+	t.Helper()
+	n := 0
+	walkIntFields(reflect.ValueOf(rc).Elem(), "", func(p string, field reflect.Value) {
+		if p == path {
+			field.SetInt(int64(v))
+			n++
+		}
+	})
+	require.New(t).Positive(n, "no int field at %s", path)
+}
+
+// walkIntFields calls fn for every settable int field reachable from v,
+// with map values replaced so their fields can be set.
+func walkIntFields(v reflect.Value, path string, fn func(string, reflect.Value)) {
+	switch v.Kind() {
+	case reflect.Pointer:
+		if !v.IsNil() {
+			walkIntFields(v.Elem(), path, fn)
+		}
+	case reflect.Struct:
+		for i := range v.NumField() {
+			if f := v.Type().Field(i); f.IsExported() {
+				walkIntFields(v.Field(i), joinPath(path, jsonName(f)), fn)
+			}
+		}
+	case reflect.Slice:
+		if v.Type() == rawMessageType {
+			return
+		}
+		for i := range v.Len() {
+			walkIntFields(v.Index(i), path, fn)
+		}
+	case reflect.Map:
+		iter := v.MapRange()
+		for iter.Next() {
+			elem := reflect.New(v.Type().Elem()).Elem()
+			elem.Set(iter.Value())
+			walkIntFields(elem, path+"."+types.ConfigFieldWildcard, fn)
+			v.SetMapIndex(iter.Key(), elem)
+		}
+	case reflect.Int:
+		fn(path, v)
+	}
+}
+
+// normalisedErrorPaths returns the field path of each line of a ToProto
+// error with list indexes dropped and map keys replaced by
+// types.ConfigFieldWildcard, so it compares with a JSON path.
+func normalisedErrorPaths(err error) []string {
+	var out []string
+	for _, line := range strings.Split(err.Error(), "\n") {
+		path, _, _ := strings.Cut(strings.TrimPrefix(line, "runconfig: "), ":")
+		path = listIndex.ReplaceAllString(path, "")
+		path = fillerMapKey.ReplaceAllString(path, "."+types.ConfigFieldWildcard)
+		out = append(out, path)
+	}
+	return out
+}
+
+var (
+	listIndex    = regexp.MustCompile(`\[\d+\]`)
+	fillerMapKey = regexp.MustCompile(`\.key[12]\b`)
+)
+
+// TestToProto_OmitsEmptyNestedBlocks pins that a value-typed block left at
+// its zero value inside a block that is set does not reach the wire, so
+// PopulatedFieldPaths of the message lists only what the config sets.
+func TestToProto_OmitsEmptyNestedBlocks(t *testing.T) {
+	must := require.New(t)
+	rc := grpcRunConfig()
+	rc.Tools.BuiltIn = []string{"read_file"}
+	rc.Observability.ServiceName = "control-plane"
+	pc, err := ToProto(rc)
+	must.NoError(err)
+	must.Nil(pc.Tools.LazyLoading)
+	must.Nil(pc.Tools.CommandOutput)
+	must.Nil(pc.Observability.LogsExport)
+	must.Equal([]string{"observability", "observability.serviceName", "tools", "tools.builtIn"}, PopulatedFieldPaths(pc))
 }
