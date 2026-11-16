@@ -5,11 +5,9 @@ import (
 	"sync/atomic"
 )
 
-// requestSeq numbers every correlated request the process issues. One
-// sequence shared by every prefix keeps request IDs unique on a
-// transport however many subsystems attach their own response handler
-// to it: each handler fans in every control event of its type, so two
-// pending requests sharing an ID would both resolve on one response.
+// requestSeq numbers every correlated request the process issues, across
+// all prefixes, so one response can never match two pending requests on
+// a transport that several subsystems attach handlers to.
 var requestSeq atomic.Uint64
 
 // NewRequestID returns "<prefix>-<n>", where n is drawn from a single

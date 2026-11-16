@@ -299,11 +299,13 @@ func TestCorrelator_SamePrefixOnOneTransport_ResponseResolvesOneAwait(t *testing
 	first.AttachTo(fc, extractByType("permission_response"))
 	second.AttachTo(fc, extractByType("permission_response"))
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	issued := make(chan string, 2)
 	done := make(chan error, 2)
 	for _, c := range []*Correlator{first, second} {
 		go func() {
-			_, err := c.Await(context.Background(), 200*time.Millisecond, func(id string) error {
+			_, err := c.Await(ctx, 10*time.Second, func(id string) error {
 				issued <- id
 				return nil
 			})
@@ -317,22 +319,11 @@ func TestCorrelator_SamePrefixOnOneTransport_ResponseResolvesOneAwait(t *testing
 	}, time.Second, time.Millisecond)
 
 	fc.simulate(types.ControlEvent{Type: "permission_response", RequestID: a})
+	must.NoError(<-done, "the await the response was addressed to")
+	check.Equal(1, first.PendingCount()+second.PendingCount(), "awaits still pending after one response")
 
-	var errs []error
-	for range 2 {
-		errs = append(errs, <-done)
-	}
-	resolved, timedOut := 0, 0
-	for _, err := range errs {
-		switch {
-		case err == nil:
-			resolved++
-		case errors.Is(err, ErrAwaitTimeout):
-			timedOut++
-		}
-	}
-	check.Equal(1, resolved, "awaits resolved by one response")
-	check.Equal(1, timedOut, "awaits left to fail closed on timeout")
+	cancel()
+	must.ErrorIs(<-done, context.Canceled, "the unanswered await fails closed")
 }
 
 func TestNewRequestID_UniqueUnderConcurrency(t *testing.T) {

@@ -321,7 +321,7 @@ reports (see Token lifetime, below).
   first delivery when startup took the token past its refresh point,
   then again on each refresh; at most eight per run. Carries `request_id`
   (correlation; `sbid-<n>`, with `n` increasing in issue order but not
-  contiguous, because one sequence numbers every request the harness
+  necessarily contiguous, because one sequence numbers every request the harness
   issues) and `audience`,
   the intended JWT `aud` claim (e.g. `https://haybale.internal`). The
   event deliberately carries no harness-asserted identity field: the
