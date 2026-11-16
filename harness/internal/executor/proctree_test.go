@@ -55,9 +55,8 @@ func assertWrapperKilledTree(t *testing.T, g groupedCommand, dir string, env []s
 	must := require.New(t)
 	check := assert.New(t)
 	// The detached grandchild holds no pipe; only a signal reaches it. The
-	// command records "tree-ready" after both children exist, because the
-	// pid file is written before the command's own children are forked and the
-	// kill script signals only the descendants it finds when it runs.
+	// kill script signals only descendants that exist when it runs, so the
+	// command writes "tree-ready" once both children are forked.
 	g.command = "sh -c 'sleep 2; touch after-kill' >/dev/null 2>&1 & sleep 600 & echo ready >tree-ready; wait"
 	_, done := startGrouped(t, g, dir, env)
 	waitForFile(t, g.pidFile)
