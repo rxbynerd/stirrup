@@ -30,7 +30,7 @@ func ParseImageAdmissionPolicy(entries []string) (ImageAdmissionPolicy, error) {
 			if err := validateImagePattern(pattern); err != nil {
 				return ImageAdmissionPolicy{}, err
 			}
-			patterns = append(patterns, foldDockerHubHost(pattern))
+			patterns = append(patterns, normalisePattern(pattern))
 		}
 	}
 	return ImageAdmissionPolicy{patterns: patterns}, nil
@@ -41,7 +41,8 @@ func (p ImageAdmissionPolicy) Configured() bool {
 	return len(p.patterns) > 0
 }
 
-// Patterns returns a copy of the policy's patterns, Docker Hub hosts folded.
+// Patterns returns a copy of the policy's patterns as normalisePattern
+// rewrote them.
 func (p ImageAdmissionPolicy) Patterns() []string {
 	return slices.Clone(p.patterns)
 }
@@ -52,42 +53,41 @@ func (p ImageAdmissionPolicy) Patterns() []string {
 // Podman and CRI-O resolve short names through registries.conf, which need
 // not agree with the docker.io default the patterns are matched against.
 func (p ImageAdmissionPolicy) Admit(image string) error {
-	ref, err := imageRefSegments(image)
+	ref, err := parseImageRef(image)
 	if err != nil {
 		return err
 	}
 	if !p.Configured() {
 		return nil
 	}
-	if !imageNamesRegistry(image) {
+	if !ref.namesRegistry {
 		return fmt.Errorf("image %q %w: the reference must name its registry, as in %q",
-			image, ErrImageNotAdmitted, strings.Join(ref, "/"))
+			image, ErrImageNotAdmitted, ref.name())
 	}
 	for _, pattern := range p.patterns {
-		if imagePatternMatches(pattern, ref) {
+		if imagePatternMatches(pattern, ref.segments) {
 			return nil
 		}
 	}
-	return fmt.Errorf("image %q (resolved to %q) %w %v",
-		image, strings.Join(ref, "/"), ErrImageNotAdmitted, p.patterns)
+	return fmt.Errorf("image %q (resolved to %q) %w", image, ref.name(), ErrImageNotAdmitted)
 }
 
 // ErrImageNotAdmitted marks a valid reference that a configured policy
 // refuses, as distinct from a malformed reference.
 var ErrImageNotAdmitted = errors.New("is not admitted by the image admission policy")
 
-// ociDigestSuffix is the OCI image-spec digest grammar anchored after "@".
-var ociDigestSuffix = regexp.MustCompile(`@[a-z0-9]+(?:[.+_-][a-z0-9]+)*:[a-zA-Z0-9=_-]+$`)
-
-// ImageDigestPinned reports whether image names its content by digest
-// ("repo@sha256:..."), so the reference cannot move to different content.
+// ImageDigestPinned reports whether image is a valid reference that names
+// its content by digest ("repo@sha256:..."), so it cannot move to different
+// content.
 func ImageDigestPinned(image string) bool {
-	return ociDigestSuffix.MatchString(image)
+	ref, err := parseImageRef(image)
+	return err == nil && ref.digest != ""
 }
 
 // imagePatternMatches matches segment by segment so no glob can match "/".
 // A pattern ending in "/" matches any reference with at least one further
-// segment; any other pattern must match every segment.
+// segment; any other pattern must match every segment. A bracketed IPv6 host
+// is compared literally, since "[" would otherwise open a glob class.
 func imagePatternMatches(pattern string, ref []string) bool {
 	prefix := strings.HasSuffix(pattern, "/")
 	segments := strings.Split(strings.TrimSuffix(pattern, "/"), "/")
@@ -98,12 +98,20 @@ func imagePatternMatches(pattern string, ref []string) bool {
 		return false
 	}
 	for i, seg := range segments {
+		if i == 0 && strings.HasPrefix(seg, "[") {
+			if seg != ref[0] {
+				return false
+			}
+			continue
+		}
 		if ok, _ := path.Match(seg, ref[i]); !ok {
 			return false
 		}
 	}
 	return true
 }
+
+var ipv6HostPattern = regexp.MustCompile(`^` + refIPv6Host + `(?::[0-9]+)?$`)
 
 func validateImagePattern(pattern string) error {
 	if pattern == "" {
@@ -120,13 +128,24 @@ func validateImagePattern(pattern string) error {
 	if !strings.HasSuffix(pattern, "/") && len(segments) == 1 {
 		return fmt.Errorf("image admission pattern %q names a registry but no repository; write %q to admit every repository on it", pattern, pattern+"/")
 	}
-	if !looksLikeRegistryHost(segments[0]) {
+	host := segments[0]
+	if !looksLikeRegistryHost(host) {
 		return fmt.Errorf("image admission pattern %q must start with a registry host, as in %q", pattern, "docker.io/"+body)
 	}
 	if strings.Contains(pattern, "@") || slices.ContainsFunc(segments[1:], func(s string) bool { return strings.Contains(s, ":") }) {
 		return fmt.Errorf("image admission pattern %q names a tag or digest; patterns match the repository path, with tags and digests removed", pattern)
 	}
-	for _, seg := range segments {
+	globs := segments
+	switch {
+	case strings.HasPrefix(host, "["):
+		if !ipv6HostPattern.MatchString(host) {
+			return fmt.Errorf("image admission pattern %q has a malformed IPv6 registry host; an IPv6 host is matched literally and cannot hold a glob", pattern)
+		}
+		globs = segments[1:]
+	case pattern != "*/" && !hostHasLiteralLabel(host):
+		return fmt.Errorf("image admission pattern %q has a registry host made only of glob characters; name the registry (for example %q), or write \"*/\" to admit every registry", pattern, "*.corp.example/")
+	}
+	for _, seg := range globs {
 		if strings.Contains(seg, "**") {
 			return fmt.Errorf("image admission pattern %q uses \"**\"; \"*\" matches within one path segment, and a trailing \"/\" admits every path below a prefix", pattern)
 		}
@@ -143,21 +162,30 @@ func looksLikeRegistryHost(segment string) bool {
 	return segment == "localhost" || strings.ContainsAny(segment, ".:*?[")
 }
 
-// imageNamesRegistry reports whether image's first path segment is a
-// registry host by the rule normaliseImageRef applies.
-func imageNamesRegistry(image string) bool {
-	if at := strings.Index(image, "@"); at >= 0 {
-		image = image[:at]
+// hostHasLiteralLabel reports whether a pattern host, its port removed, has
+// at least one dot-separated label free of glob characters.
+func hostHasLiteralLabel(host string) bool {
+	if colon := strings.LastIndex(host, ":"); colon >= 0 {
+		host = host[:colon]
 	}
-	first, _, found := strings.Cut(image, "/")
-	return found && (first == "localhost" || strings.ContainsAny(first, ".:"))
+	return slices.ContainsFunc(strings.Split(host, "."), func(label string) bool {
+		return label != "" && !strings.ContainsAny(label, "*?[")
+	})
 }
 
-func foldDockerHubHost(pattern string) string {
+// normalisePattern folds the Docker Hub pull aliases onto docker.io and
+// applies Docker Hub's library/ rule to a whole-reference pattern with one
+// repository segment, so a pattern names references the way parseImageRef
+// resolves them.
+func normalisePattern(pattern string) string {
 	for _, alias := range []string{"index.docker.io/", "registry-1.docker.io/"} {
 		if rest, ok := strings.CutPrefix(pattern, alias); ok {
-			return "docker.io/" + rest
+			pattern = "docker.io/" + rest
+			break
 		}
+	}
+	if rest, ok := strings.CutPrefix(pattern, "docker.io/"); ok && rest != "" && !strings.Contains(rest, "/") {
+		return "docker.io/library/" + rest
 	}
 	return pattern
 }
@@ -166,72 +194,63 @@ func invalidImageRune(r rune) bool {
 	return unicode.IsSpace(r) || unicode.IsControl(r)
 }
 
-// imageRefSegments normalises image and splits it into path segments,
-// rejecting a reference the container engine or kubelet could not resolve.
-func imageRefSegments(image string) ([]string, error) {
-	if image == "" {
-		return nil, fmt.Errorf("image reference is empty")
-	}
-	if strings.ContainsFunc(image, invalidImageRune) {
-		return nil, fmt.Errorf("image %q contains whitespace or a control character", image)
-	}
-	ref := normaliseImageRef(image)
-	segments := strings.Split(ref, "/")
-	if slices.Contains(segments, "") {
-		return nil, fmt.Errorf("image %q (resolved to %q) has an empty repository path segment", image, ref)
-	}
-	return segments, nil
+// The reference grammar of github.com/distribution/reference, which Docker,
+// containerd, Podman and CRI-O parse image references with.
+const (
+	refPathComponent   = `[a-z0-9]+(?:(?:[._]|__|[-]+)[a-z0-9]+)*`
+	refDomainComponent = `(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])`
+	refIPv6Host        = `\[(?:[a-fA-F0-9:]+)\]`
+	refDomain          = `(?:` + refDomainComponent + `(?:\.` + refDomainComponent + `)*|` + refIPv6Host + `)(?::[0-9]+)?`
+	refName            = `(?:` + refDomain + `/)?` + refPathComponent + `(?:/` + refPathComponent + `)*`
+	refTag             = `[\w][\w.-]{0,127}`
+	refDigest          = `[A-Za-z][A-Za-z0-9]*(?:[-_+.][A-Za-z][A-Za-z0-9]*)*:[0-9a-fA-F]{32,}`
+	refNameMaxBytes    = 255
+)
+
+var imageReferencePattern = regexp.MustCompile(`^(` + refName + `)(?::(` + refTag + `))?(?:@(` + refDigest + `))?$`)
+
+// parsedImageRef is an image reference resolved the way the engines resolve
+// it: the Docker Hub pull aliases folded onto docker.io, and library/ added
+// to a one-segment Docker Hub repository.
+type parsedImageRef struct {
+	segments      []string
+	namesRegistry bool
+	digest        string
 }
 
-// normaliseImageRef expands a Docker image reference to its fully-qualified
-// "host/repository" form with the tag and digest removed, mirroring the
-// reference-resolution rules the engine applies:
-//   - "ubuntu"                  -> "docker.io/library/ubuntu"
-//   - "ubuntu:26.04"            -> "docker.io/library/ubuntu"
-//   - "myorg/app:tag"           -> "docker.io/myorg/app"
-//   - "ghcr.io/rxbynerd/base"   -> "ghcr.io/rxbynerd/base"
-//   - "host:5000/team/img@sha"  -> "host:5000/team/img"
-//
-// A registry host is recognised by a "." or ":" in the first path segment, or
-// the literal "localhost"; otherwise the reference is treated as a Docker Hub
-// short name and the docker.io default registry is prepended. The Docker Hub
-// pull aliases "index.docker.io" and "registry-1.docker.io" are canonicalised
-// to "docker.io" so all three forms match the same patterns.
-func normaliseImageRef(image string) string {
-	ref := image
+func (r parsedImageRef) name() string {
+	return strings.Join(r.segments, "/")
+}
 
-	// Strip the digest first ("@sha256:...") so a ":" inside it is never
-	// mistaken for a registry port or a tag separator.
-	if at := strings.Index(ref, "@"); at >= 0 {
-		ref = ref[:at]
+// parseImageRef validates image against the reference grammar and splits
+// off its registry host with the engines' rule: the first segment is a host
+// when it holds "." or ":", is "localhost", or has an upper-case letter.
+func parseImageRef(image string) (parsedImageRef, error) {
+	if image == "" {
+		return parsedImageRef{}, fmt.Errorf("image reference is empty")
 	}
-
-	host := ""
-	rest := ref
-	if slash := strings.Index(ref, "/"); slash >= 0 {
-		candidate := ref[:slash]
-		if candidate == "localhost" || strings.ContainsAny(candidate, ".:") {
-			host = candidate
-			rest = ref[slash+1:]
-		}
+	m := imageReferencePattern.FindStringSubmatch(image)
+	if m == nil {
+		return parsedImageRef{}, fmt.Errorf("image %q is not a valid image reference (an optional registry host, a lowercase repository path, an optional :tag and an optional @digest)", image)
 	}
-
+	name := m[1]
+	if len(name) > refNameMaxBytes {
+		return parsedImageRef{}, fmt.Errorf("image %q has a repository name longer than %d bytes", image, refNameMaxBytes)
+	}
+	host, remainder, namesRegistry := "docker.io", name, false
+	if first, rest, found := strings.Cut(name, "/"); found &&
+		(first == "localhost" || strings.ContainsAny(first, ".:") || strings.ToLower(first) != first) {
+		host, remainder, namesRegistry = first, rest, true
+	}
 	if host == "index.docker.io" || host == "registry-1.docker.io" {
 		host = "docker.io"
 	}
-
-	// A ":" only delimits a tag once the host has been removed, so this
-	// never touches a "host:port".
-	if colon := strings.LastIndex(rest, ":"); colon >= 0 {
-		rest = rest[:colon]
+	if host == "docker.io" && !strings.Contains(remainder, "/") {
+		remainder = "library/" + remainder
 	}
-
-	if host == "" {
-		host = "docker.io"
-		if !strings.Contains(rest, "/") {
-			rest = "library/" + rest
-		}
-	}
-
-	return host + "/" + rest
+	return parsedImageRef{
+		segments:      append([]string{host}, strings.Split(remainder, "/")...),
+		namesRegistry: namesRegistry,
+		digest:        m[3],
+	}, nil
 }

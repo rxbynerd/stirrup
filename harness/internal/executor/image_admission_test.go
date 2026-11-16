@@ -7,27 +7,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNormaliseImageRef_ReturnsCanonicalForm(t *testing.T) {
+func TestParseImageRef_ResolvesLikeTheEngines(t *testing.T) {
 	tests := []struct {
 		name, in, want string
+		namesRegistry  bool
 	}{
-		{"bare name defaults to docker hub library", "ubuntu", "docker.io/library/ubuntu"},
-		{"tag is dropped", "ubuntu:26.04", "docker.io/library/ubuntu"},
-		{"namespaced name defaults to docker hub", "myorg/app:tag", "docker.io/myorg/app"},
-		{"explicit registry is kept", "ghcr.io/stirrup/base", "ghcr.io/stirrup/base"},
-		{"explicit registry drops tag", "ghcr.io/stirrup/base:latest", "ghcr.io/stirrup/base"},
-		{"digest is dropped", "registry:5000/team/img@sha256:" + strings.Repeat("b", 64), "registry:5000/team/img"},
-		{"localhost without port is kept", "localhost/dev", "localhost/dev"},
-		{"localhost with port drops tag", "localhost:5000/dev:tag", "localhost:5000/dev"},
-		{"docker hub library path is unchanged", "docker.io/library/alpine", "docker.io/library/alpine"},
-		{"index.docker.io folds to docker.io", "index.docker.io/library/ubuntu", "docker.io/library/ubuntu"},
-		{"registry-1.docker.io folds to docker.io", "registry-1.docker.io/library/ubuntu:26.04", "docker.io/library/ubuntu"},
-		{"index.docker.io namespace folds to docker.io", "index.docker.io/myorg/app", "docker.io/myorg/app"},
+		{"bare name defaults to docker hub library", "ubuntu", "docker.io/library/ubuntu", false},
+		{"tag is dropped", "ubuntu:26.04", "docker.io/library/ubuntu", false},
+		{"namespaced name defaults to docker hub", "myorg/app:tag", "docker.io/myorg/app", false},
+		{"explicit registry is kept", "ghcr.io/stirrup/base", "ghcr.io/stirrup/base", true},
+		{"explicit registry drops tag", "ghcr.io/stirrup/base:latest", "ghcr.io/stirrup/base", true},
+		{"digest is dropped", "registry:5000/team/img@sha256:" + strings.Repeat("b", 64), "registry:5000/team/img", true},
+		{"localhost without port is kept", "localhost/dev", "localhost/dev", true},
+		{"localhost with port drops tag", "localhost:5000/dev:tag", "localhost:5000/dev", true},
+		{"docker hub library path is unchanged", "docker.io/library/alpine", "docker.io/library/alpine", true},
+		{"one-segment docker hub path gains library", "docker.io/ubuntu:26.04", "docker.io/library/ubuntu", true},
+		{"index.docker.io folds to docker.io", "index.docker.io/library/ubuntu", "docker.io/library/ubuntu", true},
+		{"registry-1.docker.io folds to docker.io", "registry-1.docker.io/library/ubuntu:26.04", "docker.io/library/ubuntu", true},
+		{"index.docker.io namespace folds to docker.io", "index.docker.io/myorg/app", "docker.io/myorg/app", true},
+		{"upper-case first segment is a host", "Ghcr/acme/x", "Ghcr/acme/x", true},
+		{"ipv6 host with port", "[fd00::1]:5000/team/img", "[fd00::1]:5000/team/img", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			must := require.New(t)
-			must.Equal(tt.want, normaliseImageRef(tt.in))
+			ref, err := parseImageRef(tt.in)
+			must.NoError(err)
+			must.Equal(tt.want, ref.name())
+			must.Equal(tt.namesRegistry, ref.namesRegistry)
 		})
 	}
 }
@@ -54,16 +61,24 @@ func TestImageAdmissionPolicy_RejectsMalformedReferenceWithoutPolicy(t *testing.
 		name, image, wantErr string
 	}{
 		{"empty", "", "empty"},
-		{"trailing slash leaves no repository", "ghcr.io/stirrup/", "empty repository path segment"},
-		{"docker hub library with no repository", "docker.io/library/", "empty repository path segment"},
-		{"double slash", "ghcr.io//base", "empty repository path segment"},
-		{"embedded space", "ghcr.io/acme/base image", "whitespace"},
-		{"embedded newline", "ghcr.io/acme/base\n", "control character"},
+		{"trailing slash leaves no repository", "ghcr.io/stirrup/", "not a valid image reference"},
+		{"double slash", "ghcr.io//base", "not a valid image reference"},
+		{"embedded space", "ghcr.io/acme/base image", "not a valid image reference"},
+		{"embedded newline", "ghcr.io/acme/base\n", "not a valid image reference"},
+		{"dot-dot segment", "ghcr.io/acme/../evil/x", "not a valid image reference"},
+		{"tag before a later slash", "ghcr.io/acme/x:t/../../evil", "not a valid image reference"},
+		{"at sign without a digest", "ghcr.io/acme/x@evil.com/y", "not a valid image reference"},
+		{"upper-case repository", "ghcr.io/acme/X", "not a valid image reference"},
+		{"two tags", "ghcr.io/acme/x:tag:tag2", "not a valid image reference"},
+		{"short digest", "ghcr.io/acme/x@sha256:abc", "not a valid image reference"},
+		{"name over 255 bytes", "ghcr.io/" + strings.Repeat("a", 250), "longer than 255 bytes"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			must := require.New(t)
-			must.ErrorContains(policy.Admit(tt.image), tt.wantErr)
+			err := policy.Admit(tt.image)
+			must.ErrorContains(err, tt.wantErr)
+			must.NotErrorIs(err, ErrImageNotAdmitted)
 		})
 	}
 }
@@ -71,8 +86,9 @@ func TestImageAdmissionPolicy_RejectsMalformedReferenceWithoutPolicy(t *testing.
 func TestImageAdmissionPolicy_PrefixPatternAdmitsEveryDepth(t *testing.T) {
 	policy, err := ParseImageAdmissionPolicy([]string{
 		"us-docker.pkg.dev/acme-prod/",
-		"*.dkr.ecr.eu-west-1.amazonaws.com/platform/",
+		"123456789012.dkr.ecr.eu-west-1.amazonaws.com/platform/",
 		"harbor.acme.internal:8443/sandboxes/",
+		"registry-*.acme.internal/",
 		"ghcr.io/",
 	})
 	must := require.New(t)
@@ -84,6 +100,7 @@ func TestImageAdmissionPolicy_PrefixPatternAdmitsEveryDepth(t *testing.T) {
 		"123456789012.dkr.ecr.eu-west-1.amazonaws.com/platform/go",
 		"123456789012.dkr.ecr.eu-west-1.amazonaws.com/platform/team/runtime/node:22",
 		"harbor.acme.internal:8443/sandboxes/python/3.14:latest",
+		"registry-eu.acme.internal/team/base",
 		"ghcr.io/anyone/anything/at/depth",
 	}
 	for _, image := range admitted {
@@ -97,7 +114,9 @@ func TestImageAdmissionPolicy_PrefixPatternAdmitsEveryDepth(t *testing.T) {
 		"us-docker.pkg.dev/acme-prod-evil/sandboxes/base",
 		"us-docker.pkg.dev/other/acme-prod/base",
 		"123456789012.dkr.ecr.us-east-1.amazonaws.com/platform/go",
+		"666666666666.dkr.ecr.eu-west-1.amazonaws.com/platform/evil",
 		"harbor.acme.internal/sandboxes/python",
+		"registry.acme.internal/team/base",
 		"docker.io/library/ubuntu",
 	}
 	for _, image := range denied {
@@ -159,6 +178,42 @@ func TestImageAdmissionPolicy_ConfiguredPolicyRefusesShortNames(t *testing.T) {
 	must.NoError(policy.Admit("localhost/dev"), "localhost is a registry host")
 }
 
+func TestImageAdmissionPolicy_DeniedErrorOmitsThePatterns(t *testing.T) {
+	must := require.New(t)
+	policy, err := ParseImageAdmissionPolicy([]string{"registry.internal.acme/secret-team/"})
+	must.NoError(err)
+	err = policy.Admit("ghcr.io/acme/base")
+	must.ErrorIs(err, ErrImageNotAdmitted)
+	must.NotContains(err.Error(), "secret-team")
+}
+
+func TestImageAdmissionPolicy_IPv6HostIsMatchedLiterally(t *testing.T) {
+	must := require.New(t)
+	policy, err := ParseImageAdmissionPolicy([]string{"[fd00::1]:5000/"})
+	must.NoError(err)
+	must.NoError(policy.Admit("[fd00::1]:5000/acme/base"))
+	must.ErrorIs(policy.Admit("f:5000/acme/evil"), ErrImageNotAdmitted)
+	must.ErrorIs(policy.Admit("d:5000/acme/evil"), ErrImageNotAdmitted)
+}
+
+func TestImageAdmissionPolicy_DockerHubPatternUsesTheLibraryRule(t *testing.T) {
+	must := require.New(t)
+	policy, err := ParseImageAdmissionPolicy([]string{"docker.io/ubuntu"})
+	must.NoError(err)
+	must.Equal([]string{"docker.io/library/ubuntu"}, policy.Patterns())
+	must.NoError(policy.Admit("docker.io/ubuntu:26.04"))
+	must.NoError(policy.Admit("docker.io/library/ubuntu"))
+	must.Error(policy.Admit("docker.io/ubuntu/ubuntu"))
+}
+
+func TestImageAdmissionPolicy_StarSlashAdmitsEveryNamedRegistry(t *testing.T) {
+	must := require.New(t)
+	policy, err := ParseImageAdmissionPolicy([]string{"*/"})
+	must.NoError(err)
+	must.NoError(policy.Admit("evil.example.com/anything"))
+	must.ErrorContains(policy.Admit("acme/base"), "must name its registry")
+}
+
 func TestImageAdmissionPolicy_CharacterClassNeverMatchesSlash(t *testing.T) {
 	must := require.New(t)
 	policy, err := ParseImageAdmissionPolicy([]string{"ghcr.io/acme[^x]base"})
@@ -198,6 +253,11 @@ func TestParseImageAdmissionPolicy_RejectsUnmatchablePatterns(t *testing.T) {
 		{"double star", "ghcr.io/acme/**", `"**"`},
 		{"bad glob", "ghcr.io/acme/[", "not a valid glob"},
 		{"whitespace inside", "ghcr.io/acme /base", "whitespace"},
+		{"glob-only host with a namespace", "*/acme/", "only of glob characters"},
+		{"glob-only host with a port", "*:5000/", "only of glob characters"},
+		{"glob-only labels", "*.*/acme/", "only of glob characters"},
+		{"malformed ipv6 host", "[fd00::1/", "malformed IPv6"},
+		{"ipv6 host holding a glob", "[fd00::*]:5000/", "malformed IPv6"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -220,6 +280,8 @@ func TestImageDigestPinned_RecognisesOCIDigests(t *testing.T) {
 		{"ubuntu", false},
 		{"ghcr.io/acme/base@", false},
 		{"ghcr.io/acme/base@sha256:", false},
+		{"ghcr.io/acme/base@sha256:abc", false},
+		{"ghcr.io/acme/base@foo@sha256:" + strings.Repeat("a", 64), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.image, func(t *testing.T) {

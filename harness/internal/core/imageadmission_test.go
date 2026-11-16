@@ -86,7 +86,7 @@ func TestAdmitExecutorImage_MalformedImageIsAValidationFailure(t *testing.T) {
 	var buf bytes.Buffer
 	sec := security.NewSecurityLogger(&buf, "run")
 	err := admitExecutorImage(types.ExecutorConfig{Type: "container", Image: "ghcr.io/acme/"}, executor.ImageAdmissionPolicy{}, sec)
-	must.ErrorContains(err, "empty repository path segment")
+	must.ErrorContains(err, "not a valid image reference")
 	must.NotErrorIs(err, executor.ErrImageNotAdmitted)
 	must.Equal([]string{"config_validation_failed"}, securityEventNames(t, &buf))
 }
