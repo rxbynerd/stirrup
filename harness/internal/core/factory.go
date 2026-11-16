@@ -1608,21 +1608,21 @@ func buildCommandOutputStore(ctx context.Context, config *types.RunConfig) (*com
 	})
 }
 
+var editToolAliases = map[string]bool{
+	"write_file":     true,
+	"search_replace": true,
+	"apply_diff":     true,
+}
+
 func editToolEnabled(cfg types.ToolsConfig, actualName string) bool {
+	if cfg.BuiltInEnabled(actualName) {
+		return true
+	}
 	if cfg.NoBuiltIn {
 		return false
 	}
-	enabled := cfg.BuiltIn
-	if len(enabled) == 0 {
-		return true
-	}
-	editAliases := map[string]bool{
-		"write_file":     true,
-		"search_replace": true,
-		"apply_diff":     true,
-	}
-	for _, candidate := range enabled {
-		if candidate == actualName || editAliases[candidate] {
+	for _, candidate := range cfg.BuiltIn {
+		if editToolAliases[candidate] {
 			return true
 		}
 	}
