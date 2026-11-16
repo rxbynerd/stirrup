@@ -188,7 +188,7 @@ func TestBoundEventFields_CapsBuildFailureWithoutAliasing(t *testing.T) {
 	failure := &types.BuildFailure{Reason: big, Phase: types.SessionPhase{Phase: big, Step: big}}
 	ev := types.HarnessEvent{Type: "error", BuildFailure: failure}
 
-	boundEventFields(&ev)
+	must.NoError(boundEventFields(&ev))
 
 	must.LessOrEqual(len(ev.BuildFailure.Reason), maxEventIdentifierBytes)
 	must.LessOrEqual(len(ev.BuildFailure.Phase.Phase), maxEventIdentifierBytes)
