@@ -205,6 +205,9 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 	if err != nil {
 		return nil, fmt.Errorf("build kube clientset: %w", err)
 	}
+	if err := awaitCredentialPlugin(ctx, restCfg, clientset); err != nil {
+		return nil, fmt.Errorf("agent sandbox executor: %w", err)
+	}
 	dyn, err := dynamic.NewForConfig(restCfg)
 	if err != nil {
 		return nil, fmt.Errorf("build dynamic client: %w", err)
