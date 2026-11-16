@@ -589,6 +589,44 @@ func TestLocal_Finalise_CommitsOutstandingWork(t *testing.T) {
 	check.Equal(types.GitHandoff{Branch: "stirrup/task-final", SHA: head, BaseSHA: base}, *handoff)
 }
 
+func TestLocal_Finalise_HonoursTheOperatorsGlobalIgnore(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
+	home := t.TempDir()
+	xdg := filepath.Join(home, ".config")
+	must.NoError(os.MkdirAll(filepath.Join(xdg, "git"), 0o755))
+	must.NoError(os.WriteFile(filepath.Join(xdg, "git", "ignore"), []byte(".env\n"), 0o644))
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	repo := t.TempDir()
+	initHostRepo(t, repo)
+	must.NoError(os.WriteFile(filepath.Join(repo, ".env"), []byte("API_KEY=example\n"), 0o600))
+	ctx := context.Background()
+
+	gs := localStrategy(t, repo)
+	must.NoError(gs.Setup(ctx, repo, "task-ignore"))
+	must.NoError(os.WriteFile(filepath.Join(repo, "a.txt"), []byte("a\n"), 0o644))
+	_, err := gs.Finalise(ctx, "success")
+	must.NoError(err)
+
+	check.Equal("a.txt", hostGit(t, repo, "ls-tree", "--name-only", "HEAD"), "files in HEAD")
+}
+
+func TestDeterministicGitStrategy_SandboxCommandsIgnoreHomeIgnoreAndAttributes(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
+	sandbox := newScriptedExecutor(func(string) (*executor.ExecResult, error) { return &executor.ExecResult{}, nil })
+	gs := NewDeterministicGitStrategy(sandbox)
+
+	_, err := gs.run(context.Background(), "status")
+	must.NoError(err)
+
+	must.Len(sandbox.calls, 1)
+	check.True(hasArgs(sandbox.calls[0], "-c", "core.excludesFile=/dev/null"), "command %q", sandbox.calls[0])
+	check.True(hasArgs(sandbox.calls[0], "-c", "core.attributesFile=/dev/null"), "command %q", sandbox.calls[0])
+}
+
 func TestLocal_Finalise_CleanTreeReportsHEADWithoutCommit(t *testing.T) {
 	check := assert.New(t)
 	must := require.New(t)

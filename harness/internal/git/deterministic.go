@@ -255,10 +255,14 @@ func (d *DeterministicGitStrategy) initialise(ctx context.Context) error {
 // every command also names it as a safe directory, because the sandbox
 // user frequently does not own the mounted workspace.
 func (d *DeterministicGitStrategy) run(ctx context.Context, args ...string) (*executor.ExecResult, error) {
-	full := args
-	if d.root != "" {
-		full = append([]string{"-c", "safe.directory=" + d.root}, args...)
+	var full []string
+	if _, local := d.exec.(*executor.LocalExecutor); !local {
+		full = append(full, sandboxHomeFlags...)
 	}
+	if d.root != "" {
+		full = append(full, "-c", "safe.directory="+d.root)
+	}
+	full = append(full, args...)
 	res, err := d.exec.Exec(ctx, CommandLine(full...), commandTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("git %s: %w", args[0], err)
