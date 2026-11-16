@@ -41,7 +41,9 @@ and it carries the release's provenance attestation, and fails
 otherwise), so a base-image fix for a released version ships in the
 next release. The scheduled
 `image-pins.yml` workflow fails if the digest behind either kind of
-tag changes; the tag table and the verification commands are in
+tag changes. A `sha-` tag is checked only once its digest has been
+recorded, so tags published before the record existed are not covered.
+The tag table and the verification commands are in
 [`deployment.md`](deployment.md#container-images).
 
 The registry, IAM, and gating walkthrough below is written against the

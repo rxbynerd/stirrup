@@ -437,7 +437,10 @@ Deployments pin by digest (`ghcr.io/rxbynerd/stirrup@sha256:…`), taking
 the digest from the release's `IMAGE_DIGESTS` asset or from a verified
 attestation (see [Verify what you run](#verify-what-you-run)). The
 scheduled `image-pins.yml` workflow fails when the digest behind any
-version tag or `sha-` tag on GHCR changes. Release images are also
+version tag on GHCR changes. For `sha-` tags it compares against the
+digest recorded when the tag was first built. `sha-` tags published
+before that record existed have no recorded digest and are not checked.
+Release images are also
 mirrored to Google Artifact Registry under the same digest; see
 [`container-publishing.md`](container-publishing.md). The release run
 checks that the two registries agree when it applies a version tag, but
