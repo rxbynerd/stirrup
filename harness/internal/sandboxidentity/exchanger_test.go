@@ -3,6 +3,8 @@ package sandboxidentity
 import (
 	"context"
 	"errors"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,8 +15,8 @@ import (
 )
 
 // TestExchanger_CountsRequestsAndSequencesIDs asserts one Exchanger counts
-// the requests that reached the transport, draws request IDs from a single
-// monotonic sequence across calls through one control handler, and never
+// the requests that reached the transport, issues increasing sbid- request
+// IDs across calls through one control handler, and never
 // counts an emit that failed.
 func TestExchanger_CountsRequestsAndSequencesIDs(t *testing.T) {
 	check := assert.New(t)
@@ -42,7 +44,16 @@ func TestExchanger_CountsRequestsAndSequencesIDs(t *testing.T) {
 	mt.emitErr = errors.New("stream closed")
 	mt.mu.Unlock()
 
-	check.Equal([]string{"sbid-1", "sbid-2", "sbid-3"}, ids, "request IDs")
+	must.Len(ids, 3, "request IDs")
+	prev := uint64(0)
+	for _, id := range ids {
+		n, ok := strings.CutPrefix(id, "sbid-")
+		must.True(ok, "request ID %q lacks the sbid- prefix", id)
+		seq, err := strconv.ParseUint(n, 10, 64)
+		must.NoError(err, "request ID %q", id)
+		check.Greater(seq, prev, "request IDs increase in issue order")
+		prev = seq
+	}
 	check.Equal(1, handlers, "control handlers attached by the exchanger")
 
 	_, err := ex.Exchange(context.Background(), "aud", time.Second)

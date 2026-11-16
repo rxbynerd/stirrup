@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/rxbynerd/stirrup/types"
@@ -55,21 +58,19 @@ func TestCorrelator_Await_ReturnsMatchingResponse(t *testing.T) {
 	c.AttachTo(fc, extractByType("permission_response"))
 
 	allowed := true
+	issued := make(chan string, 1)
 	go func() {
-		// Wait briefly for Await to register the pending entry.
-		for c.PendingCount() == 0 {
-			time.Sleep(time.Millisecond)
-		}
 		fc.simulate(types.ControlEvent{
 			Type:      "permission_response",
-			RequestID: "perm-1",
+			RequestID: <-issued,
 			Allowed:   &allowed,
 		})
 	}()
 
 	// Await calls emit synchronously on this goroutine, so require is safe inside it.
 	got, err := c.Await(context.Background(), time.Second, func(id string) error {
-		must.Equal("perm-1", id)
+		must.True(strings.HasPrefix(id, "perm-"), "request ID %q", id)
+		issued <- id
 		return nil
 	})
 	must.NoError(err)
@@ -139,6 +140,7 @@ func TestCorrelator_Await_ResolvesOutOfOrder(t *testing.T) {
 		err     error
 	}
 	results := make(chan result, 2)
+	issued := make(chan string, 2)
 
 	// Two concurrent awaits. Each goroutine reports back the request ID it
 	// was assigned alongside its eventual payload, so the test does not
@@ -148,24 +150,25 @@ func TestCorrelator_Await_ResolvesOutOfOrder(t *testing.T) {
 			var assignedID string
 			payload, err := c.Await(context.Background(), 2*time.Second, func(id string) error {
 				assignedID = id
+				issued <- id
 				return nil
 			})
 			results <- result{id: assignedID, payload: payload, err: err}
 		}()
 	}
 
-	// Wait for both Awaits to register pending entries.
+	firstIssued, secondIssued := <-issued, <-issued
 	must.Eventually(func() bool { return c.PendingCount() >= 2 }, time.Second, time.Millisecond)
 	must.Equal(2, c.PendingCount())
 
-	// Resolve "req-2" first, then "req-1". Both must surface the right
+	// Resolve the later-issued request first. Both must surface the right
 	// payload regardless of which goroutine got which id.
-	fc.simulate(types.ControlEvent{Type: "response", RequestID: "req-2", Reason: "second"})
-	fc.simulate(types.ControlEvent{Type: "response", RequestID: "req-1", Reason: "first"})
+	fc.simulate(types.ControlEvent{Type: "response", RequestID: secondIssued, Reason: "second"})
+	fc.simulate(types.ControlEvent{Type: "response", RequestID: firstIssued, Reason: "first"})
 
 	wantReasonByID := map[string]string{
-		"req-1": "first",
-		"req-2": "second",
+		firstIssued:  "first",
+		secondIssued: "second",
 	}
 	seen := map[string]bool{}
 	for i := 0; i < 2; i++ {
@@ -195,17 +198,17 @@ func TestCorrelator_Await_LateResponseAfterTimeoutIsIgnored(t *testing.T) {
 
 	goroutinesBefore := runtime.NumGoroutine()
 
-	_, err := c.Await(context.Background(), 25*time.Millisecond, func(_ string) error {
+	var staleID string
+	_, err := c.Await(context.Background(), 25*time.Millisecond, func(id string) error {
+		staleID = id
 		return nil
 	})
 	must.Error(err)
 
 	// Now deliver a late response with the (now stale) id. Must not panic.
-	// Because the Correlator increments monotonically, the id used was
-	// "perm-1".
 	fc.simulate(types.ControlEvent{
 		Type:      "permission_response",
-		RequestID: "perm-1",
+		RequestID: staleID,
 	})
 
 	must.Zero(c.PendingCount())
@@ -225,24 +228,24 @@ func TestCorrelator_IgnoresUnrelatedEvents(t *testing.T) {
 	c := NewCorrelator("perm")
 	c.AttachTo(fc, extractByType("permission_response"))
 
+	issued := make(chan string, 1)
 	go func() {
-		for c.PendingCount() == 0 {
-			time.Sleep(time.Millisecond)
-		}
+		id := <-issued
 		// Unrelated event type: ignored.
-		fc.simulate(types.ControlEvent{Type: "user_response", RequestID: "perm-1"})
+		fc.simulate(types.ControlEvent{Type: "user_response", RequestID: id})
 		// Wrong request id: ignored.
-		fc.simulate(types.ControlEvent{Type: "permission_response", RequestID: "perm-999"})
+		fc.simulate(types.ControlEvent{Type: "permission_response", RequestID: id + "999"})
 		// Finally, the matching event.
 		allowed := true
 		fc.simulate(types.ControlEvent{
 			Type:      "permission_response",
-			RequestID: "perm-1",
+			RequestID: id,
 			Allowed:   &allowed,
 		})
 	}()
 
-	got, err := c.Await(context.Background(), time.Second, func(_ string) error {
+	got, err := c.Await(context.Background(), time.Second, func(id string) error {
+		issued <- id
 		return nil
 	})
 	must.NoError(err)
@@ -252,7 +255,16 @@ func TestCorrelator_IgnoresUnrelatedEvents(t *testing.T) {
 	must.True(*ev.Allowed, "expected matching allowed event, got %+v", ev)
 }
 
-func TestCorrelator_AssignsSequentialRequestIDs(t *testing.T) {
+// requestSeqOf returns the numeric suffix of a "<prefix>-<n>" request ID.
+func requestSeqOf(must *require.Assertions, prefix, id string) uint64 {
+	n, ok := strings.CutPrefix(id, prefix+"-")
+	must.True(ok, "request ID %q lacks the %s- prefix", id, prefix)
+	seq, err := strconv.ParseUint(n, 10, 64)
+	must.NoError(err, "request ID %q", id)
+	return seq
+}
+
+func TestCorrelator_AssignsIncreasingPrefixedRequestIDs(t *testing.T) {
 	must := require.New(t)
 	t.Parallel()
 	c := NewCorrelator("perm")
@@ -265,7 +277,79 @@ func TestCorrelator_AssignsSequentialRequestIDs(t *testing.T) {
 		})
 	}
 
-	must.Equal([]string{"perm-1", "perm-2", "perm-3"}, ids)
+	prev := uint64(0)
+	for _, id := range ids {
+		seq := requestSeqOf(must, "perm", id)
+		must.Greater(seq, prev, "request IDs %v", ids)
+		prev = seq
+	}
+}
+
+// TestCorrelator_SamePrefixOnOneTransport_ResponseResolvesOneAwait pins
+// request-ID uniqueness across correlators: two subsystems attaching
+// same-prefixed correlators to one transport never issue the same ID, so
+// one response cannot resolve both pending requests.
+func TestCorrelator_SamePrefixOnOneTransport_ResponseResolvesOneAwait(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	t.Parallel()
+	fc := &fakeOnControl{}
+	first := NewCorrelator("perm")
+	second := NewCorrelator("perm")
+	first.AttachTo(fc, extractByType("permission_response"))
+	second.AttachTo(fc, extractByType("permission_response"))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	issued := make(chan string, 2)
+	done := make(chan error, 2)
+	for _, c := range []*Correlator{first, second} {
+		go func() {
+			_, err := c.Await(ctx, 10*time.Second, func(id string) error {
+				issued <- id
+				return nil
+			})
+			done <- err
+		}()
+	}
+	a, b := <-issued, <-issued
+	must.NotEqual(a, b, "two correlators on one transport issued the same request ID")
+	must.Eventually(func() bool {
+		return first.PendingCount() == 1 && second.PendingCount() == 1
+	}, time.Second, time.Millisecond)
+
+	fc.simulate(types.ControlEvent{Type: "permission_response", RequestID: a})
+	must.NoError(<-done, "the await the response was addressed to")
+	check.Equal(1, first.PendingCount()+second.PendingCount(), "awaits still pending after one response")
+
+	cancel()
+	must.ErrorIs(<-done, context.Canceled, "the unanswered await fails closed")
+}
+
+func TestNewRequestID_UniqueUnderConcurrency(t *testing.T) {
+	must := require.New(t)
+	t.Parallel()
+	const goroutines, perGoroutine = 8, 200
+	ids := make(chan string, goroutines*perGoroutine)
+	var wg sync.WaitGroup
+	for range goroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range perGoroutine {
+				ids <- NewRequestID("perm")
+			}
+		}()
+	}
+	wg.Wait()
+	close(ids)
+
+	seen := make(map[string]bool, goroutines*perGoroutine)
+	for id := range ids {
+		must.False(seen[id], "duplicate request ID %q", id)
+		seen[id] = true
+	}
+	must.Len(seen, goroutines*perGoroutine)
 }
 
 func TestCorrelator_EmptyPrefixDefaultsToReq(t *testing.T) {
@@ -278,7 +362,7 @@ func TestCorrelator_EmptyPrefixDefaultsToReq(t *testing.T) {
 		got = id
 		return errors.New("stop")
 	})
-	must.Equal("req-1", got)
+	requestSeqOf(must, "req", got)
 }
 
 func TestCorrelator_Await_NilEmitReturnsError(t *testing.T) {

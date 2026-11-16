@@ -294,3 +294,179 @@ func TestAskUpstream_ZeroTimeoutUsesDefault(t *testing.T) {
 
 	must.Equal(DefaultAskUpstreamTimeout, policy.Timeout)
 }
+
+// emittedRequests returns the permission_request events emitted so far.
+func (m *mockTransport) emittedRequests() []types.HarnessEvent {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []types.HarnessEvent
+	for _, e := range m.emitted {
+		if e.Type == "permission_request" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+type policyCheckResult struct {
+	result *PermissionResult
+	err    error
+}
+
+// TestAskUpstream_TwoPoliciesOnOneTransport_ResponseResolvesOnlyItsRequest
+// pins request-ID uniqueness across every ask-upstream policy sharing a
+// transport: the base policy and the rule-of-two gate's ask policy both
+// attach to the run's transport, and an approval for one tool must never
+// resolve a pending request for another.
+func TestAskUpstream_TwoPoliciesOnOneTransport_ResponseResolvesOnlyItsRequest(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	mt := &mockTransport{}
+	base := NewAskUpstreamPolicy(mt, map[string]bool{"write_file": true}, 5*time.Second)
+	gateAsk := NewAskUpstreamPolicy(mt, map[string]bool{"web_fetch": true}, 5*time.Second)
+
+	baseDone := make(chan policyCheckResult, 1)
+	go func() {
+		r, err := base.Check(context.Background(), types.ToolDefinition{Name: "write_file"}, nil)
+		baseDone <- policyCheckResult{r, err}
+	}()
+	must.Eventually(func() bool { return len(mt.emittedRequests()) == 1 }, time.Second, time.Millisecond)
+
+	gateCtx, cancelGate := context.WithCancel(context.Background())
+	defer cancelGate()
+	gateDone := make(chan policyCheckResult, 1)
+	go func() {
+		r, err := gateAsk.Check(gateCtx, types.ToolDefinition{Name: "web_fetch"}, nil)
+		gateDone <- policyCheckResult{r, err}
+	}()
+	must.Eventually(func() bool { return len(mt.emittedRequests()) == 2 }, time.Second, time.Millisecond)
+
+	reqs := mt.emittedRequests()
+	must.Equal("write_file", reqs[0].ToolName)
+	must.Equal("web_fetch", reqs[1].ToolName)
+	must.NotEqual(reqs[0].RequestID, reqs[1].RequestID, "two policies on one transport issued the same request ID")
+
+	allowed := true
+	mt.simulateControlEvent(types.ControlEvent{
+		Type:      "permission_response",
+		RequestID: reqs[0].RequestID,
+		Allowed:   &allowed,
+	})
+
+	got := <-baseDone
+	must.NoError(got.err)
+	check.True(got.result.Allowed)
+
+	select {
+	case leaked := <-gateDone:
+		must.Failf("web_fetch request resolved by the write_file approval", "%+v", leaked)
+	case <-time.After(50 * time.Millisecond):
+	}
+	check.Equal(1, gateAsk.correlator.PendingCount())
+
+	cancelGate()
+	gated := <-gateDone
+	must.ErrorIs(gated.err, context.Canceled)
+	check.Nil(gated.result)
+}
+
+// TestRuleOfTwoGate_AskUpstreamEscalation_NotReleasedByUnrelatedApproval
+// builds the base ask-upstream policy and the gate's own ask policy on one
+// transport, as the factory does. With an escalation pending in the gate,
+// approving a different call's base request must leave the escalation
+// pending.
+func TestRuleOfTwoGate_AskUpstreamEscalation_NotReleasedByUnrelatedApproval(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	mt := &mockTransport{}
+	base := NewAskUpstreamPolicy(mt, map[string]bool{"write_file": true, "web_fetch": true}, 5*time.Second)
+	ext := map[string]bool{"web_fetch": true}
+	gateAsk := NewAskUpstreamPolicy(mt, ext, 5*time.Second)
+	state := &fakeRuleOfTwoState{tripped: true, enforcing: true, action: "ask-upstream"}
+	gate := NewRuleOfTwoGate(base, state, ext, gateAsk, nil)
+	allowed := true
+
+	writeDone := make(chan policyCheckResult, 1)
+	go func() {
+		r, err := gate.Check(context.Background(), types.ToolDefinition{Name: "write_file"}, nil)
+		writeDone <- policyCheckResult{r, err}
+	}()
+	must.Eventually(func() bool { return len(mt.emittedRequests()) == 1 }, time.Second, time.Millisecond)
+	writeID := mt.emittedRequests()[0].RequestID
+
+	fetchCtx, cancelFetch := context.WithCancel(context.Background())
+	defer cancelFetch()
+	fetchDone := make(chan policyCheckResult, 1)
+	go func() {
+		r, err := gate.Check(fetchCtx, types.ToolDefinition{Name: "web_fetch"}, nil)
+		fetchDone <- policyCheckResult{r, err}
+	}()
+	must.Eventually(func() bool { return len(mt.emittedRequests()) == 2 }, time.Second, time.Millisecond)
+	mt.simulateControlEvent(types.ControlEvent{
+		Type:      "permission_response",
+		RequestID: mt.emittedRequests()[1].RequestID,
+		Allowed:   &allowed,
+	})
+	must.Eventually(func() bool { return len(mt.emittedRequests()) == 3 }, time.Second, time.Millisecond)
+	escalation := mt.emittedRequests()[2]
+	must.Equal("web_fetch", escalation.ToolName)
+	must.NotEqual(writeID, escalation.RequestID)
+
+	mt.simulateControlEvent(types.ControlEvent{
+		Type:      "permission_response",
+		RequestID: writeID,
+		Allowed:   &allowed,
+	})
+	wrote := <-writeDone
+	must.NoError(wrote.err)
+	check.True(wrote.result.Allowed)
+
+	select {
+	case leaked := <-fetchDone:
+		must.Failf("rule-of-two escalation released by the write_file approval", "%+v", leaked)
+	case <-time.After(50 * time.Millisecond):
+	}
+	check.Equal(1, gateAsk.correlator.PendingCount())
+
+	cancelFetch()
+	fetched := <-fetchDone
+	must.ErrorIs(fetched.err, context.Canceled)
+}
+
+// TestAskUpstream_ReplayedResponseDoesNotResolveLaterRequest: a response
+// for an already-resolved request ID is ignored, so the next request
+// stays pending and fails closed on timeout instead of inheriting the
+// earlier approval.
+func TestAskUpstream_ReplayedResponseDoesNotResolveLaterRequest(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	mt := &mockTransport{}
+	policy := NewAskUpstreamPolicy(mt, sideEffectingSet(), 500*time.Millisecond)
+	tool := types.ToolDefinition{Name: "write_file"}
+
+	respondToNextRequest(mt, true, "")
+	first, err := policy.Check(context.Background(), tool, nil)
+	must.NoError(err)
+	must.True(first.Allowed)
+	firstID := mt.emittedRequests()[0].RequestID
+
+	done := make(chan policyCheckResult, 1)
+	go func() {
+		r, err := policy.Check(context.Background(), tool, nil)
+		done <- policyCheckResult{r, err}
+	}()
+	must.Eventually(func() bool { return len(mt.emittedRequests()) == 2 }, time.Second, time.Millisecond)
+	check.NotEqual(firstID, mt.emittedRequests()[1].RequestID)
+
+	allowed := true
+	mt.simulateControlEvent(types.ControlEvent{
+		Type:      "permission_response",
+		RequestID: firstID,
+		Allowed:   &allowed,
+	})
+	must.Equal(1, policy.correlator.PendingCount(), "the replayed response resolved the pending request")
+
+	second := <-done
+	must.ErrorContains(second.err, "timed out")
+	check.Nil(second.result)
+}

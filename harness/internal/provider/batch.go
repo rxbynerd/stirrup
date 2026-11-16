@@ -589,8 +589,7 @@ type controlPlaneBatchClient struct {
 	maxWait            time.Duration
 	cancelBundleOnExit bool
 
-	mu     sync.Mutex
-	nextID int
+	mu sync.Mutex
 	// pending and customID are keyed by requestID. The client always
 	// submits size-1 batches (see Submit); the map[customID]→*BatchResult
 	// shape returned by Result is for forward compatibility with future
@@ -811,12 +810,9 @@ func (c *controlPlaneBatchClient) releasePending(requestID string) {
 	c.mu.Unlock()
 }
 
-// nextRequestID issues a monotonically increasing "batch-<n>" request ID.
+// nextRequestID issues a process-unique "batch-<n>" request ID.
 func (c *controlPlaneBatchClient) nextRequestID() string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.nextID++
-	return fmt.Sprintf("batch-%d", c.nextID)
+	return transport.NewRequestID("batch")
 }
 
 // heartbeat emits a batch_waiting HarnessEvent at the configured cadence

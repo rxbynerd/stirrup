@@ -128,9 +128,9 @@ func extractTokenResponse(event types.ControlEvent) (string, any) {
 
 // Exchanger issues sandbox_token_requests over one transport. One
 // correlator is attached at construction, so the initial exchange and every
-// refresh share a single control handler and draw request IDs from one
-// monotonic sequence (sbid-1, sbid-2, ...). The factory performs the initial
-// exchange and the Refresher the rest, strictly in sequence.
+// refresh share a single control handler; request IDs are "sbid-<n>" with n
+// increasing in issue order. The factory performs the initial exchange and
+// the Refresher the rest, strictly in sequence.
 type Exchanger struct {
 	t          Transport
 	correlator *transport.Correlator

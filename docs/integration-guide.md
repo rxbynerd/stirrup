@@ -187,7 +187,13 @@ instead.
 
 Correlation rule: every `*_request` event carries a `request_id`
 that the response **must echo verbatim**. Requests may interleave;
-responses are matched by ID, not order.
+responses are matched by ID, not order. A `request_id` is unique
+across every request type for the life of the harness process, so one
+response answers exactly one request. The harness ignores a response
+whose `request_id` matches no pending request (unknown, already
+answered, or past its timeout); the request it was meant for stays
+pending and fails closed on its own timeout. For a
+`permission_request` that means the call is denied.
 
 ### Terminal semantics
 
