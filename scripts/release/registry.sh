@@ -9,13 +9,15 @@
 #   registry.sh tags <registry>/<repository>
 #       Prints every tag in the repository, one per line.
 #
-# Any other failure exits 1. Requests are anonymous, so only public
-# repositories can be read.
+# Any other failure exits 1. Token requests are anonymous unless
+# REGISTRY_USERNAME and REGISTRY_PASSWORD are set, in which case they are
+# sent as basic credentials to the registry's token endpoint.
 set -euo pipefail
 
 readonly EXIT_ABSENT=3
 readonly MANIFEST_ACCEPT='application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json'
-readonly CURL_OPTS=(--silent --show-error --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 2 --proto '=https')
+readonly CURL_OPTS=(--silent --show-error --connect-timeout 10 --max-time 60 --retry 3 --retry-delay 2 --proto '=https' --max-filesize 4194304)
+readonly MAX_PAGES=100
 
 die() {
   echo "registry.sh: $*" >&2
@@ -50,6 +52,19 @@ challenge_param() {
   printf '%s' "$1" | sed -n "s/.*$2=\"\([^\"]*\)\".*/\1/p"
 }
 
+# credentials_config prints a curl config carrying the basic
+# credentials, so the password never appears on a command line.
+credentials_config() {
+  local user pass
+  if [ -n "${REGISTRY_USERNAME:-}" ] && [ -n "${REGISTRY_PASSWORD:-}" ]; then
+    user=${REGISTRY_USERNAME//\\/\\\\}
+    user=${user//\"/\\\"}
+    pass=${REGISTRY_PASSWORD//\\/\\\\}
+    pass=${pass//\"/\\\"}
+    printf 'user = "%s:%s"\n' "$user" "$pass"
+  fi
+}
+
 # auth_header <registry> <repository> prints an Authorization header
 # for a pull of the repository, or nothing when the registry does not
 # challenge anonymous requests.
@@ -68,7 +83,11 @@ auth_header() {
   realm=$(challenge_param "$challenge" realm)
   service=$(challenge_param "$challenge" service)
   [ -n "$realm" ] || die "no realm in the challenge from ${registry}"
-  token=$(curl "${CURL_OPTS[@]}" --fail -G "$realm" \
+  case "$realm" in
+    https://*) ;;
+    *) die "refusing non-HTTPS token realm '${realm}'" ;;
+  esac
+  token=$(credentials_config | curl "${CURL_OPTS[@]}" --config - --fail -G "$realm" \
     --data-urlencode "service=${service}" \
     --data-urlencode "scope=repository:${repository}:pull" | jq -r '.token // .access_token // empty') ||
     die "token request to ${realm} failed"
@@ -117,14 +136,17 @@ cmd_digest() {
 }
 
 cmd_tags() {
-  local name=$1 auth workdir path status next
+  local name=$1 auth workdir path status next pages
   split_name "$name"
   auth=$(auth_header "$REGISTRY" "$REPOSITORY")
 
   workdir=$(mktemp -d)
   trap 'rm -rf "$workdir"' RETURN
   path="/v2/${REPOSITORY}/tags/list?n=1000"
+  pages=0
   while [ -n "$path" ]; do
+    pages=$((pages + 1))
+    [ "$pages" -le "$MAX_PAGES" ] || die "tag list for ${name} exceeds ${MAX_PAGES} pages"
     status=$(curl "${CURL_OPTS[@]}" -o "$workdir/body" -D "$workdir/headers" -w '%{http_code}' \
       ${auth:+-H "$auth"} "https://${REGISTRY}${path}") ||
       die "tag list request for ${name} failed"

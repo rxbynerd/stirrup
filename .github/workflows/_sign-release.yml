@@ -1,0 +1,123 @@
+name: Sign release
+
+# Called by release.yml once the binaries, SBOMs and images exist. It is
+# a separate reusable workflow so that its signing certificates carry
+# their own identity,
+#   https://github.com/rxbynerd/stirrup/.github/workflows/_sign-release.yml@refs/tags/<tag>
+# which no other job in a release run can mint: jobs written in
+# release.yml itself, including the ones holding an OIDC token for
+# cloud credentials, sign as release.yml instead. Verifiers pin this
+# identity (docs/deployment.md#verify-what-you-run), so nothing else in
+# the run can produce a signature or attestation that passes.
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag (vX.Y.Z)'
+        required: true
+        type: string
+      sha:
+        description: 'Commit the tag points at'
+        required: true
+        type: string
+      harness-digest:
+        description: 'Digest of ghcr.io/rxbynerd/stirrup:<tag>'
+        required: true
+        type: string
+      sandbox-digest:
+        description: 'Digest of ghcr.io/rxbynerd/stirrup-sandbox:<tag>'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  sign:
+    name: Checksums, signature and provenance
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.sha }}
+          persist-credentials: false
+
+      - name: Download binary archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: binaries-*
+          path: artifacts
+
+      - name: Download SBOMs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sbom
+          path: artifacts/sbom
+
+      - name: Download changelog
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: changelog
+          path: changelog
+
+      - name: Aggregate release assets, IMAGE_DIGESTS and SHA256SUMS
+        env:
+          HARNESS_DIGEST: ${{ inputs.harness-digest }}
+          SANDBOX_DIGEST: ${{ inputs.sandbox-digest }}
+        run: |
+          set -euo pipefail
+          scripts/release/aggregate-assets.sh artifacts release "$TAG" \
+            "ghcr.io/rxbynerd/stirrup@${HARNESS_DIGEST}" \
+            "ghcr.io/rxbynerd/stirrup-sandbox@${SANDBOX_DIGEST}"
+          cp changelog/CHANGELOG.md release-notes.md
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      # Every other asset, IMAGE_DIGESTS included, is covered through its
+      # SHA256SUMS line.
+      - name: Sign SHA256SUMS
+        working-directory: release
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes --bundle SHA256SUMS.sigstore.json SHA256SUMS
+          cosign verify-blob \
+            --bundle SHA256SUMS.sigstore.json \
+            --certificate-identity "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/.github/workflows/_sign-release.yml@refs/tags/${TAG}" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            SHA256SUMS
+
+      - name: Attest build provenance for the release assets
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: release/SHA256SUMS
+
+      - name: Attest build provenance for the harness image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/rxbynerd/stirrup
+          subject-digest: ${{ inputs.harness-digest }}
+
+      - name: Attest build provenance for the sandbox image
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ghcr.io/rxbynerd/stirrup-sandbox
+          subject-digest: ${{ inputs.sandbox-digest }}
+
+      - name: Upload release assets
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: |
+            release/
+            release-notes.md
+          if-no-files-found: error
+          retention-days: 7
