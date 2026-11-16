@@ -253,6 +253,23 @@ destination are not exposed on this block; set them via
 `run_config_file` when the default `gcp-workload-identity`
 credential does not apply.
 
+**Executor block.** The `executor` block accepts `type`, `workspace`,
+`image`, `proxy`, `runtime`, the `vcs_backend`, `network` and `resources`
+blocks, and the Kubernetes attributes `k8s_namespace`, `k8s_kubeconfig`,
+`k8s_node_selector` (a map of label to value), `k8s_service_account` and
+`k8s_egress_proxy_url`, which map to the `executor.k8s*` fields described
+in [`docs/executors/k8s.md`](executors/k8s.md#configuration-reference). The
+parser only carries the values; `types.ValidateRunConfig` checks them, so
+`--dry-run` reports a missing namespace or network block. A relative
+`k8s_kubeconfig` resolves against the task workspace, which is the
+harness's working directory, so an absolute path or an empty value (the
+`$KUBECONFIG` default) is the usable choice. A suite cannot yet run
+tasks on a Kubernetes executor: the runner always passes `--workspace`,
+and the `k8s` and `k8s-sandbox` executors reject `executor.workspace`
+(the Pod workspace is fixed at `/workspace`), so each task fails
+validation before the harness starts, although `--dry-run`, which omits
+the workspace, passes.
+
 **Retention.** When `--output` is set, each retained task
 directory carries a `run_config.redacted.json` companion next to
 `trace.jsonl`, `harness.stdout.txt`, and `harness.stderr.txt`. The
