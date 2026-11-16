@@ -1024,15 +1024,15 @@ receipt. The block has no CLI flag: it is set through `--config` or a
 | Field | Notes |
 |---|---|
 | `urlRef` | Required. A `secret://` reference that resolves, in the harness's own environment, to the destination URL. An inline URL is rejected. |
-| `headers` | Optional, at most 32. Sent on the `PUT`. A value is plaintext or a `secret://` reference. `Authorization`, `Cookie`, and any name ending in `-token`, `-key`, `-secret`, `-signature`, `-password` or `-credential` must be a reference. `Host`, `Content-Length`, `Transfer-Encoding` and the hop-by-hop headers belong to the HTTP client and are rejected. A `Content-Type` entry replaces the harness's own. |
+| `headers` | Optional, at most 32, each value at most 8 KiB. Sent on the `PUT`. A value is plaintext or a `secret://` reference. A name that conventionally carries a credential must be a reference: `Authorization`, `Authentication`, `Cookie`, `Token`, `ApiKey`, `Api-Key`, and any name ending in `-token`, `-key`, `-apikey`, `-auth`, `-secret`, `-signature`, `-password` or `-credential` (underscores read as hyphens). `Host`, `Content-Length`, `Transfer-Encoding` and the hop-by-hop headers belong to the HTTP client and are rejected. A `Content-Type` entry replaces the harness's own. |
 
 **The URL is a capability.** Whoever holds a presigned URL can write the
 object, so the URL is handled like an API key: it never appears in
 `RunConfig`. The reference is resolved through the same secret store as
-`apiKeyRef` (an environment variable, a file, or an SSM parameter), and
-a `RunConfig` alone therefore cannot direct the upload to a URL the
-deployment did not provision. The URL and every header value are kept
-out of logs, traces, events and the `RunResult`:
+`apiKeyRef` (an environment variable, a file, or an SSM parameter), so
+the URL is never written in the `RunConfig`: the config names where the
+deployment keeps it. The URL and every header value are kept out of
+logs, traces, events and the `RunResult`:
 
 - `RunConfig.Redact()` rewrites `urlRef` and every header value, so a
   recorded config carries only the header names.
@@ -1045,7 +1045,8 @@ out of logs, traces, events and the `RunResult`:
 
 **The resolved URL** must use `https://`, carry a host, and carry no
 userinfo or fragment. `http://` is accepted only for a loopback host
-(`localhost`, `127.0.0.0/8`, `::1`), which keeps local development and
+(`localhost`, a name ending in `.localhost`, `127.0.0.0/8`, `::1`) that
+also resolves to a loopback address, which keeps local development and
 tests off TLS without sending a capability across a network in clear
 text. The reference is resolved once when the harness is constructed, so
 a reference that is unset or resolves to an unusable URL fails the run
@@ -1060,8 +1061,9 @@ workspace tarball. Any `2xx` response is success. The client follows no
 redirect (a `3xx` is a failure), uses no proxy, and refuses to connect
 to a link-local address such as the cloud metadata endpoint; a private
 address is allowed, since a control plane's endpoint is commonly
-in-cluster. It allows 30 s to connect, 10 s for the TLS handshake and
-60 s for the response headers once the body is sent. A workspace upload
+in-cluster. Each upload uses its own connection. The client allows
+30 s to connect, 10 s for the TLS handshake and 60 s for the response
+headers once the body is sent. A workspace upload
 is bounded at 5 minutes overall, the same budget the whole workspace
 handoff has, and the tarball at 1 GiB. The upload is attempted once.
 
@@ -1077,8 +1079,11 @@ For the sandboxed executors the archive is produced inside the sandbox
 and uploaded by the harness, so the sandbox needs no route to the
 destination and never sees the URL. The `local` executor gives no such
 separation: the agent's commands run in the harness's own environment
-and can read the variable or file the reference names, so a run whose
-upload must be trusted belongs in a sandboxed executor.
+and can read the variable or file a reference names, and can replace a
+file. Because references are resolved again at upload time, a replaced
+file sends the workspace, together with every configured header, to a
+URL the agent chose. A run whose upload must be trusted belongs in a
+sandboxed executor.
 
 #### Follow-up runs and HTTPS PUT
 

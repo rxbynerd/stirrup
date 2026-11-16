@@ -5401,7 +5401,8 @@ type ExecutorConfig struct {
 	// Optional. Destination URI for a tarball of the executor's workspace,
 	// uploaded at the end of every run, whatever its outcome, before the
 	// run's "done" event. Only the "gs://bucket/path" scheme is accepted
-	// today; the bucket path must be non-empty. Rejected for the "api" and
+	// here, with a non-empty bucket path; an HTTPS destination goes in
+	// workspace_export_https_put. Rejected for the "api" and
 	// "none" executors, neither of which has a workspace. A workspace with
 	// no files uploads an empty archive and reports export status "empty";
 	// a missing workspace is an export failure.
@@ -5604,9 +5605,11 @@ type HttpsPutConfig struct {
 	// http:// with a loopback host, and carry no userinfo or fragment.
 	UrlRef string `protobuf:"bytes,1,opt,name=url_ref,json=urlRef,proto3" json:"url_ref,omitempty"`
 	// Optional. Headers sent on the PUT request; at most 32. Values are
-	// plaintext or a "secret://" reference. Authorization, Cookie and
-	// names ending in -token, -key, -secret, -signature, -password or
-	// -credential must be references. Headers the HTTP client owns (Host,
+	// plaintext or a "secret://" reference. Names that conventionally
+	// carry a credential must be references: Authorization,
+	// Authentication, Cookie, Token, ApiKey, Api-Key, and names ending in
+	// -token, -key, -apikey, -auth, -secret, -signature, -password or
+	// -credential. Headers the HTTP client owns (Host,
 	// Content-Length, Transfer-Encoding and the hop-by-hop headers) are
 	// rejected. A Content-Type entry replaces the harness's own.
 	Headers       map[string]string `protobuf:"bytes,2,rep,name=headers,proto3" json:"headers,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`

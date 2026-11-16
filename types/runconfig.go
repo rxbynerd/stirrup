@@ -2173,8 +2173,8 @@ var executorWorkspaceArchiver = map[string]bool{
 }
 
 // ExecutorCanArchiveWorkspace reports whether executorType can stream its
-// workspace as an archive, which executor.workspaceExportTo requires. A new
-// executor type must be added to executorWorkspaceArchiver.
+// workspace as an archive, which a workspace export of either kind
+// requires. A new executor type must be added to executorWorkspaceArchiver.
 func ExecutorCanArchiveWorkspace(executorType string) bool {
 	return executorWorkspaceArchiver[executorType]
 }
