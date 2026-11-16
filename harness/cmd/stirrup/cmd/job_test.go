@@ -428,7 +428,7 @@ func TestRunJob_ReadyAdvertisesCapabilitiesAndConfigFields(t *testing.T) {
 	ready := srv.ready
 	srv.mu.Unlock()
 	must.Equal("ready", ready.GetType(), "first event sent to the control plane")
-	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned", "lazy_tool_loading", "heartbeat_interval", "strict_task_assignment"}
+	want := []string{"live_transcript", "reasoning_summary", "follow_up_history", "turn_abandoned", "lazy_tool_loading", "heartbeat_interval", "strict_task_assignment", "session_liveness"}
 	must.Equal(want, ready.GetCapabilities())
 	must.Equal(transport.TaskAssignmentFieldPaths(), ready.GetConfigFields())
 	must.NotContains(ready.GetConfigFields(), "transport", "a field a task_assignment cannot carry is not advertised")

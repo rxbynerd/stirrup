@@ -19,6 +19,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
+
+	"github.com/rxbynerd/stirrup/types"
 )
 
 const (
@@ -261,6 +263,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 		return withTeardownErr(cause, partial.Close())
 	}
 
+	cfg.Lifecycle.reportStartup(types.SessionStepSandboxReady)
 	var ready *metav1unstructured.Unstructured
 	err = wait.PollUntilContextTimeout(ctx, timing.pollPeriod, timing.readyTimeout, true, func(ctx context.Context) (bool, error) {
 		got, getErr := dyn.Resource(sandboxGVR).Namespace(cfg.Namespace).Get(ctx, name, metav1.GetOptions{})

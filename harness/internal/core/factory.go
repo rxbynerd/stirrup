@@ -113,6 +113,15 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		secLogger.ConfigValidationFailed([]string{err.Error()})
 		return nil, fmt.Errorf("config validation: %w", err)
 	}
+	liveness := loopOpts.liveness
+	constructionStep := func(step string) {
+		if liveness != nil {
+			liveness.SetPhase(types.SessionPhase{Phase: types.SessionPhaseConstructing, Step: step})
+		}
+	}
+	if liveness != nil {
+		liveness.SetInterval(sessionLivenessInterval(config))
+	}
 
 	// Rule-of-Two arming/audit; see docs/safety-rings.md. The arming
 	// decision feeds both the audit event here and the monitor built
@@ -158,7 +167,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		}
 
 		sandboxExchanger = sandboxidentity.NewExchanger(tp)
+		constructionStep(types.SessionStepTokenExchange)
 		result, exchErr := sandboxExchanger.Exchange(ctx, si.Audience, 0)
+		constructionStep("")
 		if exchErr != nil {
 			return nil, fmt.Errorf("executor.sandboxIdentity: %w", exchErr)
 		}
@@ -178,7 +189,13 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 	// 3. Executor (built early because context strategy may need it).
 	// secLogger is threaded into the container executor so its in-process
 	// egress proxy can emit egress_allowed/egress_blocked events.
-	exec, err := buildExecutorFn(ctx, config.Executor, secrets, secLogger, sandboxExtraEnv, sandboxLifecycle(config, loopOpts.sessionBudget))
+	life := sandboxLifecycle(config, loopOpts.sessionBudget)
+	if createsSandbox(config.Executor.Type) {
+		constructionStep(types.SessionStepSandboxCreate)
+		life.StartupProgress = constructionStep
+	}
+	exec, err := buildExecutorFn(ctx, config.Executor, secrets, secLogger, sandboxExtraEnv, life)
+	constructionStep("")
 	if err != nil {
 		return nil, fmt.Errorf("build executor: %w", err)
 	}
@@ -202,7 +219,9 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 		// A slow sandbox start can use up a short-lived token's lifetime, so
 		// a token past its refresh point is replaced before first delivery.
 		if sandboxidentity.DueForRefresh(time.Now(), sandboxIssuedAt, sandboxToken.ExpiresAt) {
+			constructionStep(types.SessionStepTokenExchange)
 			fresh, exchErr := sandboxExchanger.Exchange(ctx, config.Executor.SandboxIdentity.Audience, 0)
+			constructionStep("")
 			if exchErr != nil {
 				cleanup()
 				return nil, fmt.Errorf("executor.sandboxIdentity: token neared expiry during sandbox startup and could not be re-exchanged: %w", exchErr)
@@ -661,6 +680,7 @@ func BuildLoopWithTransport(ctx context.Context, config *types.RunConfig, tp tra
 
 	loop := &AgenticLoop{
 		HeartbeatInterval:    time.Duration(config.EffectiveHeartbeatSeconds()) * time.Second,
+		Liveness:             liveness,
 		Provider:             prov,
 		Providers:            providers,
 		Router:               rtr,
@@ -1339,6 +1359,22 @@ func sandboxLifecycle(config *types.RunConfig, sessionBudget time.Duration) exec
 		life.MaxLifetime = span + executor.SandboxGCMargin
 	}
 	return life
+}
+
+// sessionLivenessInterval is the session heartbeat interval a validated
+// config sets; tests shorten it below the configurable minimum.
+var sessionLivenessInterval = func(config *types.RunConfig) time.Duration {
+	return time.Duration(config.EffectiveHeartbeatSeconds()) * time.Second
+}
+
+// createsSandbox reports whether an executor type creates a sandbox when
+// it is built.
+func createsSandbox(executorType string) bool {
+	switch executorType {
+	case "container", "k8s", "k8s-sandbox":
+		return true
+	}
+	return false
 }
 
 // buildExecutor constructs the run's executor. life labels and bounds any

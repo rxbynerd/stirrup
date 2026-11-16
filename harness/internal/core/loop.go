@@ -219,7 +219,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	l.resetCommandOutput(config.RunID)
 
 	// Lets the control plane know the run is alive during long turns.
-	stopHeartbeat := l.startHeartbeat(runCtx, l.heartbeatInterval())
+	stopHeartbeat := l.startRunLiveness(runCtx)
 
 	// The Rule-of-Two-bearing entry shape (DynamicContextValue) carries a
 	// per-entry Sensitive flag the validator and future GuardRail wiring
@@ -254,8 +254,15 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// may create. A nil Hooks is a no-op. See
 	// docs/configuration.md#lifecycle-hooks.
 	if l.Hooks != nil {
+		preHooks := config.Hooks != nil && len(config.Hooks.PreRun) > 0
+		if preHooks {
+			l.setSessionPhase(types.SessionPhaseConstructing, types.SessionStepPreRunHooks)
+		}
 		preSpanCtx, preHookSpan := l.Tracer.Start(l.traceCtx(runCtx), "hooks."+hook.PhasePreRun)
 		preResults, preErr := l.Hooks.RunPre(runCtx)
+		if preHooks {
+			l.setSessionPhase(types.SessionPhaseConstructing, types.SessionStepRunSetup)
+		}
 		l.recordHookExecutions(preSpanCtx, preResults)
 		if preErr != nil {
 			recordSpanError(preHookSpan, preErr)
@@ -552,6 +559,7 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	// export and trace.
 	// The final checkpoint precedes postRun hooks, so hook edits are not
 	// committed.
+	l.setSessionPhase(types.SessionPhasePostRun, "")
 	outcome = l.finaliseGit(ctx, outcome)
 
 	// See docs/configuration.md#lifecycle-hooks and
@@ -559,7 +567,14 @@ func (l *AgenticLoop) Run(ctx context.Context, config *types.RunConfig) (*types.
 	if l.Hooks != nil {
 		postCtx, postCancel := l.detachedContext(ctx, postHookBudget(config.Hooks))
 		postSpanCtx, postHookSpan := l.Tracer.Start(l.traceCtx(ctx), "hooks."+hook.PhasePostRun)
+		postHooks := config.Hooks != nil && len(config.Hooks.PostRun) > 0
+		if postHooks {
+			l.setSessionPhase(types.SessionPhasePostRun, types.SessionStepPostRunHooks)
+		}
 		postResults, postErr := l.Hooks.RunPost(postCtx, outcome)
+		if postHooks {
+			l.setSessionPhase(types.SessionPhasePostRun, "")
+		}
 		l.recordHookExecutions(postSpanCtx, postResults)
 		var scrubbedPostErr string
 		if postErr != nil {
@@ -765,6 +780,7 @@ func (l *AgenticLoop) emitRunStarted(runID string) {
 	}); err != nil {
 		l.logEmitFailure("run_started", err)
 	}
+	l.setSessionPhase(types.SessionPhaseRunning, "")
 }
 
 // runInnerLoop runs the agentic loop turns until the model says "done",
@@ -1447,6 +1463,7 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 	if loop.sessionCancelled.Load() {
 		return
 	}
+	loop.setSessionPhase(types.SessionPhaseIdleFollowUp, "")
 
 	grace := time.Duration(graceSecs) * time.Second
 	timer := time.NewTimer(grace)
@@ -1489,6 +1506,7 @@ func RunFollowUpLoop(ctx context.Context, loop *AgenticLoop, config *types.RunCo
 			if loop.sessionCancelled.Load() {
 				return
 			}
+			loop.setSessionPhase(types.SessionPhaseIdleFollowUp, "")
 			timer.Reset(grace)
 
 		case <-loop.idleCancel:
@@ -2422,6 +2440,7 @@ func postHookBudget(hooks *types.HooksConfig) time.Duration {
 // recoverable; the git final checkpoint does not, since Git.Setup has not
 // completed.
 func (l *AgenticLoop) finishWithOutcome(ctx context.Context, config *types.RunConfig, outcome string, err error, stopHeartbeat func()) (*types.RunTrace, error) {
+	l.setSessionPhase(types.SessionPhasePostRun, "")
 	l.releaseSetupWarnings()
 	l.noteFailure(outcome, err.Error())
 	outcome = l.finalizeCommandOutput(ctx, outcome)

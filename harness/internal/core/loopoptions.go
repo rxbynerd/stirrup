@@ -19,6 +19,7 @@ type LoopOptions struct {
 	wireTrace              bool
 	sessionBudget          time.Duration
 	transportTLS           credentials.TransportCredentials
+	liveness               SessionLiveness
 }
 
 // LoopOption configures a LoopOptions value, keeping BuildLoop's signature
@@ -44,6 +45,13 @@ func WithWireTrace(enabled bool) LoopOption {
 // A budget shorter than RunConfig.Timeout is raised to it.
 func WithSessionBudget(d time.Duration) LoopOption {
 	return func(o *LoopOptions) { o.sessionBudget = d }
+}
+
+// WithSessionLiveness reports construction's steps to liveness, sets its
+// interval from the validated RunConfig, and hands it to the built loop as
+// AgenticLoop.Liveness.
+func WithSessionLiveness(liveness SessionLiveness) LoopOption {
+	return func(o *LoopOptions) { o.liveness = liveness }
 }
 
 // WithTransportTLS secures the gRPC transport BuildLoop dials with creds

@@ -147,6 +147,9 @@ type AgenticLoop struct {
 	// HeartbeatInterval is the gap between heartbeat events; zero selects
 	// types.DefaultHeartbeatSeconds.
 	HeartbeatInterval time.Duration
+	// Liveness, when non-nil, owns the session's heartbeat: a top-level
+	// Run reports its phases to it and starts no heartbeat of its own.
+	Liveness SessionLiveness
 	// Shutdown, when non-nil, is a process-lifetime context done when the
 	// process abandons post-run work (the CLI entry points cancel it on a
 	// second SIGTERM/SIGINT; the first cancels Run()'s ctx) — independent

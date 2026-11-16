@@ -82,10 +82,14 @@ func readyEvent(sessionID, versionLabel string) types.HarnessEvent {
 		ID:             sessionID,
 		HarnessVersion: versionLabel,
 		HarnessSemver:  version.SemverOf(versionLabel),
-		Capabilities:   types.HarnessCapabilities(),
+		Capabilities:   append(types.HarnessCapabilities(), types.CapabilitySessionLiveness),
 		ConfigFields:   transport.TaskAssignmentFieldPaths(),
 	}
 }
+
+// sessionHeartbeatInterval is the session heartbeat's interval until a
+// task_assignment sets its own; tests shorten it.
+var sessionHeartbeatInterval = types.DefaultHeartbeatSeconds * time.Second
 
 func runJob(cmd *cobra.Command, args []string) error {
 	started := time.Now()
@@ -134,6 +138,9 @@ func runJob(cmd *cobra.Command, args []string) error {
 	if err := tp.Emit(readyEvent(sessionID, version.Version())); err != nil {
 		return fmt.Errorf("failed to send ready event: %w", err)
 	}
+	liveness := core.StartSessionHeartbeat(tp, sessionHeartbeatInterval,
+		types.SessionPhase{Phase: types.SessionPhaseAwaitingAssignment}, nil)
+	defer liveness.Stop()
 
 	if err := health.WriteProbe(livenessMarkerPath); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: failed to write liveness probe: %v\n", err)
@@ -179,6 +186,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 	select {
 	case assignment = <-assignmentCh:
 		assigned = time.Since(started)
+		liveness.SetPhase(types.SessionPhase{Phase: types.SessionPhaseConstructing})
 		// Assignment received; the pod is no longer idle-and-assignable.
 		_ = health.RemoveProbe(readinessMarkerPath)
 	case <-preTaskCancelCh:
@@ -218,9 +226,11 @@ func runJob(cmd *cobra.Command, args []string) error {
 	graceSecs := followUpGraceSeconds(config)
 	loop, err := buildJobLoop(buildCtx, config, tp,
 		core.WithSessionBudget(jobSessionBudget(runTimeout, graceSecs)),
+		core.WithSessionLiveness(liveness),
 	)
 	stopBuildWatch()
 	if lossErr := controlStreamErr(tp); lossErr != nil {
+		liveness.Stop()
 		if loop != nil {
 			_ = loop.Close()
 		}
@@ -234,6 +244,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 		// crashed pod or a dropped connection.
 		buildErr := fmt.Errorf("building harness: %w", err)
 		buildFailed := time.Since(started)
+		liveness.Stop()
 		emitTerminalFailure(tp, controlPlaneBuildError(buildErr), "error")
 		// Phase timings for the terminal-failure path, so a control plane
 		// reporting a missing "done" can name the phase that stalled.
@@ -277,6 +288,7 @@ func runJob(cmd *cobra.Command, args []string) error {
 		RunTimeout:    runTimeout,
 		OnRunComplete: policy.finaliseFollowUp,
 	})
+	liveness.Stop()
 	// A required export that fails on a follow-up fails the process the
 	// same way it would for the primary run.
 	if err := policy.followUpErr(); err != nil {

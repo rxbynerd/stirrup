@@ -269,6 +269,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 			"namespace", cfg.Namespace, "pod", podName, "runtimeClassName", clusterText(*created.Spec.RuntimeClassName))
 	}
 
+	cfg.Lifecycle.reportStartup(types.SessionStepSandboxReady)
 	if _, err := waitForPodReady(ctx, clientset, cfg.Namespace, podName, admission, timing, logger); err != nil {
 		reportAdmissionFailure(cfg.Security, cfg.Runtime, profile, err)
 		return nil, withTeardownErr(fmt.Errorf("pod %s/%s %w", cfg.Namespace, podName, err), teardown.run())
@@ -297,6 +298,9 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 	}
 	// The diagnostics run before the executor is returned, so before any
 	// token delivery or lifecycle hook reaches the sandbox.
+	if profile.diagnose != nil {
+		cfg.Lifecycle.reportStartup(types.SessionStepRuntimeDiagnostics)
+	}
 	if err := runK8sRuntimeDiagnostics(ctx, cfg.Runtime, profile, &exec.podExecCore); err != nil {
 		return nil, withTeardownErr(err, teardown.run())
 	}
