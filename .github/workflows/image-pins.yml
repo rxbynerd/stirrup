@@ -1,0 +1,41 @@
+name: Image tag pins
+
+# Fails when the digest behind a published version tag (vX.Y.Z) or a
+# sha-<commit> tag on ghcr.io/rxbynerd/stirrup or stirrup-sandbox has
+# changed since it was first pushed. The moving tags (:main, :latest,
+# :vX.Y) are not checked. Version tags are compared with the release's
+# signed IMAGE_DIGESTS asset, sha- tags with the commit status ci.yml
+# records; see docs/deployment.md#verify-what-you-run.
+
+on:
+  schedule:
+    # Daily, and two hours after ci.yml's Monday rebuild.
+    - cron: '23 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check image tag pins
+    runs-on: ubuntu-latest
+    if: github.repository == 'rxbynerd/stirrup'
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      statuses: read
+      attestations: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+
+      - name: Compare published tags with their recorded digests
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/release/check-image-pins.sh
