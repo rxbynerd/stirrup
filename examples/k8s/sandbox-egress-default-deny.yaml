@@ -3,12 +3,11 @@
 # REQUIRED for both the k8s and k8s-sandbox executors. Each run installs its
 # own per-Pod egress policy, but that object can disappear while the sandbox
 # container still runs: the garbage collector removes it during a foreground
-# delete of the harness Pod (which the Job TTL controller always uses), and a
-# force delete can remove a Pod's record before its workload stops. NetworkPolicy
-# allows are additive and a Pod selected by any Egress policy is isolated, so
-# with this policy in place removing a per-run policy only ever narrows egress
-# to whatever the standing policies allow. See docs/executors/k8s.md, "Standing
-# default-deny egress".
+# delete of the harness Pod, which the Job TTL controller always uses.
+# NetworkPolicy allows are additive and a Pod selected by any Egress policy is
+# isolated, so with this policy in place removing a per-run policy while the
+# Pod object exists only narrows egress to what the standing policies allow.
+# See docs/executors/k8s.md, "Standing default-deny egress".
 #
 # The policy selects stirrup-sandbox=true, which every sandbox Pod carries (the
 # k8s executor's Pods and the Pods the Agent Sandbox controller creates from a

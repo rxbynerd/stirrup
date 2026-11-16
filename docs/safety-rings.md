@@ -1325,11 +1325,12 @@ policy that selects every sandbox Pod
 ([`examples/k8s/sandbox-egress-default-deny.yaml`](../examples/k8s/sandbox-egress-default-deny.yaml)).
 The per-Pod policy can be removed while the sandbox container still
 runs: the garbage collector removes it during a foreground delete of
-the harness Pod, which the Job TTL controller always uses, and a force
-delete can drop the Pod's record before its workload stops. Because
+the harness Pod, which the Job TTL controller always uses. Because
 NetworkPolicy allows are additive and any `Egress` policy isolates the
 Pods it selects, the standing policy makes that removal narrow the
-sandbox's egress instead of opening it. The
+sandbox's egress instead of opening it. A force delete, which drops the
+Pod's record before its workload stops, is not covered: no policy
+selects a Pod whose object is gone. The
 [`k8s` executor reference](executors/k8s.md#standing-default-deny-egress)
 lists the cases and what the dry run checks.
 
