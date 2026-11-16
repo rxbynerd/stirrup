@@ -717,10 +717,8 @@ func (l *AgenticLoop) dispatchAsyncToolCall(
 	}
 	if resp.isError {
 		// The control plane is partially trusted and could embed
-		// secret-shaped strings in the error payload; scrub at the point of
-		// entry so both the model context and the trace see the redacted
-		// form (this path bypasses the transport's outbound scrub).
-		scrubbed := security.Scrub(resp.content)
+		// secret-shaped strings in the error payload.
+		scrubbed, _ := l.scrubToolError(resp.content)
 		return fmt.Sprintf("async tool %s upstream_error: %s", call.Name, scrubbed), false, observability.ToolFailureAsyncUpstreamError
 	}
 	return resp.content, true, ""

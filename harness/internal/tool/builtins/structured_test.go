@@ -38,7 +38,7 @@ func TestRunCommandTool_StructuredAndText(t *testing.T) {
 	must.Equal("out-data\nSTDERR:\nerr-data\n[exit code: 3]", res.Text)
 
 	got := decodeStructured[commandResult](t, res.Structured)
-	want := commandResult{Stdout: "out-data", Stderr: "err-data", ExitCode: 3, TimedOut: false, TimeoutSeconds: 120}
+	want := commandResult{Stdout: "out-data", Stderr: "err-data", ExitCode: new(3), TimedOut: false, TimeoutSeconds: 120}
 	must.Equal(want, got)
 }
 

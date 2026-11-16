@@ -184,6 +184,62 @@ func assignedValues(fn *ast.FuncDecl, name string) []ast.Expr {
 	return values
 }
 
+// settledBefore reports whether a statement that is a call to name sits
+// before pos in a block that also contains pos, so the call runs
+// unconditionally on every path to pos. A call inside a closure, a
+// conditional or an earlier branch does not count.
+func settledBefore(fd *ast.FuncDecl, name string, pos token.Pos) bool {
+	found := false
+	ast.Inspect(fd.Body, func(n ast.Node) bool {
+		block, ok := n.(*ast.BlockStmt)
+		if !ok || pos < block.Pos() || pos > block.End() {
+			return !found
+		}
+		for _, stmt := range block.List {
+			expr, ok := stmt.(*ast.ExprStmt)
+			if !ok || stmt.End() > pos {
+				continue
+			}
+			if call, ok := expr.X.(*ast.CallExpr); ok && calleeName(call) == name {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// TestToolErrors_AreScrubbed pins that a failed tool call's text is
+// scrubbed before it reaches the model: every ToolResult is built in a
+// block that first calls core's scrubFailedResult as a statement of its
+// own, and scrubFailedResult reaches the log scrubber through
+// scrubToolError. A new failure path cannot bypass it because ToolResults
+// are built only where results converge.
+func TestToolErrors_AreScrubbed(t *testing.T) {
+	check := assert.New(t)
+	must := require.New(t)
+	fset := token.NewFileSet()
+	files := parseProductionTree(t, fset, "harness")
+
+	results := 0
+	eachCompositeLit(files, func(sf *sourceFile, lit *ast.CompositeLit, litType ast.Expr) {
+		if !isPkgSelector(litType, importName(sf.file, "github.com/rxbynerd/stirrup/types"), "ToolResult") {
+			return
+		}
+		results++
+		encl, inFunc := enclosingFunc(sf, lit.Pos())
+		check.True(inFunc && settledBefore(encl.decl, "scrubFailedResult", lit.Pos()),
+			"%s: a ToolResult is built without scrubFailedResult running first in its block", position(fset, lit.Pos()))
+	})
+	must.Positive(results, "no ToolResult construction found; the check would be vacuous")
+
+	core := parseProductionFiles(t, fset, "harness/internal/core")
+	settle := findFunc(t, core, "harness/internal/core/dispatch.go", "AgenticLoop.scrubFailedResult")
+	check.True(callsIn(settle.decl.Body, "scrubToolError"), "scrubFailedResult must scrub the failed text through scrubToolError")
+	scrubber := findFunc(t, core, "harness/internal/core/dispatch.go", "AgenticLoop.scrubToolError")
+	check.True(callsIn(scrubber.decl.Body, "ScrubWithStats"), "scrubToolError must run security.ScrubWithStats over the text")
+}
+
 // TestLogHandlers_AreScrubbed pins that every slog handler the harness
 // builds sits beneath a ScrubHandler: a JSON, text or OTLP-bridge leaf is
 // constructed as the argument of NewScrubHandler, every slog.New wraps a

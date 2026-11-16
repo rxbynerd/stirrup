@@ -135,10 +135,14 @@ type spoolWriter struct {
 	mu           sync.Mutex
 }
 
+// Completion is how a captured command ended. ExitCode is nil unless the
+// command exited on its own; ExecutorError marks a command the executor
+// failed to run to an exit.
 type Completion struct {
-	ExitCode  int
-	TimedOut  bool
-	Cancelled bool
+	ExitCode      *int
+	TimedOut      bool
+	Cancelled     bool
+	ExecutorError bool
 }
 
 type Captured struct {
@@ -435,6 +439,7 @@ func (c *Capture) Complete(status Completion) (Captured, error) {
 	record.ExitCode = status.ExitCode
 	record.TimedOut = status.TimedOut
 	record.Cancelled = status.Cancelled
+	record.ExecutorError = status.ExecutorError
 
 	stdout, stdoutPath, stdoutMeta, stdoutErr := c.canonicalize("stdout", c.stdout)
 	stderr, stderrPath, stderrMeta, stderrErr := c.canonicalize("stderr", c.stderr)

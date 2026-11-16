@@ -232,7 +232,9 @@ content*. A `secret://ANTHROPIC_API_KEY` reference in the RunConfig is
 not sensitive data: it is a pointer the `SecretStore` resolves out of
 band, never key material the agent sees. But the same API key
 **observed in conversation content** — the agent reading a `.env`, a
-token echoed back in a tool result, a credential pasted into a fetched
+token echoed back in a successful tool result (a failed call's text is
+[scrubbed](security.md#tool-error-scrubbing) before the model reads
+it), a credential pasted into a fetched
 issue — *is* agent-readable sensitive data, and the runtime classifier
 detects exactly that. Declaring `sensitiveData: true` covers content
 the operator knows about up front; the classifier covers content that

@@ -218,13 +218,8 @@ func (l *AgenticLoop) planAndDispatch(
 				defer func() {
 					if r := recover(); r != nil {
 						// Convert panic into a structured tool failure so
-						// other in-flight goroutines are unaffected. The
-						// recovered value is scrubbed before it reaches the
-						// tool result (model context + transport emit) so a
-						// panic capturing secret-shaped fragments can't leak.
-						msg := fmt.Sprintf("async tool %s panic: %v", plan[idx].call.Name,
-							security.Scrub(fmt.Sprintf("%v", r)))
-						plan[idx].output = msg
+						// other in-flight goroutines are unaffected.
+						plan[idx].output = fmt.Sprintf("async tool %s panic: %v", plan[idx].call.Name, r)
 						plan[idx].success = false
 						plan[idx].failureCategory = observability.ToolFailureAsyncPanic
 						plan[idx].finishedAt = time.Now()
@@ -259,9 +254,7 @@ func (l *AgenticLoop) planAndDispatch(
 	resultBudget := config.Tools.EffectiveMaxResultBytes()
 	for i := range plan {
 		p := &plan[i]
-		if !p.success && p.output == "" {
-			p.output = emptyToolErrorText
-		}
+		l.scrubFailedResult(p)
 		// Sync and async results converge here, so this is the single
 		// point that bounds what reaches history, trace and transport. A
 		// cut result drops its structured envelope, which would otherwise
@@ -364,6 +357,43 @@ func (l *AgenticLoop) planAndDispatch(
 	}
 
 	return toolResults, toolRecords, ""
+}
+
+// scrubFailedResult settles a failed call's text before a ToolResult is
+// built from it, and leaves a successful call untouched. Error text can
+// quote a credential from a config file, an API response or the
+// environment, and the provider adapters send a tool result as they
+// receive it. A structured payload that holds a match, or that
+// accompanies text that did, is dropped rather than rewritten: the
+// payload is JSON, where a pattern that spans a line break cannot match.
+func (l *AgenticLoop) scrubFailedResult(p *pendingCall) {
+	if p.success {
+		return
+	}
+	if p.output == "" {
+		p.output = emptyToolErrorText
+	}
+	var textMatched bool
+	p.output, textMatched = l.scrubToolError(p.output)
+	if payload := string(p.structured.payload); payload != "" {
+		if textMatched {
+			p.structured = structuredOutput{}
+		} else if _, matched := l.scrubToolError(payload); matched {
+			p.structured = structuredOutput{}
+		}
+	}
+}
+
+// scrubToolError returns text with the log scrubber applied and whether
+// anything matched, raising a security event per pattern matched.
+func (l *AgenticLoop) scrubToolError(text string) (string, bool) {
+	scrubbed, stats := security.ScrubWithStats(text)
+	if l.Security != nil {
+		for _, p := range stats.Patterns {
+			l.Security.SecretRedactedInOutput(p, "core.tool_error")
+		}
+	}
+	return scrubbed, stats.Count > 0
 }
 
 // duration is the call's own run time: dispatch to settlement, less the

@@ -133,8 +133,10 @@ type findResultWire struct {
 }
 
 type commandResultWire struct {
-	ExitCode            int    `json:"exit_code"`
+	ExitCode            *int   `json:"exit_code"`
 	TimedOut            bool   `json:"timed_out"`
+	Cancelled           bool   `json:"cancelled,omitempty"`
+	ExecutorError       bool   `json:"executor_error,omitempty"`
 	TimeoutSeconds      int    `json:"timeout_seconds"`
 	Spilled             bool   `json:"spilled,omitempty"`
 	CaptureComplete     bool   `json:"capture_complete"`

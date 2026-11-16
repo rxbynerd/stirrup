@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -40,9 +42,10 @@ func RunCommandTool(exec executor.Executor) *tool.Tool {
 
 // RunCommandToolWithStore returns the compliance-capturing run_command tool.
 // A nil store selects the uncaptured path for embedders and executors that
-// do not expose streaming execution; that path bounds its text to
-// maxResultBytes (tools.maxResultBytes), keeping the head and tail of each
-// stream and the exit-code and timeout markers.
+// do not expose streaming execution. Both paths bound their text to
+// maxResultBytes (tools.maxResultBytes): the uncaptured path keeps the head
+// and tail of each stream and the markers, and the captured path spills
+// output whose inline rendering does not fit.
 func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store, cfg types.CommandOutputConfig, maxResultBytes int) *tool.Tool {
 	cfg = (types.ToolsConfig{CommandOutput: cfg}).EffectiveCommandOutput()
 	return &tool.Tool{
@@ -52,6 +55,7 @@ func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store,
 			"Do not use for filesystem inspection that a dedicated tool covers — prefer read_file, list_directory, grep_files, find_files because they return structured, bounded output and do not need a shell. " +
 			"timeout is in seconds (default 30, max 300); when it elapses the command and the processes it started are killed (SIGTERM, then SIGKILL after a short grace), except processes that detached into their own session or process group. " +
 			"On timeout this returns the partial stdout/stderr captured before the deadline plus a '[timed out after Ns]' marker, not a hard error, so act on the partial output or rerun with a longer timeout. " +
+			"Large output is spilled to an archive: the text then opens with '[command output spilled to compliance archive]' and a header stating exit_code=N (none when the command did not exit) and timed_out=true|false, followed by stream tails and stdout_ref/stderr_ref references that read_command_output pages. " +
 			"Example: {\"command\": \"go test ./harness/internal/tool/...\", \"timeout\": 120}",
 		// Pinned to the description by TestBuiltinInputExamples_MatchDescription.
 		InputExamples:     []json.RawMessage{json.RawMessage(`{"command": "go test ./harness/internal/tool/...", "timeout": 120}`)},
@@ -88,22 +92,24 @@ func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store,
 
 			if store == nil {
 				result, err := exec.Exec(ctx, params.Command, timeout)
+				var end commandEnd
 				if err != nil {
-					if !errors.Is(err, executor.ErrTimeout) {
+					end.timedOut = errors.Is(err, executor.ErrTimeout)
+					end.cancelled = !end.timedOut && ctx.Err() != nil
+					if !end.timedOut && !end.cancelled {
 						return tool.StructuredResult{}, err
 					}
-					// Executors return partial output alongside the wrapped
-					// ErrTimeout, so a timeout is a soft outcome the model
-					// can act on rather than a hard tool error. result can
-					// still be nil if the executor was cut off before
-					// producing one (e.g. a control-plane deadline before
-					// exec even started).
+					// Executors return partial output alongside the error.
+					// result can still be nil if the executor was cut off
+					// before producing one (e.g. a control-plane deadline
+					// before exec even started).
 					if result == nil {
 						result = &executor.ExecResult{}
 					}
-					return buildCommandResult(result, timeoutSeconds, true, maxResultBytes)
+				} else {
+					end.exitCode = &result.ExitCode
 				}
-				return buildCommandResult(result, timeoutSeconds, false, maxResultBytes)
+				return buildCommandResult(result, timeoutSeconds, end, maxResultBytes)
 			}
 
 			streaming, ok := exec.(executor.StreamingExecutor)
@@ -120,34 +126,37 @@ func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store,
 			if result == nil {
 				result = &executor.ExecResult{ExitCode: -1}
 			}
-			timedOut := errors.Is(execErr, executor.ErrTimeout)
 			cause := context.Cause(execCtx)
-			cancelled := execErr != nil && !timedOut && execCtx.Err() != nil &&
+			end := commandEnd{timedOut: errors.Is(execErr, executor.ErrTimeout)}
+			end.cancelled = execErr != nil && !end.timedOut && execCtx.Err() != nil &&
 				!errors.Is(cause, commandoutput.ErrCaptureLimit) && !errors.Is(cause, commandoutput.ErrCaptureIO)
-			captured, captureErr := capture.Complete(commandoutput.Completion{ExitCode: result.ExitCode, TimedOut: timedOut, Cancelled: cancelled})
-			isError := execErr != nil || captureErr != nil
-			text, spilled := formatCapturedCommand(captured, cfg, timeoutSeconds)
-			if execErr != nil && !timedOut && !cancelled {
-				// A nil cause means the executor failed on its own, so the
-				// command may never have run and its exit code is unknown.
-				label := "executor error"
-				if cause != nil {
-					label = "capture/command error"
-				}
-				if text != "" {
-					text += "\n"
-				}
-				text += commandErrorMarker(label, execErr, maxResultBytes)
+			end.failed = execErr != nil && !end.timedOut && !end.cancelled
+			if execErr == nil {
+				end.exitCode = &result.ExitCode
 			}
+			captured, captureErr := capture.Complete(commandoutput.Completion{ExitCode: end.exitCode, TimedOut: end.timedOut, Cancelled: end.cancelled, ExecutorError: end.failed})
+			isError := end.cancelled || end.failed || captureErr != nil
+			var failure *commandFailure
+			if end.failed {
+				// A nil cause means the executor failed on its own, so the
+				// command may never have run.
+				failure = &commandFailure{label: "executor error", err: execErr}
+				if cause != nil {
+					failure.label = "capture/command error"
+				}
+			}
+			text, spilled, previews := formatCapturedCommand(captured, cfg, end, timeoutSeconds, failure, maxResultBytes)
 			if err := store.RecordInitial(&captured.Record, text); err != nil {
 				return tool.StructuredResult{}, fmt.Errorf("record command model result: %w", err)
 			}
 
 			structured, marshalErr := json.Marshal(commandResult{
-				Stdout:         previewForStructured(captured.Stdout, cfg, spilled),
-				Stderr:         previewForStructured(captured.Stderr, cfg, spilled),
-				ExitCode:       result.ExitCode,
-				TimedOut:       timedOut,
+				Stdout:         previewForStructured(captured.Stdout, previews.stdout, spilled),
+				Stderr:         previewForStructured(captured.Stderr, previews.stderr, spilled),
+				ExitCode:       end.exitCode,
+				TimedOut:       end.timedOut,
+				Cancelled:      end.cancelled,
+				ExecutorError:  end.failed,
 				TimeoutSeconds: timeoutSeconds,
 				Spilled:        spilled, CaptureComplete: captured.Record.CaptureComplete,
 				ArchiveID: captured.Record.ArchiveID,
@@ -170,27 +179,53 @@ func RunCommandToolWithStore(exec executor.Executor, store *commandoutput.Store,
 	}
 }
 
+// commandEnd is how a run_command invocation ended. exitCode is nil unless
+// the command exited on its own: a timeout, a cancellation or an executor
+// failure leaves no exit status.
+type commandEnd struct {
+	exitCode  *int
+	timedOut  bool
+	cancelled bool
+	failed    bool
+}
+
+// textExitCode is the exit code formatRunCommand renders, where 0 renders
+// no exit-code line.
+func (e commandEnd) textExitCode() int {
+	if e.exitCode == nil {
+		return 0
+	}
+	return *e.exitCode
+}
+
+const cancelledMarker = "[cancelled: the run ended before the command finished]"
+
 // buildCommandResult builds the StructuredResult for an uncaptured
-// run_command invocation, covering both the clean-exit and timed-out cases.
-// Text longer than maxBytes is elided in the middle of each stream; the
+// run_command invocation that exited, timed out or was cancelled. Text
+// longer than maxBytes is elided in the middle of each stream; the
 // structured envelope is dropped then because it would repeat the elided
-// output. See docs/architecture.md for the timeout/ExitCode contract.
-func buildCommandResult(result *executor.ExecResult, timeoutSeconds int, timedOut bool, maxBytes int) (tool.StructuredResult, error) {
+// output. A cancellation is a tool error and a timeout is not; see
+// docs/architecture.md for the timeout contract.
+func buildCommandResult(result *executor.ExecResult, timeoutSeconds int, end commandEnd, maxBytes int) (tool.StructuredResult, error) {
 	stdout, stderr := security.Scrub(result.Stdout), security.Scrub(result.Stderr)
 	suffix := ""
-	if timedOut {
+	switch {
+	case end.timedOut:
 		suffix = fmt.Sprintf("\n[timed out after %ds]", timeoutSeconds)
+	case end.cancelled:
+		suffix = "\n" + cancelledMarker
 	}
-	text, truncated := boundCommandText(stdout, stderr, result.ExitCode, suffix, maxBytes)
+	text, truncated := boundCommandText(stdout, stderr, end.textExitCode(), suffix, maxBytes)
 	if truncated {
-		return tool.StructuredResult{Text: text}, nil
+		return tool.StructuredResult{Text: text, IsError: end.cancelled}, nil
 	}
 
 	structured, marshalErr := json.Marshal(commandResult{
 		Stdout:         stdout,
 		Stderr:         stderr,
-		ExitCode:       result.ExitCode,
-		TimedOut:       timedOut,
+		ExitCode:       end.exitCode,
+		TimedOut:       end.timedOut,
+		Cancelled:      end.cancelled,
 		TimeoutSeconds: timeoutSeconds,
 	})
 	if marshalErr != nil {
@@ -201,6 +236,7 @@ func buildCommandResult(result *executor.ExecResult, timeoutSeconds int, timedOu
 		Text:       text,
 		Structured: structured,
 		Kind:       kindCommandResult,
+		IsError:    end.cancelled,
 	}, nil
 }
 
@@ -220,11 +256,18 @@ func boundCommandText(stdout, stderr string, exitCode int, suffix string, maxByt
 	return formatRunCommand(elideMiddle(stdout, stdoutShare, "stdout"), elideMiddle(stderr, stderrShare, "stderr"), exitCode) + suffix, true
 }
 
-// commandErrorMarker renders err as "[label: message]" within maxBytes. The
-// message is scrubbed before it is cut so a cut cannot split a secret.
-func commandErrorMarker(label string, err error, maxBytes int) string {
-	frame := "[" + label + ": ]"
-	return "[" + label + ": " + elideMiddle(security.Scrub(err.Error()), max(maxBytes-len(frame), 0), "error") + "]"
+// commandFailure is an executor failure the model-visible text reports as
+// a "[label: message]" marker.
+type commandFailure struct {
+	label string
+	err   error
+}
+
+// marker renders the failure within maxBytes. The message is scrubbed
+// before it is cut so a cut cannot split a secret.
+func (f *commandFailure) marker(maxBytes int) string {
+	frame := "[" + f.label + ": ]"
+	return "[" + f.label + ": " + elideMiddle(security.Scrub(f.err.Error()), max(maxBytes-len(frame), 0), "error") + "]"
 }
 
 const elisionMarkerFmt = "\n[run_command %s truncated: %d of %d bytes omitted here]\n"
@@ -255,48 +298,106 @@ func elideMiddle(s string, limit int, stream string) string {
 	return s[:headEnd] + fmt.Sprintf(elisionMarkerFmt, stream, tailStart-headEnd, len(s)) + s[tailStart:]
 }
 
-func formatCapturedCommand(c commandoutput.Captured, cfg types.CommandOutputConfig, timeoutSeconds int) (string, bool) {
+// streamPreviews are the per-stream tail lengths a spilled rendering shows.
+type streamPreviews struct{ stdout, stderr int64 }
+
+// formatCapturedCommand renders a captured command's model-visible text
+// within maxBytes and reports whether it spilled, with the tail lengths the
+// spilled rendering used. Output stays inline only when it is within
+// cfg.InlineMaxBytes and its rendering fits maxBytes; otherwise the spilled
+// summary's tails shrink to fit, stderr keeping at least half the room
+// when it needs it. The failure marker takes at most half of maxBytes, and
+// in a spilled summary no more than the room the header leaves, so the
+// archive references and the failure label survive a small maxBytes.
+func formatCapturedCommand(c commandoutput.Captured, cfg types.CommandOutputConfig, end commandEnd, timeoutSeconds int, failure *commandFailure, maxBytes int) (string, bool, streamPreviews) {
+	var markers []string
+	if end.cancelled {
+		markers = append(markers, cancelledMarker)
+	}
+	inlineMarkers := markers
+	if failure != nil {
+		inlineMarkers = append(slices.Clone(markers), failure.marker(maxBytes/2))
+	}
 	combined := c.Record.Stdout.ScrubbedBytes + c.Record.Stderr.ScrubbedBytes
 	if combined <= cfg.InlineMaxBytes && c.Record.CaptureComplete {
-		text := formatRunCommand(c.Stdout, c.Stderr, c.Record.ExitCode)
-		// A timeout is a soft outcome, so the inline rendering must carry
-		// the same unambiguous marker buildCommandResult emits; the spilled
-		// rendering below states timed_out explicitly instead.
-		if c.Record.TimedOut {
-			text += fmt.Sprintf("\n[timed out after %ds]", timeoutSeconds)
+		inline := inlineMarkers
+		// The spilled rendering states timed_out in its header instead.
+		if end.timedOut {
+			inline = append([]string{fmt.Sprintf("[timed out after %ds]", timeoutSeconds)}, inlineMarkers...)
 		}
-		return text, false
+		text := appendMarkers(formatRunCommand(c.Stdout, c.Stderr, end.textExitCode()), inline)
+		if len(text) <= maxBytes {
+			return text, false, streamPreviews{}
+		}
+	}
+	previews := streamPreviews{
+		stdout: min(int64(len(c.Stdout)), cfg.PreviewBytesPerStream),
+		stderr: min(int64(len(c.Stderr)), cfg.PreviewBytesPerStream),
+	}
+	if failure != nil {
+		// The marker follows the header's last line after a newline.
+		room := maxBytes - len(formatSpilledCommand(c, end, timeoutSeconds, markers, streamPreviews{})) - 1
+		markers = append(markers, failure.marker(min(maxBytes/2, max(room, 0))))
+	}
+	text := formatSpilledCommand(c, end, timeoutSeconds, markers, previews)
+	if len(text) > maxBytes {
+		avail := max(int64(maxBytes-len(formatSpilledCommand(c, end, timeoutSeconds, markers, streamPreviews{}))), 0)
+		previews.stderr = min(previews.stderr, avail/2)
+		previews.stdout = min(previews.stdout, avail-previews.stderr)
+		previews.stderr = min(int64(len(c.Stderr)), cfg.PreviewBytesPerStream, avail-previews.stdout)
+		text = formatSpilledCommand(c, end, timeoutSeconds, markers, previews)
+	}
+	return elideMiddle(text, maxBytes, "result"), true, previews
+}
+
+func appendMarkers(text string, markers []string) string {
+	for _, m := range markers {
+		if text != "" {
+			text += "\n"
+		}
+		text += m
+	}
+	return text
+}
+
+func formatSpilledCommand(c commandoutput.Captured, end commandEnd, timeoutSeconds int, markers []string, previews streamPreviews) string {
+	exitCode := "none"
+	if end.exitCode != nil {
+		exitCode = strconv.Itoa(*end.exitCode)
 	}
 	var out strings.Builder
 	out.WriteString("[command output spilled to compliance archive]\n")
-	fmt.Fprintf(&out, "exit_code=%d timed_out=%t timeout_seconds=%d capture_complete=%t archive_id=%s\n",
-		c.Record.ExitCode, c.Record.TimedOut, timeoutSeconds, c.Record.CaptureComplete, c.Record.ArchiveID)
-	writeStreamPreview(&out, "stdout", c.Stdout, c.Record.Stdout, cfg.PreviewBytesPerStream)
-	writeStreamPreview(&out, "stderr", c.Stderr, c.Record.Stderr, cfg.PreviewBytesPerStream)
+	fmt.Fprintf(&out, "exit_code=%s timed_out=%t timeout_seconds=%d capture_complete=%t archive_id=%s\n",
+		exitCode, end.timedOut, timeoutSeconds, c.Record.CaptureComplete, c.Record.ArchiveID)
+	writeStreamPreview(&out, "stdout", c.Stdout, c.Record.Stdout, previews.stdout)
+	writeStreamPreview(&out, "stderr", c.Stderr, c.Record.Stderr, previews.stderr)
 	if c.Record.CaptureError != "" {
 		out.WriteString("capture_error=" + c.Record.CaptureError + "\n")
 	}
-	return strings.TrimSuffix(out.String(), "\n"), true
+	return appendMarkers(strings.TrimSuffix(out.String(), "\n"), markers)
 }
 
 func writeStreamPreview(out *strings.Builder, name, content string, meta types.CommandOutputStreamRecord, preview int64) {
 	fmt.Fprintf(out, "%s raw_bytes=%d scrubbed_bytes=%d raw_sha256=%s scrubbed_sha256=%s\n", name, meta.RawBytes, meta.ScrubbedBytes, meta.RawSHA256, meta.ScrubbedSHA256)
 	fmt.Fprintf(out, "%s_ref=%s\n", name, meta.Reference)
-	tail := content
-	if int64(len(tail)) > preview {
-		tail = tail[len(tail)-int(preview):]
-	}
-	fmt.Fprintf(out, "%s_tail:\n%s\n", name, tail)
+	fmt.Fprintf(out, "%s_tail:\n%s\n", name, streamTail(content, preview))
 }
 
-func previewForStructured(content string, cfg types.CommandOutputConfig, spilled bool) string {
+// streamTail returns at most n trailing bytes of content, starting on a
+// UTF-8 boundary. content can itself be a tail the store cut mid-character.
+func streamTail(content string, n int64) string {
+	start := max(len(content)-int(n), 0)
+	for start < len(content) && !utf8.RuneStart(content[start]) {
+		start++
+	}
+	return content[start:]
+}
+
+func previewForStructured(content string, preview int64, spilled bool) string {
 	if !spilled {
 		return content
 	}
-	if int64(len(content)) <= cfg.PreviewBytesPerStream {
-		return content
-	}
-	return content[len(content)-int(cfg.PreviewBytesPerStream):]
+	return streamTail(content, preview)
 }
 
 var readCommandOutputSchema = json.RawMessage(fmt.Sprintf(`{

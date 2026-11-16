@@ -267,9 +267,10 @@ type CommandOutputRecord struct {
 	ToolUseID                  string                    `json:"toolUseId"`
 	StartedAt                  time.Time                 `json:"startedAt"`
 	CompletedAt                time.Time                 `json:"completedAt"`
-	ExitCode                   int                       `json:"exitCode"`
+	ExitCode                   *int                      `json:"exitCode"`
 	TimedOut                   bool                      `json:"timedOut,omitempty"`
 	Cancelled                  bool                      `json:"cancelled,omitempty"`
+	ExecutorError              bool                      `json:"executorError,omitempty"`
 	CaptureComplete            bool                      `json:"captureComplete"`
 	CaptureError               string                    `json:"captureError,omitempty"`
 	Stdout                     CommandOutputStreamRecord `json:"stdout"`

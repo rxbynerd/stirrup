@@ -342,22 +342,38 @@ and reports its own fixed 5-minute `Capabilities().MaxTimeout`,
 unaffected by the raised cap — see [Eval framework](#eval-framework)
 below for the resulting hooks-under-replay gap.
 
-A `run_command` timeout is a soft outcome, not a tool error: the
-handler returns whatever partial stdout/stderr the executor captured
-before the kill, plus a `TimedOut` flag and a `[timed out after Ns]`
-marker appended to the text fallback, so the model can act on partial
-output or rerun with a longer timeout. `ExitCode` is meaningless on a
-timeout (executor-dependent — `local` leaves it `0`, `container` and
-`k8s` set `-1`) since the process never ran to completion; callers
-must gate on `TimedOut` rather than reading `ExitCode` as a real exit
-status in that case.
+A `run_command` timeout is a soft outcome, not a tool error, with or
+without command-output capture: the handler returns whatever partial
+stdout/stderr the executor captured before the kill, plus a `TimedOut`
+flag and a `[timed out after Ns]` marker in the text fallback (the
+spilled rendering states `timed_out=true` instead), so the model can act
+on partial output or rerun with a longer timeout.
 
-An executor failure that is not a timeout (the sandbox container has
-gone, the exec stream cannot be opened, the shell cannot start) is a
-tool error. With command-output capture on, the text fallback ends
-with an `[executor error: <message>]` marker, the message scrubbed and
-cut to `tools.maxResultBytes`, and `ExitCode` is again not an exit
-status.
+The structured `exit_code` is `null` whenever the command did not exit
+on its own, and the text renders no `[exit code: N]` line then. Three
+flags say why: `timed_out`; `cancelled`, when the run was cancelled
+while the command ran, which is a tool error whose text ends with a
+`[cancelled: ...]` marker; and `executor_error`, when the executor or
+the output capture failed (the sandbox container has gone, the exec
+stream cannot be opened, the shell cannot start, a capture limit was
+crossed), which is a tool error and means the command may never have
+run. With capture on, an executor error's text ends with an
+`[executor error: <message>]` or `[capture/command error: <message>]`
+marker, the message scrubbed and cut to half of `tools.maxResultBytes`
+(in a spilled summary, to the room the header leaves, so the archive
+references and the label are kept). The compliance record reports the
+same outcome: `exitCode` is `null` when the command did not exit on its
+own, and `executorError` is set when the executor or the capture failed.
+Without capture, an executor error is returned as the tool error
+itself. A `null` exit code rather than a sentinel such as `-1` keeps a
+real exit status unambiguous: the executors already report `-1` for a
+killed process, and Go reports `-1` for a signalled one.
+
+Both paths keep the text within `tools.maxResultBytes`. Captured output
+stays inline only when it is within `tools.commandOutput.inlineMaxBytes`
+and its rendering also fits `tools.maxResultBytes`; otherwise the spilled
+summary is returned, its per-stream tails shrunk below
+`previewBytesPerStream` until it fits.
 
 The Engine API path was chosen deliberately: the official Docker Go
 SDK pulls in moby, containerd, and OCI specs, which conflicts with

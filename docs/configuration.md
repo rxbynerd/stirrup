@@ -1055,7 +1055,7 @@ configuration space — the common cases. Anything below requires
 | `tools.mcpServers` | Remote MCP server registration. |
 | `tools.controlPlane` | Control-plane-fulfilled tools (gRPC transport only). See [Control-plane tools](#control-plane-tools). |
 | `tools.commandOutput` | Full-stream command capture limits and model preview thresholds. |
-| `tools.maxResultBytes` | Upper bound on the model-visible text of one tool result: default 100 KiB, accepted range 1 KiB to 1 MiB. Longer results are cut to their head with a marker naming the original size. `run_command` and `read_command_output` bound their own output and are exempt. |
+| `tools.maxResultBytes` | Upper bound on the model-visible text of one tool result: default 100 KiB, accepted range 1 KiB to 1 MiB. Longer results are cut to their head with a marker naming the original size. `run_command` and `read_command_output` keep their output within this limit themselves, without the head cut. |
 | `traceEmitter.archive` | Explicit local or GCS destination for compressed command-output sidecars. |
 
 The CLI flags for each of these set the *type* selection only.
@@ -1682,8 +1682,11 @@ them; another provider drops them.
 
 `run_command` streams complete stdout and stderr into a run-scoped secure
 store. Output up to `tools.commandOutput.inlineMaxBytes` remains inline after
-secret scrubbing. Larger output returns scrubbed tails plus opaque
-`stirrup://command-output/...` references; the read-only
+secret scrubbing, provided its rendering also fits `tools.maxResultBytes`.
+Larger output returns scrubbed tails, up to `previewBytesPerStream` per
+stream and shrunk as needed to keep the result within
+`tools.maxResultBytes`, plus opaque `stirrup://command-output/...`
+references; the read-only
 `read_command_output` tool reads those references in 32 KiB pages
 (128 KiB maximum per call).
 

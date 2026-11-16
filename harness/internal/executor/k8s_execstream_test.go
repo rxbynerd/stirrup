@@ -192,7 +192,7 @@ func TestPodExecCore_ExecStream_CaptureLimitCancelsAndKillsGroup(t *testing.T) {
 	check.Equal(-1, result.ExitCode, "exit code of a cancelled command")
 	assertKillFollowedRun(t, execCommands(urls))
 
-	captured, err := capture.Complete(commandoutput.Completion{ExitCode: result.ExitCode})
+	captured, err := capture.Complete(commandoutput.Completion{Cancelled: true})
 	must.ErrorIs(err, commandoutput.ErrCaptureLimit, "Complete reports the breach")
 	check.False(captured.Record.CaptureComplete, "capture completeness")
 	check.Equal(int64(8192), captured.Record.Stdout.RawBytes, "bytes accepted before the breach")
@@ -285,7 +285,7 @@ func assertCommandOutputSpill(t *testing.T, ctx context.Context, exec StreamingE
 	result, err := exec.ExecStream(execCtx, spillCommand, 60*time.Second, capture.Stdout(), capture.Stderr())
 	must.NoError(err, "ExecStream")
 	must.Equal(0, result.ExitCode, "exit code")
-	captured, err := capture.Complete(commandoutput.Completion{ExitCode: result.ExitCode})
+	captured, err := capture.Complete(commandoutput.Completion{Cancelled: true})
 	must.NoError(err, "capture.Complete")
 
 	record := captured.Record
