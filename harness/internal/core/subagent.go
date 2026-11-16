@@ -221,6 +221,7 @@ func prepareSubAgent(ctx context.Context, parent *AgenticLoop, parentConfig *typ
 	childConfig.GitStrategy = types.GitStrategyConfig{Type: "none"}
 	childConfig.OutputSchema = nil
 	childConfig.Tools.BuiltIn = builtIns
+	childConfig.Tools.NoBuiltIn = len(builtIns) == 0
 	childConfig.ContextStrategy = types.ContextStrategyConfig{Type: "sliding-window", MaxTokens: parentConfig.ContextStrategy.MaxTokens}
 	if readOnly {
 		childConfig.PermissionPolicy = readOnlyChildPermissionPolicy(parentConfig.PermissionPolicy)

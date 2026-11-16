@@ -636,7 +636,7 @@ func applyModeDefaults(cfg *types.RunConfig) {
 		// modes; the default is executor-aware because executor.type="none"
 		// has no filesystem/shell capability at all (see
 		// DefaultReadOnlyBuiltInToolsForExecutor's doc comment).
-		if len(cfg.Tools.BuiltIn) == 0 {
+		if len(cfg.Tools.BuiltIn) == 0 && !cfg.Tools.NoBuiltIn {
 			cfg.Tools.BuiltIn = types.DefaultReadOnlyBuiltInToolsForExecutor(cfg.Executor.Type)
 		}
 		return
@@ -1001,6 +1001,9 @@ func applyOverrides(cmd *cobra.Command, cfg *types.RunConfig, args []string) err
 	}
 	if changed("tools-profile") {
 		cfg.Tools.Profile, _ = f.GetString("tools-profile")
+	}
+	if changed("no-builtin-tools") {
+		cfg.Tools.NoBuiltIn, _ = f.GetBool("no-builtin-tools")
 	}
 	if changed("protected-write-target") {
 		cfg.Tools.ProtectedWriteTargets, _ = f.GetStringArray("protected-write-target")

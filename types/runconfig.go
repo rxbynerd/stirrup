@@ -1535,7 +1535,12 @@ func (c *ResultSinkConfig) ResolvedMaxFinalAssistantTextBytes() int {
 
 // ToolsConfig holds the tool configuration.
 type ToolsConfig struct {
-	BuiltIn    []string          `json:"builtIn,omitempty"`    // which built-in tools to enable
+	BuiltIn []string `json:"builtIn,omitempty"` // which built-in tools to enable; empty enables all unless NoBuiltIn is set
+	// NoBuiltIn registers no built-in tool. It is the only way to express
+	// an empty built-in set: an empty BuiltIn means "all", and neither JSON
+	// omitempty nor a proto3 repeated field keeps an empty list distinct
+	// from an absent one. MCPServers and ControlPlane tools still register.
+	NoBuiltIn  bool              `json:"noBuiltIn,omitempty"`
 	MCPServers []MCPServerConfig `json:"mcpServers,omitempty"` // MCP server connections
 	// Profile selects a model-facing presentation for the registered
 	// tools — only the names/descriptions on the wire, not internal
@@ -2814,7 +2819,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateProviderConfigs(config, retryDefaulted, &errs)
 	validateReplayAuxiliaryCalls(config, &errs)
 	validateAPIKeyRefs(config, &errs)
-	validateBuiltInTools(config.Tools.BuiltIn, &errs)
+	validateBuiltInTools(config.Tools, &errs)
 	validateNoneExecutorTools(config.Executor.Type, config.Tools.BuiltIn, &errs)
 	validateMCPServers(config.Tools.MCPServers, &errs)
 	validateControlPlaneTools(config, &errs)
@@ -2858,9 +2863,9 @@ func ValidateRunConfig(config *RunConfig) error {
 	// creation); a pre-run hook that clones a repo is exactly what a
 	// planning run needs to have something to read.
 	if readOnlyModes[config.Mode] {
-		if len(config.Tools.BuiltIn) == 0 {
+		if len(config.Tools.BuiltIn) == 0 && !config.Tools.NoBuiltIn {
 			errs = append(errs, fmt.Sprintf(
-				"read-only mode %q requires an explicit tools.builtIn list that excludes write tools (write_file, run_command, edit_file, search_replace, apply_diff)",
+				"read-only mode %q requires an explicit tools.builtIn list that excludes write tools (write_file, run_command, edit_file, search_replace, apply_diff), or tools.noBuiltIn: true for a run with no built-in tools",
 				config.Mode))
 		} else {
 			for _, tool := range config.Tools.BuiltIn {
@@ -3442,7 +3447,7 @@ func ruleOfTwoUntrustedInput(config *RunConfig) bool {
 	if len(config.DynamicContext) > 0 {
 		return true
 	}
-	if isToolEnabled(config.Tools.BuiltIn, "web_fetch") {
+	if config.Tools.BuiltInEnabled("web_fetch") {
 		return true
 	}
 	if len(config.Tools.MCPServers) > 0 {
@@ -3496,10 +3501,10 @@ func ruleOfTwoSensitiveData(config *RunConfig) bool {
 // every tool call payload; non-"none" network configs let the
 // container reach the internet.
 func ruleOfTwoExternalComm(config *RunConfig) bool {
-	if isToolEnabled(config.Tools.BuiltIn, "run_command") {
+	if config.Tools.BuiltInEnabled("run_command") {
 		return true
 	}
-	if isToolEnabled(config.Tools.BuiltIn, "web_fetch") {
+	if config.Tools.BuiltInEnabled("web_fetch") {
 		return true
 	}
 	if len(config.Tools.MCPServers) > 0 {
@@ -3511,21 +3516,15 @@ func ruleOfTwoExternalComm(config *RunConfig) bool {
 	return false
 }
 
-// isToolEnabled mirrors the semantics used by harness/internal/core
-// for resolving Tools.BuiltIn: an empty list means "all built-in tools
-// are enabled", a non-empty list is treated as an explicit allowlist.
-// Read-only modes already constrain the tool set elsewhere so this
-// just answers "would the loop expose this tool to the model".
-func isToolEnabled(enabled []string, name string) bool {
-	if len(enabled) == 0 {
-		return true
+// BuiltInEnabled reports whether the built-in tool name is selected:
+// never under NoBuiltIn, always for an empty BuiltIn, otherwise when
+// BuiltIn lists it. Whether the tool registers also depends on the
+// executor's capabilities.
+func (t ToolsConfig) BuiltInEnabled(name string) bool {
+	if t.NoBuiltIn {
+		return false
 	}
-	for _, candidate := range enabled {
-		if candidate == name {
-			return true
-		}
-	}
-	return false
+	return len(t.BuiltIn) == 0 || slices.Contains(t.BuiltIn, name)
 }
 
 // providerRetryDefaulted records which ProviderRetryConfig fields were
@@ -4252,11 +4251,15 @@ func validateCorrelationURL(raw string, errs *[]string) {
 	}
 }
 
-func validateBuiltInTools(builtIns []string, errs *[]string) {
-	for _, name := range builtIns {
+func validateBuiltInTools(tools ToolsConfig, errs *[]string) {
+	for _, name := range tools.BuiltIn {
 		if !validBuiltInToolNames[name] {
 			*errs = append(*errs, fmt.Sprintf("tools.builtIn contains unsupported tool %q", name))
 		}
+	}
+	if tools.NoBuiltIn && len(tools.BuiltIn) > 0 {
+		*errs = append(*errs, fmt.Sprintf(
+			"tools.noBuiltIn registers no built-in tool, but tools.builtIn lists %d; set one or the other", len(tools.BuiltIn)))
 	}
 }
 

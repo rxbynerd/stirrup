@@ -25,6 +25,7 @@ func TestConfigFieldPaths_ListsKnownPaths(t *testing.T) {
 		"dynamicContext.*.value",
 		"tools.lazyLoading",
 		"tools.lazyLoading.eager",
+		"tools.noBuiltIn",
 		"tools.mcpServers.allowedMcpHosts",
 		"outputSchema",
 		"guardRail.stages.type",

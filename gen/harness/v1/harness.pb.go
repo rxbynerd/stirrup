@@ -6393,7 +6393,7 @@ type ToolsConfig struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Optional. List of built-in tools to enable. When omitted, all built-in
 	// tools are enabled (except in read-only modes, which require an explicit
-	// list excluding write tools).
+	// list excluding write tools, or no_built_in).
 	//
 	// Valid built-in tool names:
 	//
@@ -6417,7 +6417,17 @@ type ToolsConfig struct {
 	//	"git_changed_files"   — changed paths with their name-status letter.
 	//	"git_diff"            — unified diff of the working tree or index.
 	//	"git_show"            — a git revision, or a file at that revision.
+	//
+	// An empty list cannot express "no built-in tools"; set no_built_in.
 	BuiltIn []string `protobuf:"bytes,1,rep,name=built_in,json=builtIn,proto3" json:"built_in,omitempty"`
+	// Optional. Registers no built-in tool, for a tool-less run such as a
+	// structured-output classification. Satisfies the read-only modes'
+	// requirement for an explicit tool choice. Rejected together with a
+	// non-empty built_in. mcp_servers and control_plane tools still
+	// register when set. A harness that predates this field drops it, so
+	// check for "tools.noBuiltIn" in ready.config_fields before relying on
+	// it. Mirrors RunConfig `tools.noBuiltIn`.
+	NoBuiltIn bool `protobuf:"varint,13,opt,name=no_built_in,json=noBuiltIn,proto3" json:"no_built_in,omitempty"`
 	// Optional. MCP (Model Context Protocol) server connections for remote
 	// tool discovery. Tools from MCP servers are prefixed as
 	// "mcp_{serverName}_{toolName}" to avoid naming collisions.
@@ -6511,6 +6521,13 @@ func (x *ToolsConfig) GetBuiltIn() []string {
 		return x.BuiltIn
 	}
 	return nil
+}
+
+func (x *ToolsConfig) GetNoBuiltIn() bool {
+	if x != nil {
+		return x.NoBuiltIn
+	}
+	return false
 }
 
 func (x *ToolsConfig) GetMcpServers() []*MCPServerConfig {
@@ -7512,9 +7529,10 @@ const file_harness_v1_harness_proto_rawDesc = "" +
 	"\x04type\x18\x01 \x01(\tR\x04type\x12\x1b\n" +
 	"\tfile_path\x18\x02 \x01(\tR\bfilePath\x12\x16\n" +
 	"\x06bucket\x18\x03 \x01(\tR\x06bucket\x12#\n" +
-	"\robject_prefix\x18\x04 \x01(\tR\fobjectPrefix\"\x99\x04\n" +
+	"\robject_prefix\x18\x04 \x01(\tR\fobjectPrefix\"\xb9\x04\n" +
 	"\vToolsConfig\x12\x19\n" +
-	"\bbuilt_in\x18\x01 \x03(\tR\abuiltIn\x12D\n" +
+	"\bbuilt_in\x18\x01 \x03(\tR\abuiltIn\x12\x1e\n" +
+	"\vno_built_in\x18\r \x01(\bR\tnoBuiltIn\x12D\n" +
 	"\vmcp_servers\x18\x02 \x03(\v2#.stirrup.harness.v1.MCPServerConfigR\n" +
 	"mcpServers\x12O\n" +
 	"\rcontrol_plane\x18\x03 \x03(\v2*.stirrup.harness.v1.ControlPlaneToolConfigR\fcontrolPlane\x12N\n" +

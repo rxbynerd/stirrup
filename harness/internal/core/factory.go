@@ -1472,10 +1472,10 @@ func buildVcsExecutor(ctx context.Context, cfg *types.VcsBackendConfig, secrets 
 func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.ToolsConfig, outputStore *commandoutput.Store) *tool.Registry {
 	registry := tool.NewRegistry()
 	caps := exec.Capabilities()
-	if toolEnabled(cfg.BuiltIn, "read_file") && caps.CanRead {
+	if cfg.BuiltInEnabled("read_file") && caps.CanRead {
 		registry.Register(builtins.ReadFileTool(exec))
 	}
-	if toolEnabled(cfg.BuiltIn, "list_directory") && caps.CanRead {
+	if cfg.BuiltInEnabled("list_directory") && caps.CanRead {
 		registry.Register(builtins.ListDirectoryTool(exec))
 	}
 	// Both tools dispatch on declared executor capability, not on
@@ -1487,10 +1487,10 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	// working content/name search, and an executor offering none of the
 	// three fails with a clear error rather than searching the harness
 	// host.
-	if toolEnabled(cfg.BuiltIn, "grep_files") && caps.CanRead {
+	if cfg.BuiltInEnabled("grep_files") && caps.CanRead {
 		registry.Register(builtins.GrepFilesTool(exec))
 	}
-	if toolEnabled(cfg.BuiltIn, "find_files") && caps.CanRead {
+	if cfg.BuiltInEnabled("find_files") && caps.CanRead {
 		registry.Register(builtins.FindFilesTool(exec))
 	}
 	// The four git_* tools are gated on CanRead (they're read-only) even
@@ -1498,34 +1498,34 @@ func buildToolRegistry(exec executor.Executor, es edit.EditStrategy, cfg types.T
 	// CanExec executor they still register but fail with a clear "git is
 	// not available" error rather than silently disappearing from the
 	// tool list the model was told to expect.
-	if toolEnabled(cfg.BuiltIn, "git_status") && caps.CanRead {
+	if cfg.BuiltInEnabled("git_status") && caps.CanRead {
 		registry.Register(builtins.GitStatusTool(exec))
 	}
-	if toolEnabled(cfg.BuiltIn, "git_changed_files") && caps.CanRead {
+	if cfg.BuiltInEnabled("git_changed_files") && caps.CanRead {
 		registry.Register(builtins.GitChangedFilesTool(exec))
 	}
-	if toolEnabled(cfg.BuiltIn, "git_diff") && caps.CanRead {
+	if cfg.BuiltInEnabled("git_diff") && caps.CanRead {
 		registry.Register(builtins.GitDiffTool(exec))
 	}
-	if toolEnabled(cfg.BuiltIn, "git_show") && caps.CanRead {
+	if cfg.BuiltInEnabled("git_show") && caps.CanRead {
 		registry.Register(builtins.GitShowTool(exec))
 	}
 	// read_command_output registers automatically alongside run_command: a
 	// spilled reference without its reader is incoherent, and pre-capture
 	// operator configs listing only run_command would otherwise strand refs.
 	// Naming it in builtIn is only needed for the standalone replay case.
-	if toolEnabled(cfg.BuiltIn, "run_command") && caps.CanExec {
+	if cfg.BuiltInEnabled("run_command") && caps.CanExec {
 		registry.Register(builtins.RunCommandToolWithStore(exec, outputStore, cfg.EffectiveCommandOutput(), cfg.EffectiveMaxResultBytes()))
 		if outputStore != nil {
 			registry.Register(builtins.ReadCommandOutputTool(outputStore, exec, cfg.EffectiveMaxResultBytes()))
 		}
-	} else if toolEnabled(cfg.BuiltIn, "read_command_output") && outputStore != nil {
+	} else if cfg.BuiltInEnabled("read_command_output") && outputStore != nil {
 		registry.Register(builtins.ReadCommandOutputTool(outputStore, exec, cfg.EffectiveMaxResultBytes()))
 	}
-	if toolEnabled(cfg.BuiltIn, "web_fetch") {
+	if cfg.BuiltInEnabled("web_fetch") {
 		registry.Register(builtins.WebFetchTool())
 	}
-	if editToolEnabled(cfg.BuiltIn, es.ToolDefinition().Name) && caps.CanWrite {
+	if editToolEnabled(cfg, es.ToolDefinition().Name) && caps.CanWrite {
 		registry.Register(editStrategyTool(es, exec))
 	}
 	for _, ct := range cfg.ControlPlane {
@@ -1546,13 +1546,13 @@ var _ CommandOutputFinalizer = (*commandoutput.Store)(nil)
 // store: capture is on and a registered tool could feed it.
 func commandOutputStoreWanted(cfg types.ToolsConfig) bool {
 	return cfg.CommandOutputCaptureEnabled() &&
-		(toolEnabled(cfg.BuiltIn, "run_command") || toolEnabled(cfg.BuiltIn, "read_command_output"))
+		(cfg.BuiltInEnabled("run_command") || cfg.BuiltInEnabled("read_command_output"))
 }
 
 // registerSpawnAgent registers spawn_agent when the run's built-in tools
 // enable it and reports whether it did.
 func registerSpawnAgent(registry *tool.Registry, cfg types.ToolsConfig, spawner builtins.SubAgentSpawner) bool {
-	if !toolEnabled(cfg.BuiltIn, "spawn_agent") {
+	if !cfg.BuiltInEnabled("spawn_agent") {
 		return false
 	}
 	registry.Register(builtins.SpawnAgentTool(spawner))
@@ -1608,29 +1608,21 @@ func buildCommandOutputStore(ctx context.Context, config *types.RunConfig) (*com
 	})
 }
 
-func toolEnabled(enabled []string, name string) bool {
-	if len(enabled) == 0 {
-		return true
-	}
-	for _, candidate := range enabled {
-		if candidate == name {
-			return true
-		}
-	}
-	return false
+var editToolAliases = map[string]bool{
+	"write_file":     true,
+	"search_replace": true,
+	"apply_diff":     true,
 }
 
-func editToolEnabled(enabled []string, actualName string) bool {
-	if len(enabled) == 0 {
+func editToolEnabled(cfg types.ToolsConfig, actualName string) bool {
+	if cfg.BuiltInEnabled(actualName) {
 		return true
 	}
-	editAliases := map[string]bool{
-		"write_file":     true,
-		"search_replace": true,
-		"apply_diff":     true,
+	if cfg.NoBuiltIn {
+		return false
 	}
-	for _, candidate := range enabled {
-		if candidate == actualName || editAliases[candidate] {
+	for _, candidate := range cfg.BuiltIn {
+		if editToolAliases[candidate] {
 			return true
 		}
 	}

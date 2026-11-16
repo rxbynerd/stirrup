@@ -1288,3 +1288,36 @@ suite "s" {
 	must.Equal("not-a-profile", got.RunConfig.Provider.EndpointProfile)
 	must.Equal("not-a-compat", got.RunConfig.Provider.CompatProfile)
 }
+
+func TestLoadSuiteHCL_ToolsNoBuiltIn(t *testing.T) {
+	must := require.New(t)
+	src := `
+suite "s" {
+  run_config {
+    mode = "research"
+
+    provider {
+      type        = "anthropic"
+      api_key_ref = "secret://ANTHROPIC_KEY"
+    }
+
+    tools {
+      no_built_in = true
+    }
+  }
+
+  task "t1" {
+    mode   = "research"
+    prompt = "p"
+    judge {
+      type    = "test-command"
+      command = "true"
+    }
+  }
+}
+`
+	got, err := LoadSuiteHCL(writeTemp(t, "runcfg-no-built-in.hcl", src))
+	must.NoError(err)
+	must.NotNil(got.RunConfig)
+	must.Equal(types.ToolsConfig{NoBuiltIn: true}, got.RunConfig.Tools)
+}
