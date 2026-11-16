@@ -2860,6 +2860,7 @@ func ValidateRunConfig(config *RunConfig) error {
 	validateExecutorRuntime(config.Executor, &errs)
 	validateK8sExecutor(config.Executor, &errs)
 	validateNoneExecutor(config.Executor, &errs)
+	validateUnsandboxedExecutor(config.Executor, &errs)
 	validateVcsBackend(config.Executor.VcsBackend, &errs)
 	errs = append(errs, ResourceLimitErrors(config.Executor.Resources)...)
 	errs = append(errs, ScratchLimitErrors(config.Executor.Type, config.Executor.Resources)...)
@@ -6829,6 +6830,32 @@ func validateNoneExecutor(cfg ExecutorConfig, errs *[]string) {
 	reject("k8sNodeSelector", len(cfg.K8sNodeSelector) != 0)
 	reject("k8sServiceAccount", cfg.K8sServiceAccount != "")
 	reject("k8sEgressProxyUrl", cfg.K8sEgressProxyURL != "")
+}
+
+// validateUnsandboxedExecutor rejects the sandbox fields (image, network,
+// resources) for the executors that run no sandbox: "local" (also the
+// default for an empty type) and "api". buildExecutor ignores all three
+// for these types, so accepting them would let `--network-mode none`
+// read as egress denial while the executor isolates nothing. "none" is
+// policed by validateNoneExecutor.
+func validateUnsandboxedExecutor(cfg ExecutorConfig, errs *[]string) {
+	execType := cfg.Type
+	switch execType {
+	case "":
+		execType = "local"
+	case "local", "api":
+	default:
+		return
+	}
+	reject := func(field string, set bool) {
+		if set {
+			*errs = append(*errs, fmt.Sprintf(
+				"executor.%s is not valid for executor.type=%q (this executor runs no sandbox, so the setting would be ignored; use executor.type=\"container\", \"k8s\" or \"k8s-sandbox\")", field, execType))
+		}
+	}
+	reject("image", cfg.Image != "")
+	reject("network", cfg.Network != nil)
+	reject("resources", cfg.Resources != nil)
 }
 
 // validateGitStrategyExecutorCompat rejects gitStrategy.type="deterministic"

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -34,7 +35,7 @@ func TestApplyOverrides_ExecutorSandboxFlags(t *testing.T) {
 	check.Equal("none", cfg.Executor.Network.Mode)
 }
 
-func TestApplyOverrides_ExecutorSandboxFlagsUnsetKeepFile(t *testing.T) {
+func TestApplyOverrides_ExecutorSandboxFlags_UnsetKeepFile(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
 	cmd := newTestHarnessCommand()
@@ -51,7 +52,7 @@ func TestApplyOverrides_ExecutorSandboxFlagsUnsetKeepFile(t *testing.T) {
 	check.Equal(&types.NetworkConfig{Mode: "allowlist", Allowlist: []string{"example.com:443"}}, cfg.Executor.Network)
 }
 
-func TestApplyOverrides_ExecutorSandboxFlagsMergeIntoFile(t *testing.T) {
+func TestApplyOverrides_ExecutorSandboxFlags_MergeIntoFile(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
 	cmd := newTestHarnessCommand()
@@ -68,7 +69,7 @@ func TestApplyOverrides_ExecutorSandboxFlagsMergeIntoFile(t *testing.T) {
 		"only the mode changes; the allowlist entries survive")
 }
 
-func TestApplyOverrides_ExecutorSandboxFlagsExplicitZeroClearsLimit(t *testing.T) {
+func TestApplyOverrides_ExecutorSandboxFlags_ExplicitZeroClearsLimit(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)
 	cmd := newTestHarnessCommand()
@@ -81,7 +82,72 @@ func TestApplyOverrides_ExecutorSandboxFlagsExplicitZeroClearsLimit(t *testing.T
 	check.Equal(&types.ResourceLimits{MemoryMB: 4096}, cfg.Executor.Resources)
 }
 
-func TestApplyOverrides_NetworkModeRejectsUnknownValue(t *testing.T) {
+func TestApplyOverrides_ExecutorSandboxFlags_ExplicitZeroClearsMemoryAndDisk(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	cmd := newTestHarnessCommand()
+	must.NoError(cmd.ParseFlags([]string{"--memory-mb", "0", "--disk-mb", "0"}))
+	cfg := baseFileConfig()
+	cfg.Executor.Resources = &types.ResourceLimits{CPUs: 2, MemoryMB: 4096, DiskMB: 20480}
+
+	must.NoError(applyOverrides(cmd, cfg, nil))
+
+	check.Equal(&types.ResourceLimits{CPUs: 2}, cfg.Executor.Resources)
+}
+
+// resolveExecutorFlags resolves a minimal read-only config file together
+// with args through the shared builder, the path both `harness` and
+// `run-config` take, so the executor validation runs on the flag result.
+func resolveExecutorFlags(t *testing.T, args ...string) (*types.RunConfig, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "config.json")
+	writeFile(t, path, `{"runId":"r","mode":"planning","prompt":"do a thing",`+
+		`"maxTurns":10,"timeout":600,`+
+		`"permissionPolicy":{"type":"deny-side-effects"},`+
+		`"provider":{"type":"anthropic","apiKeyRef":"secret://ANTHROPIC_API_KEY"},`+
+		`"modelRouter":{"type":"static","provider":"anthropic","model":"claude-x"}}`)
+	cmd := newTestHarnessCommand()
+	must := require.New(t)
+	must.NoError(cmd.ParseFlags(args))
+	return BuildRunConfig(RunConfigSources{ConfigPath: path, Cmd: cmd, Resolve: ResolveAll})
+}
+
+func TestBuildRunConfig_SandboxFlags_RejectedOnUnsandboxedExecutor(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		field string
+	}{
+		{name: "network mode on the default executor", args: []string{"--network-mode", "none"}, field: "network"},
+		{name: "image on local", args: []string{"--executor", "local", "--image", "img"}, field: "image"},
+		{name: "cpus on local", args: []string{"--executor", "local", "--cpus", "1"}, field: "resources"},
+		{name: "memory on local", args: []string{"--executor", "local", "--memory-mb", "512"}, field: "resources"},
+		{name: "disk on local", args: []string{"--executor", "local", "--disk-mb", "512"}, field: "resources"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+
+			_, err := resolveExecutorFlags(t, tc.args...)
+
+			must.ErrorContains(err, "executor."+tc.field+" is not valid for executor.type=\"local\"")
+			must.Equal(exitValidation, classifyExitCode(err), "err=%v", err)
+		})
+	}
+}
+
+func TestBuildRunConfig_SandboxFlags_AcceptedOnContainerExecutor(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+
+	cfg, err := resolveExecutorFlags(t, "--executor", "container", "--image", "img",
+		"--network-mode", "none", "--cpus", "1", "--memory-mb", "512")
+
+	must.NoError(err)
+	check.Equal("none", cfg.Executor.Network.Mode)
+	check.Equal(512, cfg.Executor.Resources.MemoryMB)
+}
+
+func TestApplyOverrides_NetworkMode_RejectsUnknownValue(t *testing.T) {
 	must := require.New(t)
 	cmd := newTestHarnessCommand()
 	must.NoError(cmd.ParseFlags([]string{"--network-mode", "bridge"}))
@@ -91,7 +157,7 @@ func TestApplyOverrides_NetworkModeRejectsUnknownValue(t *testing.T) {
 	must.ErrorContains(err, `--network-mode: invalid value "bridge" (expected one of: allowlist, none)`)
 }
 
-func TestFlagCompletion_ContainerRuntimeFollowsExecutor(t *testing.T) {
+func TestFlagCompletion_ContainerRuntime_FollowsExecutor(t *testing.T) {
 	for _, tc := range []struct {
 		executor string
 		want     []string
