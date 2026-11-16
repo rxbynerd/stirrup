@@ -1240,8 +1240,11 @@ The control plane must:
    with a signed JWT in `sandbox_token_response.token` within 60 s — or
    refuse explicitly with `is_error: true`. Silence on the first
    request aborts the run fail-closed; on the pre-delivery request it
-   aborts construction and tears the sandbox down; on a refresh it
-   stops refreshing and surfaces a `warning` event.
+   aborts construction and tears the sandbox down; on a refresh the
+   harness retries after half the current token's remaining lifetime
+   while the request budget lasts, and surfaces a `warning` event if
+   the token expires first. A refusal on a refresh stops refreshing
+   with a `warning`.
 2. Derive the run's identity from the stream, never from the
    request body; validate `audience` against its own allowlist
    before minting.

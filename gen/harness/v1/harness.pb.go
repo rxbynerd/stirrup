@@ -230,8 +230,10 @@ const (
 //	  the matching sandbox_token_response under a fail-closed 60s timeout;
 //	  on the first request a timeout aborts the run before any sandbox is
 //	  created; on the pre-delivery request it aborts construction and tears
-//	  the sandbox down; on a refresh it stops refreshing and emits a
-//	  "warning".
+//	  the sandbox down; on a refresh it retries after half the current
+//	  token's remaining lifetime while the eight-request budget lasts, and
+//	  emits a "warning" if the token expires first, or if the budget runs
+//	  out while the token would expire before the run ends.
 type HarnessEvent struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. The event type discriminator.

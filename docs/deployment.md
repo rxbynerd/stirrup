@@ -382,9 +382,12 @@ took the first token past its refresh point, one more request precedes
 the first delivery of the token file; a late or missing response, an
 explicit `is_error`, or a fresh token that has already expired aborts
 construction, the harness tears the sandbox down, and the run ends the
-same way. For a refresh after delivery the same outcomes — and an
-explicit `is_error` — stop refreshing and emit a `warning` event naming
-the expiry of the token still in the sandbox; the run itself continues.
+same way. For a refresh after delivery, a late or missing response is
+retried after half the current token's remaining lifetime while the
+eight-request budget lasts. An explicit `is_error`, an invalid token,
+or a token that expires before a retry succeeds stops refreshing and
+emits a `warning` event naming the expiry of the token still in the
+sandbox; the run itself continues.
 
 **Token lifetime.** Haybale recommends an `exp` of 15 minutes or
 less, and the harness decouples that lifetime from the run's
