@@ -126,8 +126,8 @@ their `--config`. In this mode polling executes within the harness
 process itself rather than via the control plane — there is no
 control plane to amortise across, so every run holds its own
 connection open for the duration of its batch. The harness-side polling client is
-experimental in v1 and ships only for the Anthropic provider; OpenAI
-support lands in phase 6 (issue #139), and Bedrock is deferred (see
+experimental in v1. Its dispatch covers the `anthropic`, `openai-compatible`
+and `openai-responses` provider types; Bedrock is deferred (see
 below).
 
 `ValidateRunConfig` rejects the mismatches:
