@@ -83,7 +83,7 @@ check_release() {
 
   for image in "${IMAGES[@]}"; do
     found=false
-    while IFS= read -r line; do
+    while IFS= read -r line <&3; do
       ref=${line%@*}
       want=${line##*@}
       [ "$ref" = "${image}:${tag}" ] || continue
@@ -99,7 +99,7 @@ check_release() {
         --source-ref "refs/tags/${tag}" \
         --deny-self-hosted-runners >/dev/null ||
         fail "release ${tag}: no verifiable provenance attestation for ${image}@${want}"
-    done <"$dir/IMAGE_DIGESTS"
+    done 3<"$dir/IMAGE_DIGESTS"
     [ "$found" = true ] || fail "release ${tag}: IMAGE_DIGESTS has no entry for ${image}:${tag}"
   done
 }
@@ -167,11 +167,11 @@ check_commit_tags() {
 
 gh release list --repo "$REPO" --exclude-drafts --limit 1000 --json tagName --jq '.[].tagName' >"$workdir/releases" ||
   fail "could not list releases"
-while IFS= read -r tag; do
+while IFS= read -r tag <&3; do
   if [[ "$tag" =~ $SEMVER_TAG ]]; then
     check_release "$tag"
   fi
-done <"$workdir/releases"
+done 3<"$workdir/releases"
 
 for image in "${IMAGES[@]}"; do
   check_commit_tags "$image"
