@@ -1,6 +1,6 @@
-## Batch provider mode
+# Batch provider mode
 
-### What it is
+## What it is
 
 Async batch submission routes every provider turn through the
 provider's batch endpoint (Anthropic
@@ -16,7 +16,7 @@ into an async turn that can take anywhere from a few seconds to the
 run's whole wall-clock budget, in exchange for a ~50% discount on
 input and output tokens.
 
-### The wait budget
+## The wait budget
 
 `ValidateRunConfig` caps every run's `timeout` at 3600 seconds, and
 both entry points bind the run context to it: `stirrup harness`
@@ -38,7 +38,7 @@ A provider batch that has not resolved within the run's `timeout` is
 therefore abandoned. Batch mode suits work the provider typically turns
 around in minutes, not work that relies on the 24-hour SLA tail.
 
-#### `fallbackOnTimeout` needs real headroom
+### `fallbackOnTimeout` needs real headroom
 
 `fallbackOnTimeout` retries a turn against the streaming endpoint when
 the harness-side cap fires. It can only do that if the cap fires
@@ -49,7 +49,7 @@ least one round trip), so the run deadline is always the earlier of the
 two. `ValidateRunConfig` rejects the combination rather than accepting a
 flag that provably cannot fire:
 
-```
+```text
 batch.fallbackOnTimeout requires batch.maxWaitSeconds strictly below
 the run timeout, got maxWaitSeconds=3600 and timeout=3600: …
 ```
@@ -72,7 +72,7 @@ N-turn run, size it so that
 pick that number generically, which is why it asks rather than reserving
 a slice of the budget itself.
 
-### When to use it
+## When to use it
 
 Batch mode targets non-interactive runs where wall-clock latency does
 not matter and operators want the discount: large research crawls,
@@ -91,7 +91,7 @@ enforces the safe-by-default posture:
 - **`research`** and **`toil`** are accepted unconditionally — they
   are the modes the feature was built for.
 
-### How to enable
+## How to enable
 
 The CLI flag is the recommended path:
 
@@ -113,7 +113,7 @@ passing `--batch` on top of a file that sets
 `harnessSidePolling=true` flips `enabled` on while preserving the
 file's polling setting.
 
-### Transport requirements
+## Transport requirements
 
 The recommended path is `transport=grpc`. The control plane bundles
 concurrent runs into a single provider-side batch, amortising the
@@ -137,7 +137,7 @@ below).
 - `cancelBundleOnRunCancel=true` with `transport=stdio` is rejected
   — there is no bundle to cancel.
 
-### The `batch_result` outcome contract
+## The `batch_result` outcome contract
 
 On the gRPC path the control plane completes each `batch_submission`
 with a `batch_result` ControlEvent. Its `content` is the canonical
@@ -162,7 +162,7 @@ what arrived:
 Wire-level detail for control-plane implementers:
 [`integration-guide.md`](integration-guide.md#batch-mode-amortised-token-pricing).
 
-### Cost and budget caveats
+## Cost and budget caveats
 
 Two operator-visible gaps follow from the wait window:
 
@@ -195,7 +195,7 @@ confirm their `CredentialsCache` TTL covers the full `MaxWaitSeconds`
 window — a refresh that fires mid-wait can leave the harness holding
 stale credentials when the batch completes.
 
-### `MaxTurns` × `MaxWaitSeconds` warning
+## `MaxTurns` × `MaxWaitSeconds` warning
 
 The default `MaxTurns` cap is 20, so the nominal worst case is
 `maxTurns × maxWaitSeconds`. The run's `Timeout` bounds that: it is
@@ -214,7 +214,7 @@ intends to complete several turns should divide the budget
 deliberately — for example `maxTurns: 5` and `maxWaitSeconds: 700`
 against a `timeout` of 3600.
 
-### Cancellation
+## Cancellation
 
 Mid-batch run cancellation behaves differently per transport:
 
@@ -232,7 +232,7 @@ Mid-batch run cancellation behaves differently per transport:
   cancel does not block the run's exit. This path lands in phase 4
   (issue #137).
 
-### Results-URL credential guard
+## Results-URL credential guard
 
 The harness-side Anthropic polling client fetches the batch's
 JSONL results from a `results_url` the API returns on the polled
@@ -249,7 +249,7 @@ case a `results_url` sharing the same loopback host is accepted, so
 the check does not require the test server to mint URLs on
 `*.anthropic.com`.
 
-### Bedrock
+## Bedrock
 
 Bedrock batch via `CreateModelInvocationJob` is **out of scope in
 v1**. The wire shape and capability surface diverge from the

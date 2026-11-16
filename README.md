@@ -7,6 +7,9 @@ Stirrup is an operator-owned coding worker. The operator chooses the
 model provider, the execution environment, the permission policy,
 and the control plane. Each run leaves inspectable evidence.
 
+The [documentation index](docs/index.md) lists every page in a
+suggested reading order.
+
 Stirrup is designed and built from the ground up with the following tenets in mind:
 
 - **Production-grade safety** provided by [a comprehensive set of rings](docs/safety-rings.md), designed to provide defence-in-depth security.
@@ -142,30 +145,18 @@ See [`.github/workflows/smoke-anthropic.yml`](.github/workflows/smoke-anthropic.
 
 ## Documentation
 
-| Topic | Doc |
+The [documentation index](docs/index.md) lists every page, grouped by
+what the reader is doing, with a suggested reading order. The main
+entry points in each group:
+
+| Group | Start with |
 |---|---|
-| Integrating stirrup as a workload runner (control planes, gRPC contract, cookbook) | [`docs/integration-guide.md`](docs/integration-guide.md) |
-| Component model, agentic loop, deep dives | [`docs/architecture.md`](docs/architecture.md) |
-| CLI flags, `RunConfig` precedence, examples | [`docs/configuration.md`](docs/configuration.md) |
-| Production deployment via `stirrup job` (K8s, gRPC) | [`docs/deployment.md`](docs/deployment.md) |
-| Kubernetes executor (Pod-per-run sandbox) | [`docs/executors/k8s.md`](docs/executors/k8s.md) |
-| Kubernetes Agent Sandbox executor (`k8s-sandbox`) | [`docs/executors/k8s-agent-sandbox.md`](docs/executors/k8s-agent-sandbox.md) |
-| Running stirrup as a Google Cloud Run job | [`docs/cloud-run-jobs.md`](docs/cloud-run-jobs.md) |
-| Five safety rings (operator guide) | [`docs/safety-rings.md`](docs/safety-rings.md) |
-| In-harness security foundations | [`docs/security.md`](docs/security.md) |
-| LLM-based safety classifier (`GuardRail`) | [`docs/guardrails.md`](docs/guardrails.md) |
-| Eval framework (`stirrup-eval`) | [`docs/eval.md`](docs/eval.md) |
-| Provider adapters | [`docs/providers.md`](docs/providers.md) |
-| Batch mode | [`docs/batch.md`](docs/batch.md) |
-| Cross-cloud credential federation | [`docs/credential-federation.md`](docs/credential-federation.md) |
-| Anthropic Workload Identity Federation | [`docs/anthropic-wif.md`](docs/anthropic-wif.md) |
-| Azure Workload Identity Federation | [`docs/azure-workload-identity.md`](docs/azure-workload-identity.md) |
-| OpenAI Workload Identity Federation | [`docs/openai-wif.md`](docs/openai-wif.md) |
-| Cloud observability backends (Grafana, Langfuse, Phoenix, CloudWatch, Datadog) and platform profiles | [`docs/observability-cloud.md`](docs/observability-cloud.md) |
-| Project philosophy | [`docs/philosophy.md`](docs/philosophy.md) |
-| Per-package layout (orientation for AI agents) | [`AGENTS.md`](AGENTS.md) |
-| Build, test, lint, commit conventions | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
-| Security disclosure policy | [`SECURITY.md`](SECURITY.md) |
+| Start | The quick start above; an install page for release builds is planned |
+| Concepts | [Philosophy](docs/philosophy.md), [Architecture](docs/architecture.md), [Safety rings](docs/safety-rings.md), [Guardrails](docs/guardrails.md), [Security foundations](docs/security.md) |
+| Reference | [Configuration](docs/configuration.md), [Provider adapters](docs/providers.md), [Batch provider mode](docs/batch.md), [Eval framework](docs/eval.md) |
+| Operate | [Production deployment](docs/deployment.md), [Autonomous deployment preset](docs/autonomous-preset.md), [Kubernetes executor](docs/executors/k8s.md), [Stirrup on Cloud Run jobs](docs/cloud-run-jobs.md), [Credential federation](docs/credential-federation.md), [Shipping Stirrup telemetry to a managed APM](docs/observability-cloud.md) (Grafana Cloud, Langfuse, Phoenix, CloudWatch, Datadog) |
+| Develop | [Integration guide](docs/integration-guide.md), [Contributing](CONTRIBUTING.md), [`AGENTS.md`](AGENTS.md) (a package map for AI coding agents), [Security policy](SECURITY.md) |
+| Design records | [Sessions](docs/sessions-spec-draft.md) and the Langfuse feedback worksheets, listed in the index |
 
 ## License
 

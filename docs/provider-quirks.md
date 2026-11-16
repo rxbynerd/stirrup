@@ -82,7 +82,7 @@ the same wire body as today's hand-rolled adapters.
 
 The layer lives at `harness/internal/provider/quirks/`:
 
-```
+```text
 harness/internal/provider/quirks/
     quirks.go       — ProviderQuirks, Value, ProviderBehaviourFlags,
                       OpenAIBehaviourFlags, GeminiBehaviourFlags,
@@ -102,7 +102,7 @@ harness/internal/provider/quirks/
 Compatibility profiles (operator-selected via
 `provider.compatProfile`) live in a parallel tree:
 
-```
+```text
 harness/internal/provider/compat/
     zai/
         zai.go      — CompatRules() returning the Z.ai GLM rule set
@@ -111,7 +111,7 @@ harness/internal/provider/compat/
 
 Fixture trees for the wire-shape contract tests:
 
-```
+```text
 harness/internal/provider/testdata/quirks/
     openai-compatible/<model>/{request.json, response.sse}
     openai-compatible/<deepseek-model>/{request.json, response.sse, replay.json}
@@ -525,7 +525,7 @@ each adapter's exported `Registry *quirks.Registry` field.
 `ReplayFields` lists assistant-message field paths to capture from a
 provider response. The path grammar is intentionally narrow:
 
-```
+```text
 path     := segment ( "." segment )*
 segment  := key ( "[]" )?
 key      := [A-Za-z_][A-Za-z0-9_]*
@@ -1116,7 +1116,7 @@ adapter and sits **outside** the quirks layer in the call stack. The
 quirks resolution is *inside* the concrete adapter's `Stream()`.
 The factory order is:
 
-```
+```text
 loop.Provider
   └── NormalizingAdapter          ← outermost; tool-name normalization
         └── OpenAICompatibleAdapter
@@ -1253,7 +1253,7 @@ in CI.
 Contract tests for the wire-shape rules use real captures (or
 explicitly-marked synthetics) under:
 
-```
+```text
 harness/internal/provider/testdata/quirks/<provider-type>/<model>/
     request.json   — canonical JSON body the adapter produces;
                      stored in go-sorted-key form (unmarshal →

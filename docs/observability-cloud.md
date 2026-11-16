@@ -1042,7 +1042,7 @@ correlation fields.
 A run with one tool turn, a sub-agent spawn, and a final answer
 exports this tree (kind is INTERNAL unless stated):
 
-```
+```text
 invoke_agent stirrup                       root span
 ├─ context.prepare, guard.pre_turn         per turn
 ├─ chat {model}                CLIENT      one per provider request
@@ -1684,7 +1684,7 @@ If none of those apply, ship native HTTP and skip the sidecar.
 The closed set of accepted protocol values is enforced at config-load
 time:
 
-```
+```text
 unsupported traceEmitter.protocol "http/json" (allowed: "", grpc, http/protobuf)
 ```
 
