@@ -178,15 +178,34 @@ The [admission check](k8s.md#admission-check) needs a submitted Pod and
 an admitted one. The harness does not submit the backing Pod, so the
 submitted side is the Pod template in the Sandbox's `spec.podTemplate`:
 its name (the Sandbox name), its labels and its spec. The first backing
-Pod observed takes the place of the `Create` response. It must carry a
-UID, the `gvisor` RuntimeClass, and the template's `stirrup.dev/pod` and
-`stirrup-sandbox` labels, and every later observation must keep that UID
-and those values. Labels and annotations the controller adds, such as
-`agents.x-k8s.io/sandbox-name-hash`, are not mismatches. A mismatch
-fails the wait and tears the Sandbox down. The other limits of the
-`k8s` executor's check apply: nothing else in the Pod is compared, the
-check stops once the Pod is Ready, and it runs after the controller has
-created the Pod.
+Pod observed takes the place of the `Create` response. Because a Pod
+under the Sandbox's name is not by itself evidence that the controller
+built it from that template, the check is stricter than the `k8s`
+executor's base check:
+
+- the first observation must carry a UID and a controller owner
+  reference to the Sandbox (`agents.x-k8s.io`, kind `Sandbox`, the UID
+  the readiness poll read), so the Pod is read only once the Sandbox has
+  been;
+- the `gvisor` RuntimeClass and the template's `stirrup.dev/pod` and
+  `stirrup-sandbox` labels must be unchanged;
+- the whole spec must match the template under the field rules of the
+  [whole-Pod admission check](k8s.md#whole-pod-admission-check): API
+  defaulting, scheduling and the RuntimeClass may fill in the fields
+  that table marks as platform-owned, and node selectors and tolerations
+  may gain entries, but the image, command, security contexts,
+  `automountServiceAccountToken`, `enableServiceLinks`, volumes and
+  every other compared field must be as submitted.
+
+Every later observation must keep the first one's UID, labels and spec.
+Labels and annotations the controller adds, such as
+`agents.x-k8s.io/sandbox-name-hash`, are not mismatches, and annotations
+are not compared. A mismatch fails the wait and tears the Sandbox down.
+As for the `k8s` executor, the check stops once the Pod is Ready and runs
+after the controller has created the Pod, so it cannot stop a Pod with a
+different spec from starting. A controller or admission webhook that
+changes a compared field fails every run with the field named in the
+error.
 
 ### Cold-create only
 

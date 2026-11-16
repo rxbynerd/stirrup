@@ -16,13 +16,18 @@ import (
 	metav1unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
 	utilexec "k8s.io/client-go/util/exec"
+	"k8s.io/utils/ptr"
 
 	"github.com/rxbynerd/stirrup/types"
 )
+
+// testSandboxUID is the UID the fake controller gives every Sandbox.
+const testSandboxUID k8stypes.UID = "uid-sandbox"
 
 // fakeAgentSandbox is a fake cluster for the k8s-sandbox executor: a typed
 // clientset for the NetworkPolicy and the backing Pod, and a dynamic client
@@ -60,6 +65,7 @@ func (f *fakeAgentSandbox) admitSandboxes(mutate func(obj *metav1unstructured.Un
 	f.dyn.PrependReactor("create", "sandboxes", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		obj := action.(clienttesting.CreateAction).GetObject().(*metav1unstructured.Unstructured)
 		obj.Object["status"] = map[string]any{"conditions": []any{map[string]any{"type": "Ready", "status": "True"}}}
+		obj.SetUID(testSandboxUID)
 		if mutate != nil {
 			mutate(obj)
 		}
@@ -74,8 +80,9 @@ func (f *fakeAgentSandbox) admitSandboxes(mutate func(obj *metav1unstructured.Un
 	})
 }
 
-// createBackingPod adds the Pod the Sandbox's podTemplate describes, Running
-// with the agent container Ready, then applies mutatePod.
+// createBackingPod adds the Pod the Sandbox's podTemplate describes,
+// controlled by the Sandbox and Running with the agent container Ready, then
+// applies mutatePod.
 func (f *fakeAgentSandbox) createBackingPod(sandbox *metav1unstructured.Unstructured) error {
 	raw, found, err := metav1unstructured.NestedFieldNoCopy(sandbox.Object, "spec", "podTemplate")
 	if err != nil || !found {
@@ -93,6 +100,7 @@ func (f *fakeAgentSandbox) createBackingPod(sandbox *metav1unstructured.Unstruct
 	pod.Name = sandbox.GetName()
 	pod.Namespace = sandbox.GetNamespace()
 	pod.UID = "uid-backing"
+	pod.OwnerReferences = []metav1.OwnerReference{sandboxControllerRef(sandbox.GetName(), sandbox.GetUID())}
 	pod.Status = corev1.PodStatus{
 		Phase:             corev1.PodRunning,
 		ContainerStatuses: []corev1.ContainerStatus{{Name: k8sAgentContainer, Ready: true}},
@@ -101,6 +109,18 @@ func (f *fakeAgentSandbox) createBackingPod(sandbox *metav1unstructured.Unstruct
 		f.mutatePod(pod)
 	}
 	return f.cs.Tracker().Add(pod)
+}
+
+// sandboxControllerRef is the controller reference the Agent Sandbox
+// controller sets on a backing Pod.
+func sandboxControllerRef(name string, uid k8stypes.UID) metav1.OwnerReference {
+	return metav1.OwnerReference{
+		APIVersion: sandboxGVR.GroupVersion().String(),
+		Kind:       "Sandbox",
+		Name:       name,
+		UID:        uid,
+		Controller: ptr.To(true),
+	}
 }
 
 func (f *fakeAgentSandbox) removeBackingPod(namespace, name string) {

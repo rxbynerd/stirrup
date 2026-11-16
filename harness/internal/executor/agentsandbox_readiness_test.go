@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -63,6 +64,7 @@ func sandboxIn(status, reason, message string) *metav1unstructured.Unstructured 
 	sandbox := sandboxWithConditions([]any{cond})
 	sandbox.SetName(testK8sPodName)
 	sandbox.SetNamespace(testK8sNamespace)
+	sandbox.SetUID(testSandboxUID)
 	return sandbox
 }
 
@@ -70,11 +72,12 @@ func readySandbox() *metav1unstructured.Unstructured {
 	return sandboxIn("True", "PodReady", "backing pod is ready")
 }
 
-// backingPod is the controller-created Pod for readinessTemplate: Running with
-// the agent container Ready.
+// backingPod is the controller-created Pod for readinessTemplate: controlled
+// by the Sandbox and Running with the agent container Ready.
 func backingPod(uid k8stypes.UID) *corev1.Pod {
 	pod := readyPod(uid)
-	pod.Spec.RuntimeClassName = ptr.To(gkeSandboxRuntimeValue)
+	pod.Spec = readinessTemplate().Spec
+	pod.OwnerReferences = []metav1.OwnerReference{sandboxControllerRef(testK8sPodName, testSandboxUID)}
 	return pod
 }
 
@@ -88,10 +91,8 @@ func pendingBackingPod(uid k8stypes.UID, statuses []corev1.ContainerStatus) *cor
 func (c sandboxCluster) wait(t *testing.T, timing k8sTiming) (*corev1.Pod, time.Duration, *syncBuffer, error) {
 	t.Helper()
 	logger, logs := testLogger()
-	profile, err := k8sRuntimeProfileFor(gkeSandboxRuntimeValue)
-	require.New(t).NoError(err)
 	start := time.Now()
-	pod, err := waitForSandboxReady(context.Background(), c.dyn, c.cs, readinessTemplate(), profile, timing, logger)
+	pod, err := waitForSandboxReady(context.Background(), c.dyn, c.cs, readinessTemplate(), timing, logger)
 	return pod, time.Since(start), logs, err
 }
 
@@ -148,8 +149,8 @@ func TestWaitForSandboxReady_RetriesTransientErrors(t *testing.T) {
 	_, _, _, err := c.wait(t, slowReadyTiming)
 
 	must.NoError(err)
-	must.Equal(5, *sandboxReads)
-	must.Equal(5, *podReads)
+	must.Equal(7, *sandboxReads, "two failed sandbox reads, then one per pod read")
+	must.Equal(5, *podReads, "the pod is read only once the sandbox has been")
 }
 
 func TestWaitForSandboxReady_RequiresTheSandboxReadyCondition(t *testing.T) {
@@ -311,6 +312,52 @@ func TestWaitForSandboxReady_ChecksTheFirstPodAgainstTheTemplate(t *testing.T) {
 			mutate:  func(pod *corev1.Pod) { pod.UID = "" },
 			wantErr: "metadata.uid: expected a server-assigned UID, observed none",
 		},
+		{
+			name:    "no controller reference",
+			mutate:  func(pod *corev1.Pod) { pod.OwnerReferences = nil },
+			wantErr: `metadata.ownerReferences[controller]: expected Sandbox "` + testK8sPodName + `" (UID uid-sandbox), observed none`,
+		},
+		{
+			name: "controlled by another Sandbox",
+			mutate: func(pod *corev1.Pod) {
+				pod.OwnerReferences = []metav1.OwnerReference{sandboxControllerRef(testK8sPodName, "uid-other")}
+			},
+			wantErr: `observed agents.x-k8s.io/v1alpha1 Sandbox "` + testK8sPodName + `" (UID uid-other)`,
+		},
+		{
+			name: "controlled by another kind",
+			mutate: func(pod *corev1.Pod) {
+				ref := sandboxControllerRef(testK8sPodName, testSandboxUID)
+				ref.APIVersion, ref.Kind = "apps/v1", "ReplicaSet"
+				pod.OwnerReferences = []metav1.OwnerReference{ref}
+			},
+			wantErr: `observed apps/v1 ReplicaSet "` + testK8sPodName + `" (UID uid-sandbox)`,
+		},
+		{
+			name: "foreign image and security context",
+			mutate: func(pod *corev1.Pod) {
+				pod.Spec.Containers[0].Image = "attacker.example/collector:latest"
+				pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{RunAsUser: ptr.To(int64(0)), AllowPrivilegeEscalation: ptr.To(true)}
+			},
+			wantErr: "spec.containers[agent].image",
+		},
+		{
+			name:    "service account token mounted",
+			mutate:  func(pod *corev1.Pod) { pod.Spec.AutomountServiceAccountToken = ptr.To(true) },
+			wantErr: "spec.automountServiceAccountToken",
+		},
+		{
+			name: "volume injected",
+			mutate: func(pod *corev1.Pod) {
+				pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "injected", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}})
+			},
+			wantErr: "spec.volumes",
+		},
+		{
+			name:    "service links enabled",
+			mutate:  func(pod *corev1.Pod) { pod.Spec.EnableServiceLinks = ptr.To(true) },
+			wantErr: "spec.enableServiceLinks: expected false, observed true",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -328,11 +375,17 @@ func TestWaitForSandboxReady_ChecksTheFirstPodAgainstTheTemplate(t *testing.T) {
 			must.Less(elapsed, 4*time.Second)
 		})
 	}
-	t.Run("added labels and annotations are accepted", func(t *testing.T) {
+	t.Run("controller labels, annotations and API defaulting are accepted", func(t *testing.T) {
 		must := require.New(t)
 		pod := backingPod("uid-1")
 		pod.Labels[sandboxNameHashLabel] = "1234abcd"
 		pod.Annotations = map[string]string{"controller.example/managed": "true"}
+		pod.Spec.DNSPolicy = corev1.DNSClusterFirst
+		pod.Spec.SchedulerName = corev1.DefaultSchedulerName
+		pod.Spec.NodeName = "gvisor-node-1"
+		pod.Spec.Containers[0].ImagePullPolicy = corev1.PullAlways
+		pod.Spec.Containers[0].TerminationMessagePath = corev1.TerminationMessagePathDefault
+		pod.Spec.Tolerations = append(pod.Spec.Tolerations, corev1.Toleration{Key: "node.kubernetes.io/not-ready", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoExecute, TolerationSeconds: ptr.To(int64(300))})
 		c := newSandboxCluster(t, readySandbox(), pod)
 
 		_, _, _, err := c.wait(t, fastK8sTiming)
@@ -356,6 +409,11 @@ func TestWaitForSandboxReady_ChecksLaterPodsAgainstTheFirst(t *testing.T) {
 			name:    "runtime class changed after the first observation",
 			replace: func(pod *corev1.Pod) { pod.Spec.RuntimeClassName = ptr.To("runc") },
 			wantErr: `spec.runtimeClassName: expected "gvisor", observed "runc"`,
+		},
+		{
+			name:    "image changed after the first observation",
+			replace: func(pod *corev1.Pod) { pod.Spec.Containers[0].Image = "attacker.example/collector:latest" },
+			wantErr: "spec.containers[agent].image",
 		},
 	}
 	for _, tc := range cases {

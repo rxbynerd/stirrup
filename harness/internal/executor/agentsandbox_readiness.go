@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 )
@@ -32,28 +35,28 @@ func sandboxPodTemplate(namespace, name, runID string, spec corev1.PodSpec) *cor
 type sandboxReadinessWait struct {
 	dyn       dynamic.Interface
 	template  *corev1.Pod
-	profile   k8sRuntimeProfile
 	logger    *slog.Logger
 	pod       podReadinessPoll
 	admission *podAdmission
 
 	sawSandbox bool
+	sandboxUID k8stypes.UID
 	condition  string
 	lastAPIErr error
 }
 
 // waitForSandboxReady polls the Sandbox and its backing Pod until the Sandbox
 // reports Ready and the Pod is Running with the agent container Ready. The
-// first Pod observed is checked against template as the k8s executor checks a
-// Create response, and becomes the baseline for every later observation. The
-// Pod's terminal states, a mismatch, a Pod or Sandbox that disappears after
-// being observed, a Sandbox naming another backing Pod and an RBAC denial
-// fail at once; a Pod not yet created and other API errors are waited out.
-func waitForSandboxReady(ctx context.Context, dyn dynamic.Interface, clientset kubernetes.Interface, template *corev1.Pod, profile k8sRuntimeProfile, timing k8sTiming, logger *slog.Logger) (*corev1.Pod, error) {
+// backing Pod is read only once the Sandbox has been. The first Pod observed
+// is checked against template (see newSandboxPodAdmission) and becomes the
+// baseline for every later observation. The Pod's terminal states, a
+// mismatch, a Pod or Sandbox that disappears after being observed, a Sandbox
+// naming another backing Pod and an RBAC denial fail at once; a Pod not yet
+// created and other API errors are waited out.
+func waitForSandboxReady(ctx context.Context, dyn dynamic.Interface, clientset kubernetes.Interface, template *corev1.Pod, timing k8sTiming, logger *slog.Logger) (*corev1.Pod, error) {
 	w := &sandboxReadinessWait{
 		dyn:      dyn,
 		template: template,
-		profile:  profile,
 		logger:   logger,
 		pod: podReadinessPoll{
 			clientset:     clientset,
@@ -67,7 +70,7 @@ func waitForSandboxReady(ctx context.Context, dyn dynamic.Interface, clientset k
 	attrs := []any{"namespace", template.Namespace, "sandbox", template.Name}
 	err := pollReadiness(ctx, timing, logger, attrs, w.summary, w.pod.seen.classify, func(ctx context.Context) (bool, error) {
 		sandboxIsReady, err := w.pollSandbox(ctx)
-		if err != nil {
+		if err != nil || !w.sawSandbox {
 			return false, err
 		}
 		pod, err := w.pod.poll(ctx, w.checkAdmission)
@@ -91,6 +94,7 @@ func (w *sandboxReadinessWait) pollSandbox(ctx context.Context) (bool, error) {
 	switch {
 	case err == nil:
 		w.sawSandbox = true
+		w.sandboxUID = sandbox.GetUID()
 		w.lastAPIErr = nil
 		w.condition = describeSandboxReadyCondition(sandbox)
 		// Cold-create only: an adopted (warm-pool) Sandbox's Pod name would not
@@ -115,13 +119,51 @@ func (w *sandboxReadinessWait) pollSandbox(ctx context.Context) (bool, error) {
 // then every observation with that first one.
 func (w *sandboxReadinessWait) checkAdmission(observed *corev1.Pod) error {
 	if w.admission == nil {
-		admission := newPodAdmission(w.template, observed, w.profile)
+		admission := newSandboxPodAdmission(w.template, observed, w.sandboxUID)
 		if err := admission.checkCreate(); err != nil {
 			return err
 		}
 		w.admission = &admission
 	}
 	return w.admission.checkPoll(observed)
+}
+
+// newSandboxPodAdmission is the admission contract for a backing Pod the
+// harness did not create, so a Pod under the Sandbox's name proves nothing
+// by itself. Beyond the base checks, the first observation must be
+// controlled by the Sandbox with sandboxUID, and every observation's spec
+// must match the template under the whole-Pod field rules.
+func newSandboxPodAdmission(template, first *corev1.Pod, sandboxUID k8stypes.UID) podAdmission {
+	checks := append(slices.Clone(baseAdmissionChecks), checkStrictPodSpec)
+	controlledBySandbox := func(_, observed *corev1.Pod) []admissionMismatch {
+		return checkControlledBySandbox(sandboxUID, observed)
+	}
+	return podAdmission{
+		submitted:    template,
+		admitted:     first,
+		createChecks: append(slices.Clone(checks), controlledBySandbox),
+		pollChecks:   checks,
+	}
+}
+
+// checkControlledBySandbox requires the Pod's controller reference to name
+// the Sandbox with sandboxUID.
+func checkControlledBySandbox(sandboxUID k8stypes.UID, observed *corev1.Pod) []admissionMismatch {
+	ref := metav1.GetControllerOfNoCopy(observed)
+	if ref != nil && sandboxUID != "" && ref.UID == sandboxUID && ref.Kind == "Sandbox" {
+		if gv, err := schema.ParseGroupVersion(ref.APIVersion); err == nil && gv.Group == sandboxGVR.Group {
+			return nil
+		}
+	}
+	got := "none"
+	if ref != nil {
+		got = fmt.Sprintf("%s %s %q (UID %s)", ref.APIVersion, ref.Kind, ref.Name, ref.UID)
+	}
+	return []admissionMismatch{{
+		field:    "metadata.ownerReferences[controller]",
+		expected: fmt.Sprintf("Sandbox %q (UID %s)", observed.Name, sandboxUID),
+		observed: got,
+	}}
 }
 
 // summary renders the last observation for the progress line and the timeout

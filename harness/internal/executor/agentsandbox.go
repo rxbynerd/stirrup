@@ -177,9 +177,9 @@ func buildSandboxObject(namespace, name, runID string, podSpec corev1.PodSpec, s
 // never runs with unrestricted egress, then create the Sandbox, wait for the
 // controller to report it Ready with its backing Pod Ready and matching the
 // Pod template, and wait for exec to reach that Pod. A failure after the
-// Sandbox create tears down
-// through Close, which removes the policy only once the Sandbox and its
-// backing Pod are gone; a failed create is reconciled by name first.
+// Sandbox create tears down through Close, which removes the policy only once
+// the Sandbox and its backing Pod are gone; a failed create is reconciled by
+// name first.
 func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*AgentSandboxExecutor, error) {
 	if err := checkAgentSandboxRuntime(cfg.Runtime); err != nil {
 		return nil, err
@@ -229,10 +229,6 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 	if len(errs) > 0 {
 		return nil, fmt.Errorf("agent sandbox executor: %s", strings.Join(errs, "; "))
 	}
-	profile, err := k8sRuntimeProfileFor(gkeSandboxRuntimeValue)
-	if err != nil {
-		return nil, err
-	}
 
 	name, err := generatePodName()
 	if err != nil {
@@ -277,7 +273,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 	}
 
 	cfg.Lifecycle.reportStartup(types.SessionStepSandboxReady)
-	pod, err := waitForSandboxReady(ctx, dyn, clientset, template, profile, timing, logger)
+	pod, err := waitForSandboxReady(ctx, dyn, clientset, template, timing, logger)
 	if err != nil {
 		return nil, rollback(classifyK8sStartup(fmt.Errorf("sandbox %s/%s %w", cfg.Namespace, name, err), types.BuildFailureSandboxNotReady))
 	}
