@@ -612,7 +612,9 @@ func TestProbeK8sAccess_SimultaneousFailuresAreAllReported(t *testing.T) {
 }
 
 // referenceRolePermissions flattens the Role in a reference RBAC manifest
-// into k8sAccess.String entries.
+// into k8sAccess.String entries, one per resource name a rule is restricted
+// to. A rule with no resourceNames yields unnamed entries, so a restricted
+// rule never satisfies an unrestricted probe check.
 func referenceRolePermissions(t *testing.T, manifest string) map[string]bool {
 	t.Helper()
 	must := require.New(t)
@@ -632,15 +634,22 @@ func referenceRolePermissions(t *testing.T, manifest string) map[string]bool {
 		} else {
 			must.NoError(err)
 		}
+		must.Contains([]string{"ServiceAccount", "Role", "RoleBinding"}, doc.Kind, "%s holds a %s the pin does not read", manifest, doc.Kind)
 		if doc.Kind != "Role" {
 			continue
 		}
 		for _, rule := range doc.Rules {
+			names := rule.ResourceNames
+			if len(names) == 0 {
+				names = []string{""}
+			}
 			for _, group := range rule.APIGroups {
 				for _, res := range rule.Resources {
 					resource, subresource, _ := strings.Cut(res, "/")
 					for _, verb := range rule.Verbs {
-						got[k8sAccess{group: group, resource: resource, subresource: subresource, verb: verb}.String()] = true
+						for _, name := range names {
+							got[k8sAccess{group: group, resource: resource, subresource: subresource, verb: verb, name: name}.String()] = true
+						}
 					}
 				}
 			}

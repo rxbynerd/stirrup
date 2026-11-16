@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	authorizationv1 "k8s.io/api/authorization/v1"
@@ -75,9 +76,10 @@ func (e *K8sProbeError) HasKind(kind K8sProbeKind) bool {
 }
 
 // k8sAccess is one permission the executor needs in its namespace.
-// subresource is empty for a plain resource.
+// subresource is empty for a plain resource; name is empty unless the
+// permission is for one named object.
 type k8sAccess struct {
-	group, resource, subresource, verb string
+	group, resource, subresource, verb, name string
 }
 
 func (a k8sAccess) String() string {
@@ -87,6 +89,9 @@ func (a k8sAccess) String() string {
 	}
 	if a.group != "" {
 		name += "." + a.group
+	}
+	if a.name != "" {
+		name += " named " + strconv.Quote(a.name)
 	}
 	return a.verb + " " + name
 }
@@ -256,6 +261,7 @@ func reviewAccess(ctx context.Context, kube kubernetes.Interface, namespace stri
 				Group:       access.group,
 				Resource:    access.resource,
 				Subresource: access.subresource,
+				Name:        access.name,
 			},
 		},
 	}
