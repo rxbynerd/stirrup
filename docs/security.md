@@ -748,12 +748,14 @@ The container executor applies these defaults regardless of what
   `ghcr.io/rxbynerd/team/base` (use `ghcr.io/rxbynerd/*/*` for the
   deeper namespace). An explicit list *replaces* the default rather
   than extending it. Digest-pinned references (`@sha256:…`) are
-  accepted and preferred; cryptographic verification of the digest
-  (cosign/Sigstore) is a deferred follow-up. This allowlist governs
-  only the container executor's own image pulls (via the Docker
-  Engine API); it is not consulted for the `k8s`/`k8s-sandbox`
-  executors, whose Pod image is scheduled by the cluster. A
-  deployment pulling container-executor images from Google Cloud
+  accepted and preferred. The executor does not verify signatures on
+  the images it pulls; release images can be verified before their
+  digests are pinned, as described in
+  [Verify what you run](deployment.md#verify-what-you-run). This
+  allowlist governs only the container executor's own image pulls
+  (via the Docker Engine API); it is not consulted for the
+  `k8s`/`k8s-sandbox` executors, whose Pod image is scheduled by the
+  cluster. A deployment pulling container-executor images from Google Cloud
   Artifact Registry (a `*.pkg.dev` host, including a GAR
   remote/standard repository) must add that host to
   `executor.registryAllowlist` explicitly — the default does not

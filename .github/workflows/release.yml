@@ -1,17 +1,22 @@
 name: Release
 
-# Triggered by pushing a v*.*.* tag, or manually re-runnable against an
-# existing tag via workflow_dispatch (useful when a transient failure
-# leaves the release incomplete and re-tagging would be heavy-handed).
+# Triggered by pushing a v*.*.* tag, or re-runnable against an existing
+# tag via workflow_dispatch dispatched on that tag's ref
+# (`gh workflow run release.yml --ref vX.Y.Z -f tag=vX.Y.Z`), so a
+# recovery run uses the tagged workflow file and signs with the same
+# certificate identity as the original run.
 #
 # Pipeline (DAG via `needs:` — fan-out after verify):
-#   validate-tag        → resolves and validates the input/ref tag once
+#   validate-tag        → resolves and validates the input/ref tag once,
+#                         and checks the Go module requirements name it
 #   verify              → reuses _verify.yml — the tagged SHA must pass tests
 #   build-binaries      → matrix of GOOS/GOARCH cells, archives + SHA-256  ┐ parallel
 #   sbom                → SPDX + CycloneDX from anchore/sbom-action         │ after
 #   changelog           → git log since the previous tag                    │ verify
-#   publish-container   → multi-arch image pushed to GHCR + GAR             ┘
-#                         + image SBOM uploaded to Artifact Analysis
+#   publish-container   → multi-arch image pushed by digest, untagged,      ┘
+#                         to GHCR + GAR, + image SBOM uploaded to
+#                         Artifact Analysis. A version tag that already
+#                         exists is reused, never rebuilt.
 #   vulnerability-gate  → Phase 3: queries Artifact Analysis for vulns on
 #                         the pushed digest, emits a summary, and files a
 #                         tracking issue on CRITICAL+fixable findings.
@@ -31,7 +36,18 @@ name: Release
 #                         not in `release.needs`, so a regression shows
 #                         up as a red job on the release run without
 #                         holding the release hostage.
-#   release             → aggregates SHA256SUMS and creates the GitHub Release
+#   checksums           → _sign-release.yml: aggregates SHA256SUMS and
+#                         IMAGE_DIGESTS, signs SHA256SUMS with keyless
+#                         cosign, and attests build provenance for every
+#                         listed asset and both images
+#   release             → tags the types/ and gen/ Go modules and creates
+#                         the GitHub Release
+#   tag-images          → points vX.Y.Z (and vX.Y, latest) at the signed
+#                         digests; last, so no later step can fail after
+#                         an immutable tag exists
+#
+# Recovery: "Re-run failed jobs" on the run page recovers from a
+# transient failure in any job; see docs/deployment.md#release-process.
 
 on:
   push:
@@ -46,9 +62,17 @@ on:
 
 # Default to read-only at the workflow level so a compromised action in the
 # build/sbom/changelog matrix cannot push commits or create releases. Only
-# the `release` job re-grants `contents: write` for the actual publish step.
+# the `release` job re-grants `contents: write` for the actual publish step,
+# and it holds no OIDC token. Signatures and attestations that verifiers
+# accept come only from the reusable _sign-release.yml: the other jobs
+# holding an OIDC token (publish-*, eval-extended) sign as release.yml,
+# an identity no verification command accepts.
 permissions:
   contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   # validate-tag is the single source of truth for the release tag. Every
@@ -62,27 +86,61 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      # Jobs check out this commit rather than the tag name, so a tag
+      # moved mid-run cannot change what later jobs build.
+      sha: ${{ github.sha }}
     steps:
+      # The pattern is the Semantic Versioning 2.0.0 grammar without
+      # build metadata: types/version.SemverOf accepts exactly these
+      # labels, so a tag that passes here always yields a non-empty
+      # harness_semver in the job `ready` event, and Go accepts it as a
+      # module version for the types/ and gen/ tags.
       - name: Resolve and validate tag
         id: tag
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
+          set -euo pipefail
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
+            if [ "$REF" != "refs/tags/${TAG}" ]; then
+              echo "dispatch this workflow on the tag's ref: gh workflow run release.yml --ref ${TAG} -f tag=${TAG} (got ${REF})" >&2
+              exit 1
+            fi
           else
-            TAG="${{ github.ref_name }}"
+            TAG="$REF_NAME"
           fi
-          if ! echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$'; then
-            echo "tag '$TAG' does not match v*.*.* (with optional prerelease suffix)" >&2
+          num='(0|[1-9][0-9]*)'
+          ident='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+          pattern="^v${num}\.${num}\.${num}(-${ident}(\.${ident})*)?\$"
+          if ! [[ "$TAG" =~ $pattern ]]; then
+            echo "tag '$TAG' is not v<semver> (MAJOR.MINOR.PATCH with an optional pre-release, no leading zeros)" >&2
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      # types/ and gen/ are tagged together at this commit, so a
+      # requirement of one on the other must already name this version.
+      - name: Check the Go module requirements name the release
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: scripts/release/check-module-requirements.sh "$TAG" types gen
 
   verify:
     name: Verify
     needs: validate-tag
     uses: ./.github/workflows/_verify.yml
     with:
-      ref: ${{ needs.validate-tag.outputs.tag }}
+      ref: ${{ needs.validate-tag.outputs.sha }}
 
   build-binaries:
     name: Build (${{ matrix.os }}/${{ matrix.arch }})
@@ -98,13 +156,13 @@ jobs:
           - {os: darwin, arch: arm64}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.validate-tag.outputs.tag }}
+          ref: ${{ needs.validate-tag.outputs.sha }}
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.work
           cache-dependency-path: |
@@ -140,6 +198,22 @@ jobs:
             -ldflags="-s -w -X github.com/rxbynerd/stirrup/types/version.version=${TAG} -X github.com/rxbynerd/stirrup/types/version.commit=${SHORT_SHA}" \
             -o "${EVAL_OUT}" ./eval/cmd/eval
 
+      # The runner is linux/amd64, so only that cell can execute its
+      # binary. The label is what harness_semver is derived from.
+      - name: Check the binary reports the release version
+        if: matrix.os == 'linux' && matrix.arch == 'amd64'
+        env:
+          TAG: ${{ needs.validate-tag.outputs.tag }}
+          SHORT_SHA: ${{ steps.sha.outputs.short }}
+        run: |
+          set -euo pipefail
+          got=$("dist/stirrup-${TAG}-linux-amd64" --version)
+          want="stirrup version ${TAG} (${SHORT_SHA})"
+          if [ "$got" != "$want" ]; then
+            echo "::error::release binary reports '${got}', want '${want}'"
+            exit 1
+          fi
+
       - name: Stage archive contents
         env:
           GOOS: ${{ matrix.os }}
@@ -165,12 +239,15 @@ jobs:
         run: |
           set -euo pipefail
           ARCHIVE="stirrup-${TAG}-${GOOS}-${GOARCH}.tar.gz"
-          # -C into staging so the archive does not embed the staging dir.
-          tar -czf "$ARCHIVE" -C staging .
+          # Fixed order, owners and mtimes (the commit time) keep a
+          # re-run's archive byte-identical to the first run's.
+          mtime="@$(git log -1 --format=%ct HEAD)"
+          tar --sort=name --mtime="$mtime" --owner=0 --group=0 --numeric-owner \
+            -cf - -C staging . | gzip -n > "$ARCHIVE"
           sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: binaries-${{ matrix.os }}-${{ matrix.arch }}
           path: |
@@ -186,15 +263,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.validate-tag.outputs.tag }}
+          ref: ${{ needs.validate-tag.outputs.sha }}
 
-      # SHA-pinned to v0.24.0. SHA verified via the GitHub API on
-      # 2026-05-02 (`gh api repos/anchore/sbom-action/git/refs/tags/v0.24.0`,
-      # which also matches the v0 floating tag's current target). Pinning
-      # to an immutable commit defends against an upstream tag being
-      # silently retargeted to attacker-controlled code.
+      # Pinning to an immutable commit defends against an upstream tag
+      # being silently retargeted to attacker-controlled code.
       - name: Generate SPDX SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
@@ -221,7 +295,7 @@ jobs:
           done
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
           path: |
@@ -237,7 +311,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history is required for git describe / git log range.
           fetch-depth: 0
@@ -247,7 +321,8 @@ jobs:
           TAG: ${{ needs.validate-tag.outputs.tag }}
         run: |
           set -euo pipefail
-          PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)
+          # --match skips the types/ and gen/ module tags on the same commits.
+          PREV=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "${TAG}^" 2>/dev/null || true)
           if [ -n "$PREV" ]; then
             RANGE="${PREV}..${TAG}"
             HEADER="## Changes since ${PREV}"
@@ -258,14 +333,16 @@ jobs:
           {
             echo "$HEADER"
             echo
-            # Cap at 100 lines to keep first-tag changelogs readable.
-            git log --pretty=format:'- %s (%h)' --no-merges "$RANGE" | head -n 100
+            # --max-count caps a first-tag changelog at 100 lines. Piping
+            # into head instead fails the step under pipefail: git log
+            # dies of SIGPIPE once head exits.
+            git log --max-count=100 --pretty=format:'- %s (%h)' --no-merges "$RANGE"
             echo
           } > CHANGELOG.md
           cat CHANGELOG.md
 
       - name: Upload changelog artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: changelog
           path: CHANGELOG.md
@@ -294,54 +371,46 @@ jobs:
     # layer, not by this YAML.
     if: github.repository == 'rxbynerd/stirrup'
     # Workflow-level default is contents: read; this job needs id-token
-    # for the WIF JWT exchange and packages: write for the GHCR push.
+    # for the WIF JWT exchange, packages: write for the GHCR push, and
+    # attestations: read to check an existing version tag before reuse.
     permissions:
       contents: read
       id-token: write
       packages: write
+      attestations: read
     # The digest of the pushed multi-arch manifest is exposed as a
     # job-level output so downstream jobs (vulnerability-gate) can
     # construct the digest-form image URI. Container Analysis APIs
     # (`gcloud artifacts docker images list --show-occurrences`,
     # `gcloud artifacts sbom load --uri`) require digest form because
     # vulnerability and SBOM occurrences must bind to a specific
-    # manifest — a tag can move, a digest cannot. The within-job
-    # `steps.docker-push.outputs.digest` consumer in this job
-    # (the `sbom load` calls below) is unchanged; the output is purely
-    # additive for cross-job consumption.
+    # manifest — a tag can move, a digest cannot. `steps.image` holds
+    # the digest whether this run pushed the image or reused an
+    # already-published version tag.
     outputs:
-      digest: ${{ steps.docker-push.outputs.digest }}
+      digest: ${{ steps.image.outputs.digest }}
     env:
       TAG: ${{ needs.validate-tag.outputs.tag }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.validate-tag.outputs.tag }}
+          ref: ${{ needs.validate-tag.outputs.sha }}
 
       - name: Compute short SHA
         id: sha
         run: echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
 
-      # SHA-pinned to v3.7.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/docker/setup-qemu-action/git/refs/tags/v3.7.0`,
-      # which also matches the v3 floating tag's current target).
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
-      # SHA-pinned to v4.0.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/docker/setup-buildx-action/git/refs/tags/v4.0.0`,
-      # which also matches the v4 floating tag's current target). Pinned
-      # for the same reason as gcp-auth: this action runs inside the
-      # job that holds a live GAR access token; a retargeted floating
-      # tag could exfiltrate it.
+      # Pinned for the same reason as gcp-auth: this action runs
+      # inside the job that holds a live GAR access token; a
+      # retargeted floating tag could exfiltrate it.
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      # SHA-pinned to v4.1.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/docker/login-action/git/refs/tags/v4.1.0`,
-      # which also matches the v4 floating tag's current target). This
-      # action receives the GHCR/GAR credentials as `password:` —
+      # This action receives the GHCR/GAR credentials as `password:` —
       # downstream consumer of the token gcp-auth mints; pinning to an
       # immutable commit is non-negotiable here too.
       - name: Log in to GitHub Container Registry
@@ -351,12 +420,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # SHA-pinned to v3.0.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/google-github-actions/auth/git/refs/tags/v3.0.0`,
-      # which also matches the v3 floating tag's current target). This
-      # action mints a Google access token from the GHA OIDC JWT and is
-      # the trust hinge for GAR push — pinning to an immutable commit is
-      # non-negotiable.
+      # This action mints a Google access token from the GHA OIDC JWT
+      # and is the trust hinge for GAR push — pinning to an immutable
+      # commit is non-negotiable.
       #
       # `service_account` + `token_format: access_token` instructs the
       # action to exchange the federated GHA OIDC JWT for a short-lived
@@ -387,34 +453,45 @@ jobs:
           username: oauth2accesstoken
           password: ${{ steps.gcp-auth.outputs.access_token }}
 
-      # SHA-pinned to v6.0.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/docker/metadata-action/git/refs/tags/v6.0.0`,
-      # which also matches the v6 floating tag's current target). Pinned
-      # for the same reason as login-action: runs inside the credentialled
-      # publish job and constructs the tag list that build-push-action
-      # consumes — a retargeted tag could redirect pushes.
+      # Version tags are immutable. When this version is already in both
+      # registries under one digest and that digest carries this
+      # release's provenance attestation (a full re-run or a dispatch
+      # after the images were tagged), the job reuses it instead of
+      # rebuilding.
+      - name: Look up an already-published version tag
+        id: existing
+        env:
+          GHCR_IMAGE: ghcr.io/rxbynerd/stirrup
+          GAR_IMAGE_REF: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}
+          MIRROR_USERNAME: oauth2accesstoken
+          MIRROR_PASSWORD: ${{ steps.gcp-auth.outputs.access_token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          digest=$(scripts/release/existing-release-image.sh "$GHCR_IMAGE" "$GAR_IMAGE_REF" "$TAG" "$GITHUB_SHA")
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      # Pinned for the same reason as login-action: runs inside the
+      # credentialled publish job. Only its OCI labels are used; the
+      # tag-images job applies the tags.
       - name: Generate image metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: |
             ghcr.io/rxbynerd/stirrup
-            ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}
-          # Semver tagging at release time:
-          #   - {{version}}        — full vX.Y.Z (and prereleases like vX.Y.Z-rc1)
-          #   - {{major}}.{{minor}} — sliding vX.Y pointer for non-prerelease tags
-          #   - latest             — only on non-prerelease tags (hyphen-free)
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ !contains(needs.validate-tag.outputs.tag, '-') }}
+            type=semver,pattern=v{{version}}
 
-      # SHA-pinned to v7.1.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/docker/build-push-action/git/refs/tags/v7.1.0`,
-      # which also matches the v7 floating tag's current target). This
-      # action performs the actual push using the live GHCR + GAR
+      # This action performs the actual push using the live GHCR + GAR
       # credentials; pinning to an immutable commit is non-negotiable
       # here for the same reason as gcp-auth and login-action.
+      #
+      # The image is pushed by digest only, with no tag, to both
+      # registries. Every step after the push can fail, and so can
+      # signing; a failed attempt leaves only an untagged manifest, and
+      # re-running the job builds and pushes a new one. tag-images
+      # applies the version tags once the digest is signed and attested.
       #
       # `id: docker-push` exposes the pushed multi-arch manifest digest
       # to downstream steps as `steps.docker-push.outputs.digest`. The
@@ -440,13 +517,13 @@ jobs:
       # Both ship; neither is redundant.
       - name: Build and push container image
         id: docker-push
+        if: steps.existing.outputs.digest == ''
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ./Dockerfile
-          push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,"name=ghcr.io/rxbynerd/stirrup,${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}",push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           # sbom: true is intentionally release-only;
           # ci.yml::publish-container deliberately omits this to avoid
@@ -461,23 +538,47 @@ jobs:
             VERSION=${{ env.TAG }}
             COMMIT=${{ steps.sha.outputs.short }}
 
-      # SHA-pinned to v3.0.1. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/google-github-actions/setup-gcloud/git/refs/tags/v3.0.1`,
-      # which also matches the v3 floating tag's current target).
-      # google-github-actions/auth only writes credentials; this action
-      # installs the `gcloud` CLI on PATH so the `sbom load` steps
-      # below can invoke it. Installed AFTER the push so a failed push
-      # short-circuits before we pay the install cost on the common
-      # path. The CLI inherits the access_token minted by the earlier
-      # gcp-auth step automatically — no separate `gcloud auth`
-      # invocation is needed.
+      - name: Resolve the release digest
+        id: image
+        env:
+          EXISTING: ${{ steps.existing.outputs.digest }}
+          PUSHED: ${{ steps.docker-push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest=${EXISTING:-$PUSHED}
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::no image digest (existing '${EXISTING}', pushed '${PUSHED}')"
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      - name: Check the image reports the release version
+        env:
+          IMAGE: ghcr.io/rxbynerd/stirrup@${{ steps.image.outputs.digest }}
+          SHORT_SHA: ${{ steps.sha.outputs.short }}
+        run: |
+          set -euo pipefail
+          got=$(docker run --rm --platform linux/amd64 "$IMAGE" --version)
+          want="stirrup version ${TAG} (${SHORT_SHA})"
+          if [ "$got" != "$want" ]; then
+            echo "::error::release image reports '${got}', want '${want}'"
+            exit 1
+          fi
+
+      # google-github-actions/auth only writes credentials; this
+      # action installs the `gcloud` CLI on PATH so the `sbom load`
+      # steps below can invoke it. Installed AFTER the push so a
+      # failed push short-circuits before we pay the install cost on
+      # the common path. The CLI inherits the access_token minted by
+      # the earlier gcp-auth step automatically — no separate `gcloud
+      # auth` invocation is needed.
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
         # `project_id:` here is preferred over passing `--project` on
         # every individual `gcloud` call: it makes the active project
         # self-documenting and breaks the implicit dependency on
         # CLOUDSDK_CORE_PROJECT being propagated from the gcp-auth
-        # step's `project_id:` (line ~343). If a future edit to
+        # step's `project_id:`. If a future edit to
         # gcp-auth removes that field for any reason, the
         # `gcloud artifacts sbom load` calls below would otherwise
         # silently target whatever project gcloud infers.
@@ -492,11 +593,8 @@ jobs:
           project_id: ${{ vars.GCP_PROJECT_ID }}
           version: '>= 502.0.0'
 
-      # SHA-pinned to v0.24.0. Same SHA as the source-tree SBOM job
-      # above; verified via the GitHub API on 2026-05-02 (`gh api
-      # repos/anchore/sbom-action/git/refs/tags/v0.24.0`). Pinning to
-      # an immutable commit defends against an upstream tag being
-      # silently retargeted to attacker-controlled code.
+      # Pinning to an immutable commit defends against an upstream tag
+      # being silently retargeted to attacker-controlled code.
       #
       # Unlike the source-tree SBOM (which uses `path: .` and
       # describes the Go module graph), the image SBOM uses `image:`
@@ -524,7 +622,7 @@ jobs:
       - name: Generate image SPDX SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
-          image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}@${{ steps.docker-push.outputs.digest }}
+          image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}@${{ steps.image.outputs.digest }}
           format: spdx-json
           output-file: stirrup-${{ needs.validate-tag.outputs.tag }}.image.spdx.json
           upload-artifact: false
@@ -534,7 +632,7 @@ jobs:
       - name: Generate image CycloneDX SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
-          image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}@${{ steps.docker-push.outputs.digest }}
+          image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}@${{ steps.image.outputs.digest }}
           format: cyclonedx-json
           output-file: stirrup-${{ needs.validate-tag.outputs.tag }}.image.cdx.json
           upload-artifact: false
@@ -545,7 +643,7 @@ jobs:
       # the image URI (`@sha256:...`). Tag-form URIs are rejected by
       # the gcloud reference because an SBOM must bind to a specific
       # manifest, and a tag can move. The digest comes from the
-      # earlier `id: docker-push` build-push step's output.
+      # `id: image` step, which resolves the pushed or reused digest.
       #
       # These commands run as the impersonated service account from
       # the `id: gcp-auth` step earlier — google-github-actions/auth
@@ -558,7 +656,7 @@ jobs:
       # docs/container-publishing.md.
       - name: Upload image SPDX SBOM to Artifact Analysis
         env:
-          IMAGE_URI: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}@${{ steps.docker-push.outputs.digest }}
+          IMAGE_URI: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}@${{ steps.image.outputs.digest }}
           SBOM_FILE: stirrup-${{ needs.validate-tag.outputs.tag }}.image.spdx.json
         run: |
           set -euo pipefail
@@ -568,7 +666,7 @@ jobs:
 
       - name: Upload image CycloneDX SBOM to Artifact Analysis
         env:
-          IMAGE_URI: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}@${{ steps.docker-push.outputs.digest }}
+          IMAGE_URI: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}@${{ steps.image.outputs.digest }}
           SBOM_FILE: stirrup-${{ needs.validate-tag.outputs.tag }}.image.cdx.json
         run: |
           set -euo pipefail
@@ -594,21 +692,22 @@ jobs:
       contents: read
       id-token: write
       packages: write
+      attestations: read
     outputs:
-      digest: ${{ steps.docker-push.outputs.digest }}
+      digest: ${{ steps.image.outputs.digest }}
     env:
       TAG: ${{ needs.validate-tag.outputs.tag }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.validate-tag.outputs.tag }}
+          ref: ${{ needs.validate-tag.outputs.sha }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
@@ -636,29 +735,56 @@ jobs:
           username: oauth2accesstoken
           password: ${{ steps.gcp-auth.outputs.access_token }}
 
+      # Same reuse rule as publish-container.
+      - name: Look up an already-published version tag
+        id: existing
+        env:
+          GHCR_IMAGE: ghcr.io/rxbynerd/stirrup-sandbox
+          GAR_IMAGE_REF: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox
+          MIRROR_USERNAME: oauth2accesstoken
+          MIRROR_PASSWORD: ${{ steps.gcp-auth.outputs.access_token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          digest=$(scripts/release/existing-release-image.sh "$GHCR_IMAGE" "$GAR_IMAGE_REF" "$TAG" "$GITHUB_SHA")
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
       - name: Generate image metadata
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: |
             ghcr.io/rxbynerd/stirrup-sandbox
-            ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ !contains(needs.validate-tag.outputs.tag, '-') }}
+            type=semver,pattern=v{{version}}
 
+      # Pushed by digest only, like publish-container; tag-images applies
+      # the tags after signing.
       - name: Build and push sandbox image
         id: docker-push
+        if: steps.existing.outputs.digest == ''
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ./Dockerfile.sandbox
-          push: true
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,"name=ghcr.io/rxbynerd/stirrup-sandbox,${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox",push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           sbom: true
+
+      - name: Resolve the release digest
+        id: image
+        env:
+          EXISTING: ${{ steps.existing.outputs.digest }}
+          PUSHED: ${{ steps.docker-push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest=${EXISTING:-$PUSHED}
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::no image digest (existing '${EXISTING}', pushed '${PUSHED}')"
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
@@ -672,7 +798,7 @@ jobs:
       - name: Generate image SPDX SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
-          image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ steps.docker-push.outputs.digest }}
+          image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ steps.image.outputs.digest }}
           format: spdx-json
           output-file: stirrup-sandbox-${{ needs.validate-tag.outputs.tag }}.image.spdx.json
           upload-artifact: false
@@ -682,7 +808,7 @@ jobs:
       - name: Generate image CycloneDX SBOM
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
-          image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ steps.docker-push.outputs.digest }}
+          image: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ steps.image.outputs.digest }}
           format: cyclonedx-json
           output-file: stirrup-sandbox-${{ needs.validate-tag.outputs.tag }}.image.cdx.json
           upload-artifact: false
@@ -691,7 +817,7 @@ jobs:
 
       - name: Upload image SPDX SBOM to Artifact Analysis
         env:
-          IMAGE_URI: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ steps.docker-push.outputs.digest }}
+          IMAGE_URI: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ steps.image.outputs.digest }}
           SBOM_FILE: stirrup-sandbox-${{ needs.validate-tag.outputs.tag }}.image.spdx.json
         run: |
           set -euo pipefail
@@ -701,7 +827,7 @@ jobs:
 
       - name: Upload image CycloneDX SBOM to Artifact Analysis
         env:
-          IMAGE_URI: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ steps.docker-push.outputs.digest }}
+          IMAGE_URI: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox@${{ steps.image.outputs.digest }}
           SBOM_FILE: stirrup-sandbox-${{ needs.validate-tag.outputs.tag }}.image.cdx.json
         run: |
           set -euo pipefail
@@ -821,12 +947,12 @@ jobs:
           - claude-opus-4-8
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.validate-tag.outputs.tag }}
+          ref: ${{ needs.validate-tag.outputs.sha }}
 
       - name: Set up Go
-        uses: actions/setup-go@v7
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.work
           cache-dependency-path: |
@@ -1062,89 +1188,199 @@ jobs:
 
       - name: Upload eval results
         if: always() && steps.check-suites.outputs.has_suites == 'true' && steps.check-creds.outputs.has_credentials == 'true'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: eval-results-extended-${{ matrix.model }}
           path: eval/results/
           retention-days: 30
 
+  checksums:
+    name: Checksums, signature and provenance
+    needs: [validate-tag, build-binaries, sbom, changelog, publish-container, publish-sandbox-container]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/_sign-release.yml
+    with:
+      tag: ${{ needs.validate-tag.outputs.tag }}
+      sha: ${{ needs.validate-tag.outputs.sha }}
+      harness-digest: ${{ needs.publish-container.outputs.digest }}
+      sandbox-digest: ${{ needs.publish-sandbox-container.outputs.digest }}
+
   release:
     name: Publish Release
-    needs: [validate-tag, verify, build-binaries, sbom, changelog, publish-container, publish-sandbox-container]
+    needs: [validate-tag, verify, checksums]
     runs-on: ubuntu-latest
-    # Only the publish step needs write access to releases. Granting it at
-    # the job level (rather than the workflow level) keeps the blast radius
-    # of any compromise in the matrix jobs minimal.
+    # Only this job needs write access to the repository, for the module
+    # tags and the release. Granting it at the job level (rather than the
+    # workflow level) keeps the blast radius of any compromise in the
+    # matrix jobs minimal.
     permissions:
       contents: write
     env:
       TAG: ${{ needs.validate-tag.outputs.tag }}
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          path: artifacts
+          ref: ${{ needs.validate-tag.outputs.sha }}
+          persist-credentials: false
 
-      - name: Aggregate release assets and SHA256SUMS
+      - name: Download release assets
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-assets
+          path: .
+
+      - name: Verify the downloaded assets against SHA256SUMS
+        working-directory: release
+        run: sha256sum -c SHA256SUMS
+
+      # Published assets are never replaced with different bytes. A
+      # dispatch rebuilds the SBOMs, which never reproduce, so when only
+      # they differ the published set is kept and the job goes on to the
+      # module tags and the image tags.
+      - name: Compare with the published release
+        id: published
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mkdir -p release
-          # Flatten archives, SBOMs, and per-cell sums into release/.
-          find artifacts -type f \( \
-            -name 'stirrup-*.tar.gz' -o \
-            -name 'stirrup-*.zip' -o \
-            -name 'stirrup-*.spdx.json' -o \
-            -name 'stirrup-*.cdx.json' \
-          \) -exec cp -v {} release/ \;
+          action=$(scripts/release/compare-published-release.sh "$TAG" release)
+          case "$action" in
+            upload | keep) ;;
+            *)
+              echo "::error::unexpected comparison result '${action}'"
+              exit 1
+              ;;
+          esac
+          echo "action=${action}" >> "$GITHUB_OUTPUT"
 
-          # Locate the changelog (artifact path is artifacts/changelog/CHANGELOG.md).
-          cp artifacts/changelog/CHANGELOG.md CHANGELOG.md
+      # types/ and gen/ are the modules a control plane imports. Both
+      # receive every release version together, at the release commit;
+      # harness/, eval/ and examples/ build binaries and are not tagged.
+      - name: Tag the Go modules
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          scripts/release/tag-go-modules.sh "$TAG" "$(git rev-parse HEAD)" types gen
 
-          cd release
-          # Recompute checksums against the flattened files so the final
-          # SHA256SUMS references the bare filenames consumers will see.
-          # Use -print0 / sort -z / xargs -0 to handle filenames with
-          # whitespace or other shell-special characters safely. The
-          # explicit `! -name SHA256SUMS` guard prevents the file we are
-          # about to write from being included in its own checksum line.
-          : > SHA256SUMS
-          find . -maxdepth 1 -type f ! -name SHA256SUMS -print0 \
-            | sort -z \
-            | xargs -0 sha256sum >> SHA256SUMS
-          echo "--- SHA256SUMS ---"
-          cat SHA256SUMS
-          echo "--- verifying ---"
-          sha256sum -c SHA256SUMS
-
-      # TODO(#NN): cosign sign-blob each release/ asset + SHA256SUMS,
-      # attach .sig files alongside the archives. Pre-wired so the
-      # follow-up only needs to flip these on.
-      # - uses: sigstore/cosign-installer@v3
-      # - run: |
-      #     cd release
-      #     for f in *.tar.gz *.zip *.spdx.json *.cdx.json SHA256SUMS; do
-      #       cosign sign-blob --yes --output-signature "${f}.sig" "$f"
-      #     done
-
-      # SHA-pinned to v3.0.0. SHA verified via the GitHub API on
-      # 2026-05-10 (`gh api repos/softprops/action-gh-release/git/refs/tags/v3.0.0`,
-      # which also matches the v3 floating tag's current target). This
-      # action runs with the job-scoped `contents: write` token, making
-      # it the highest-trust step in the workflow — pinning to an
-      # immutable commit is non-negotiable here.
+      # This action runs with the job-scoped `contents: write` token,
+      # making it the highest-trust step in the workflow — pinning to
+      # an immutable commit is non-negotiable here.
       - name: Create GitHub Release
+        if: steps.published.outputs.action == 'upload'
         uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           tag_name: ${{ env.TAG }}
           name: ${{ env.TAG }}
-          body_path: CHANGELOG.md
+          body_path: release-notes.md
           draft: false
-          # Treat any tag with a hyphen (e.g. v1.2.3-rc1) as a prerelease.
+          # Treat any tag with a hyphen (e.g. v1.2.3-rc.1) as a prerelease.
           prerelease: ${{ contains(env.TAG, '-') }}
           fail_on_unmatched_files: true
           files: |
             release/stirrup-*.tar.gz
-            release/stirrup-*.zip
             release/stirrup-*.spdx.json
             release/stirrup-*.cdx.json
+            release/IMAGE_DIGESTS
             release/SHA256SUMS
+            release/SHA256SUMS.sigstore.json
+
+      # Fetching the version through the public Go module proxy confirms
+      # `go get .../types@<tag>` resolves, and caches it there.
+      - name: Check the module versions resolve through proxy.golang.org
+        run: |
+          set -euo pipefail
+          for module in types gen; do
+            url="https://proxy.golang.org/github.com/${GITHUB_REPOSITORY}/${module}/@v/${TAG}.info"
+            got=$(curl --silent --show-error --fail --retry 5 --retry-delay 10 --retry-all-errors --max-time 60 "$url" | jq -r '.Version')
+            if [ "$got" != "$TAG" ]; then
+              echo "::error::${url} reported version '${got}', want ${TAG}"
+              exit 1
+            fi
+            echo "github.com/${GITHUB_REPOSITORY}/${module}@${TAG} resolves"
+          done
+
+  # The last job of a release. The publish jobs push both images by
+  # digest only, so nothing earlier in the run, including signing and
+  # the GitHub Release, can fail after an immutable version tag exists.
+  # This job points vX.Y.Z at the signed, attested digest in GHCR and
+  # Artifact Registry, then moves vX.Y and latest when this is the
+  # newest release of its line and overall. It is idempotent: re-running
+  # it after a partial failure adds only the missing tags.
+  tag-images:
+    name: Tag release images
+    needs: [validate-tag, publish-container, publish-sandbox-container, release]
+    runs-on: ubuntu-latest
+    if: github.repository == 'rxbynerd/stirrup'
+    # id-token for the GAR WIF exchange, packages: write for the GHCR
+    # tags, attestations: read to check the digest before tagging it.
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+      attestations: read
+    env:
+      TAG: ${{ needs.validate-tag.outputs.tag }}
+      COMMIT: ${{ needs.validate-tag.outputs.sha }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate-tag.outputs.sha }}
+          persist-credentials: false
+
+      - name: Authenticate to Google Cloud (WIF + SA impersonation)
+        id: gcp-auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GAR_PUBLISHER_SA }}
+          token_format: access_token
+
+      - name: Choose the moving tags
+        id: moving
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/v" --jq '.[].ref' >refs
+          tags=$(sed 's|^refs/tags/||' refs | scripts/release/moving-tags.sh "$TAG" | tr '\n' ' ')
+          echo "Moving tags for ${TAG}: ${tags:-none}"
+          echo "tags=${tags}" >> "$GITHUB_OUTPUT"
+
+      - name: Tag the harness image
+        env:
+          GHCR_IMAGE: ghcr.io/rxbynerd/stirrup
+          GAR_IMAGE_REF: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}
+          DIGEST: ${{ needs.publish-container.outputs.digest }}
+          MOVING: ${{ steps.moving.outputs.tags }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_PASSWORD: ${{ github.token }}
+          MIRROR_USERNAME: oauth2accesstoken
+          MIRROR_PASSWORD: ${{ steps.gcp-auth.outputs.access_token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # MOVING is a space-separated tag list.
+          scripts/release/apply-release-tags.sh "$GHCR_IMAGE" "$GAR_IMAGE_REF" "$DIGEST" "$TAG" "$COMMIT" $MOVING
+
+      - name: Tag the sandbox image
+        env:
+          GHCR_IMAGE: ghcr.io/rxbynerd/stirrup-sandbox
+          GAR_IMAGE_REF: ${{ vars.GAR_LOCATION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/${{ vars.GAR_IMAGE }}-sandbox
+          DIGEST: ${{ needs.publish-sandbox-container.outputs.digest }}
+          MOVING: ${{ steps.moving.outputs.tags }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_PASSWORD: ${{ github.token }}
+          MIRROR_USERNAME: oauth2accesstoken
+          MIRROR_PASSWORD: ${{ steps.gcp-auth.outputs.access_token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086 # MOVING is a space-separated tag list.
+          scripts/release/apply-release-tags.sh "$GHCR_IMAGE" "$GAR_IMAGE_REF" "$DIGEST" "$TAG" "$COMMIT" $MOVING
