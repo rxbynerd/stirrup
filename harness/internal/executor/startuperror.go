@@ -34,7 +34,7 @@ func startupErr(reason string, err error) error {
 }
 
 // imageFailureReasons are agent container waiting reasons that mean the
-// image itself could not be obtained or started.
+// image could not be obtained or its container keeps exiting.
 var imageFailureReasons = map[string]bool{
 	"ErrImagePull":      true,
 	"ImagePullBackOff":  true,
@@ -47,8 +47,10 @@ var imageFailureReasons = map[string]bool{
 // classifyK8sStartup classifies a failure of the Kubernetes executors'
 // construction after the clients are built: admission and diagnostic
 // failures by their type, an RBAC denial or other API rejection as the
-// platform's, and anything else as sandbox_not_ready.
-func classifyK8sStartup(err error) error {
+// platform's, and anything else as otherwise. A diagnostic that could not
+// run its exec is a sandbox that is not ready, not a failed isolation
+// check.
+func classifyK8sStartup(err error, otherwise string) error {
 	if err == nil {
 		return nil
 	}
@@ -58,23 +60,26 @@ func classifyK8sStartup(err error) error {
 	switch {
 	case errors.As(err, &mismatch):
 		return startupErr(types.BuildFailureAdmissionMismatch, err)
+	case errors.As(err, &diagnostic) && diagnostic.check == diagnosticCheckExec:
+		return startupErr(types.BuildFailureSandboxNotReady, err)
 	case errors.As(err, &diagnostic):
 		return startupErr(types.BuildFailureRuntimeDiagnosticFailed, err)
 	case errors.As(err, &status):
 		return startupErr(types.BuildFailureSandboxPlatform, err)
 	}
-	return startupErr(types.BuildFailureSandboxNotReady, err)
+	return startupErr(otherwise, err)
 }
 
 // podImageFailure reports whether pod's agent container shows its image
-// could not be obtained or started.
+// could not be obtained or its process exited on its own. A container the
+// kernel killed for memory is not the image's failure.
 func podImageFailure(pod *corev1.Pod) bool {
 	cs := agentContainerStatus(pod)
 	if cs == nil {
 		return false
 	}
-	if cs.State.Terminated != nil {
-		return true
+	if term := cs.State.Terminated; term != nil {
+		return term.Reason != "OOMKilled"
 	}
 	return cs.State.Waiting != nil && imageFailureReasons[cs.State.Waiting.Reason]
 }

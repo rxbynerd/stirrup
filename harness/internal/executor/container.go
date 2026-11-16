@@ -317,12 +317,13 @@ func NewContainerExecutorWithContext(ctx context.Context, cfg ContainerExecutorC
 	}, nil
 }
 
-// classifyContainerCreate classifies a failed container create: an image
-// the engine does not have is the image's failure, anything else the
-// engine's.
+// classifyContainerCreate classifies a failed container create: a missing
+// image is the image's failure, anything else the engine's. The engine
+// answers 404 for other missing objects too, so the message must name the
+// image.
 func classifyContainerCreate(err error) error {
 	var status *apiStatusError
-	if errors.As(err, &status) && status.status == http.StatusNotFound {
+	if errors.As(err, &status) && status.status == http.StatusNotFound && strings.Contains(strings.ToLower(status.msg), "image") {
 		return startupErr(types.BuildFailureSandboxImage, err)
 	}
 	return startupErr(types.BuildFailureSandboxPlatform, err)

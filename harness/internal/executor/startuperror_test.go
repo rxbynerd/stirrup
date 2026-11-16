@@ -44,14 +44,15 @@ func TestClassifyK8sStartup_ClassifiesByErrorType(t *testing.T) {
 	}{
 		{"admission mismatch", &admissionMismatchError{prefix: "admitted pod", mismatches: []admissionMismatch{{field: "spec.runtimeClassName"}}}, types.BuildFailureAdmissionMismatch},
 		{"runtime diagnostic", &k8sRuntimeDiagnosticError{check: "dmi_product_name", reason: "not an enclave"}, types.BuildFailureRuntimeDiagnosticFailed},
+		{"diagnostic exec failed", &k8sRuntimeDiagnosticError{check: diagnosticCheckExec, reason: "dial backend"}, types.BuildFailureSandboxNotReady},
 		{"API rejection", boundClusterErr(apierrors.NewForbidden(podsResource.GroupResource(), "p", errors.New("rbac"))), types.BuildFailureSandboxPlatform},
-		{"readiness timeout", errors.Join(errPodNotReady, context.DeadlineExceeded), types.BuildFailureSandboxNotReady},
+		{"anything else", errors.Join(errPodNotReady, context.DeadlineExceeded), types.BuildFailureUnclassified},
 		{"already classified", startupErr(types.BuildFailureSandboxImage, errPodNotReady), types.BuildFailureSandboxImage},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
-			must.Equal(tc.want, startupReason(classifyK8sStartup(tc.err)))
+			must.Equal(tc.want, startupReason(classifyK8sStartup(tc.err, types.BuildFailureUnclassified)))
 		})
 	}
 }
@@ -60,6 +61,10 @@ func TestWaitForPodReady_ClassifiesImageFailures(t *testing.T) {
 	terminated := []corev1.ContainerStatus{{
 		Name:  k8sAgentContainer,
 		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 127}},
+	}}
+	oomKilled := []corev1.ContainerStatus{{
+		Name:  k8sAgentContainer,
+		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "OOMKilled"}},
 	}}
 	cases := []struct {
 		name     string
@@ -71,6 +76,7 @@ func TestWaitForPodReady_ClassifiesImageFailures(t *testing.T) {
 		{"crash loop until the timeout", agentWaiting("CrashLoopBackOff", "back-off restarting"), fastK8sTiming, types.BuildFailureSandboxImage},
 		{"invalid image name", agentWaiting("InvalidImageName", "bad"), failFastTiming, types.BuildFailureSandboxImage},
 		{"agent container exited", terminated, failFastTiming, types.BuildFailureSandboxImage},
+		{"agent container killed for memory", oomKilled, failFastTiming, ""},
 		{"still creating at the timeout", agentWaiting("ContainerCreating", ""), fastK8sTiming, ""},
 	}
 	for _, tc := range cases {
@@ -113,12 +119,14 @@ func TestNewK8sExecutor_ClassifiesStartupFailures(t *testing.T) {
 	})
 }
 
-func TestClassifyContainerCreate_MissingImageIsTheImages(t *testing.T) {
+func TestClassifyContainerCreate_OnlyAMissingImageIsTheImages(t *testing.T) {
 	must := require.New(t)
 	missing := &apiStatusError{status: http.StatusNotFound, msg: "No such image: ghcr.io/x/y:1"}
+	missingNetwork := &apiStatusError{status: http.StatusNotFound, msg: "network stirrup-egress not found"}
 	conflict := &apiStatusError{status: http.StatusConflict, msg: "name in use"}
 
 	must.Equal(types.BuildFailureSandboxImage, startupReason(classifyContainerCreate(missing)))
+	must.Equal(types.BuildFailureSandboxPlatform, startupReason(classifyContainerCreate(missingNetwork)))
 	must.Equal(types.BuildFailureSandboxPlatform, startupReason(classifyContainerCreate(conflict)))
 	must.Equal(types.BuildFailureSandboxPlatform, startupReason(classifyContainerCreate(errors.New("dial unix: no such file"))))
 }

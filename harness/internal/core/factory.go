@@ -943,7 +943,7 @@ func buildProvider(ctx context.Context, cfg types.ProviderConfig, secrets securi
 		return nil, markBuildFailure(types.BuildFailureCredential, fmt.Errorf("build credential source: %w", err))
 	}
 	if _, static := src.(*credential.StaticSource); static && cfg.APIKeyRef == "" && !keylessEndpoint(cfg) {
-		return nil, fmt.Errorf("provider %s requires apiKeyRef (empty reference is only valid for openai-compatible/openai-responses with a custom baseUrl)", cfg.Type)
+		return nil, markBuildFailure(types.BuildFailureCredential, fmt.Errorf("provider %s requires apiKeyRef (empty reference is only valid for openai-compatible/openai-responses with a custom baseUrl)", cfg.Type))
 	}
 	cred, err := src.Resolve(ctx)
 	if err != nil {

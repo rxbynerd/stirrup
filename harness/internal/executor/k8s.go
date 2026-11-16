@@ -262,7 +262,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 	admission := newPodAdmission(pod, created, profile)
 	if err := admission.checkCreate(); err != nil {
 		reportAdmissionFailure(cfg.Security, cfg.Runtime, profile, err)
-		return nil, withTeardownErr(classifyK8sStartup(err), teardown.run())
+		return nil, withTeardownErr(classifyK8sStartup(err, types.BuildFailureUnclassified), teardown.run())
 	}
 	if profile.runtimeClassName == "" && created.Spec.RuntimeClassName != nil {
 		logger.Info("k8s executor pod admitted with a cluster-assigned RuntimeClass",
@@ -272,7 +272,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 	cfg.Lifecycle.reportStartup(types.SessionStepSandboxReady)
 	if _, err := waitForPodReady(ctx, clientset, cfg.Namespace, podName, admission, timing, logger); err != nil {
 		reportAdmissionFailure(cfg.Security, cfg.Runtime, profile, err)
-		return nil, withTeardownErr(classifyK8sStartup(fmt.Errorf("pod %s/%s %w", cfg.Namespace, podName, err)), teardown.run())
+		return nil, withTeardownErr(classifyK8sStartup(fmt.Errorf("pod %s/%s %w", cfg.Namespace, podName, err), types.BuildFailureSandboxNotReady), teardown.run())
 	}
 
 	exec := &K8sExecutor{
@@ -294,7 +294,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 		timing:            timing,
 	}
 	if err := waitForExecReachable(ctx, &exec.podExecCore, timing, logger); err != nil {
-		return nil, withTeardownErr(classifyK8sStartup(fmt.Errorf("pod %s/%s %w", cfg.Namespace, podName, err)), teardown.run())
+		return nil, withTeardownErr(classifyK8sStartup(fmt.Errorf("pod %s/%s %w", cfg.Namespace, podName, err), types.BuildFailureSandboxNotReady), teardown.run())
 	}
 	// The diagnostics run before the executor is returned, so before any
 	// token delivery or lifecycle hook reaches the sandbox.
@@ -302,7 +302,7 @@ func newK8sExecutor(ctx context.Context, cfg K8sExecutorConfig, profile k8sRunti
 		cfg.Lifecycle.reportStartup(types.SessionStepRuntimeDiagnostics)
 	}
 	if err := runK8sRuntimeDiagnostics(ctx, cfg.Runtime, profile, &exec.podExecCore); err != nil {
-		return nil, withTeardownErr(classifyK8sStartup(err), teardown.run())
+		return nil, withTeardownErr(classifyK8sStartup(err, types.BuildFailureUnclassified), teardown.run())
 	}
 	return exec, nil
 }

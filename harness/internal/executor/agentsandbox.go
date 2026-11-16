@@ -282,7 +282,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 	if err != nil {
 		// Duration omitted: readiness can end on the ceiling or a shorter
 		// caller deadline, and a hardcoded value would misreport the latter.
-		return nil, rollback(classifyK8sStartup(fmt.Errorf("sandbox %s/%s not ready: %w", cfg.Namespace, name, boundClusterErr(err))))
+		return nil, rollback(classifyK8sStartup(fmt.Errorf("sandbox %s/%s not ready: %w", cfg.Namespace, name, boundClusterErr(err)), types.BuildFailureSandboxNotReady))
 	}
 
 	podName := resolveSandboxPodName(ready)
