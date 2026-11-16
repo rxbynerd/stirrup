@@ -33,14 +33,9 @@ type unknownField struct {
 }
 
 // unknownRunConfigFields describes the fields of rc, at any depth, that
-// this harness's compiled-in schema does not carry, as "field N at the top
-// level" or "field N under P". P is a message path in
-// types.ConfigFieldPaths form: a repeated field's elements share the
-// field's path and a map's values sit under a "*" segment, so the result
-// never echoes a map key or an index. Entries are sorted by path then
-// number, without duplicates, at most maxUnknownFieldEntries of them plus
-// moreUnknownFields when there are more; the result is nil when there are
-// none.
+// this harness's compiled-in schema does not carry, sorted and without
+// duplicates. Paths are in types.ConfigFieldPaths form, so the result never
+// echoes a map key or an index; it is nil when there are none.
 func unknownRunConfigFields(rc *pb.RunConfig) []string {
 	if rc == nil {
 		return nil

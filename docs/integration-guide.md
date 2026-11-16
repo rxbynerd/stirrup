@@ -1464,6 +1464,9 @@ around silently".
   - `strict_task_assignment`: a `task_assignment` whose `RunConfig`
     sets a field the harness does not know is rejected instead of run
     without it; see [Unknown RunConfig fields](#unknown-runconfig-fields).
+    Only `stirrup job` accepts a `task_assignment`; the `ready` of
+    `stirrup harness --transport grpc` lists the capability too, but
+    that harness takes its configuration from a file.
 - `ready.config_fields` lists every `RunConfig` field a
   `task_assignment` can set on the harness. Check the task against it
   before sending `task_assignment`; see
@@ -1616,7 +1619,9 @@ A `stirrup job` harness that advertises `strict_task_assignment`
 checks every `task_assignment` for `RunConfig` fields its compiled-in
 protobuf schema does not carry, at any depth: in the `RunConfig`
 itself, in nested messages such as `executor`, in each element of a
-repeated field and in each map value. Running such a task would drop
+repeated field and in each map value, including the
+`google.protobuf.Struct` values of fields such as `outputSchema`.
+Running such a task would drop
 the field, and a dropped field may be one that restricts the run, such
 as a network mode, a protected write target or a tool limit.
 
@@ -1625,7 +1630,8 @@ resolves no secret and makes no provider call. It sends `error`, then
 `done{stop_reason:"error"}` with no `trace`, and exits non-zero. The
 `error` message names each unknown field by its field number and the
 path of the message that carries it, in the path form of
-`config_fields`, with `*` standing for any map key:
+`config_fields`, with `*` standing for any map key. The text is for
+people reading logs; its wording is not part of the contract:
 
 ```text
 task_assignment rejected: the RunConfig sets fields this harness does not know (field 9001 at the top level, field 98 under executor); send only the fields listed in ready.config_fields

@@ -2,7 +2,6 @@ package transport
 
 import (
 	"runtime"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -197,8 +196,7 @@ func TestUnknownRunConfigFields_DeepNestingCostsLinearMemory(t *testing.T) {
 	runtime.ReadMemStats(&after)
 
 	must.Len(got, 1)
-	check.True(strings.HasPrefix(got[0], "field 9006 under outputSchema.fields.*.structValue.fields.*."), got[0])
-	check.True(strings.HasSuffix(got[0], "..."), "a long path is cut")
+	check.Regexp(`^field 9006 under outputSchema\.fields\.\*\.structValue\.fields\.\*\..*\.\.\.$`, got[0], "a long path is cut")
 	check.LessOrEqual(len(got[0]), maxUnknownFieldPathBytes+64)
 	check.Less(after.TotalAlloc-before.TotalAlloc, uint64(16<<20), "the walk allocates in proportion to depth, not depth squared")
 }
