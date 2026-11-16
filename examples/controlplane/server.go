@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,9 +16,10 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/encoding/protojson"
 
 	harnessv1 "github.com/rxbynerd/stirrup/gen/harness/v1"
+	"github.com/rxbynerd/stirrup/gen/runconfig"
+	"github.com/rxbynerd/stirrup/types"
 )
 
 // maxToolResultPreview bounds how much of a tool result is echoed to the
@@ -42,27 +44,30 @@ func parsePermissionMode(s string) (permissionMode, error) {
 }
 
 // loadRunConfig reads a RunConfig JSON file, the same format accepted by
-// `stirrup harness --config`, into its wire representation. The "transport"
-// key is dropped because the wire RunConfig has no such field: a job always
-// reports over the stream it is connected to. Any other unknown field is
-// rejected so that a typo fails here rather than silently reaching the
-// harness.
+// `stirrup harness --config`, validates it as the harness will, and
+// translates it into its wire representation. The file's transport is
+// replaced by grpc, the transport a harness running a task_assignment
+// reports, since a job always reports over the stream it is connected
+// to. An unknown field is rejected so that a typo fails here rather than
+// silently reaching the harness.
 func loadRunConfig(path string) (*harnessv1.RunConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read run config: %w", err)
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
+	var rc types.RunConfig
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&rc); err != nil {
 		return nil, fmt.Errorf("parse run config %s: %w", path, err)
 	}
-	delete(fields, "transport")
-	if data, err = json.Marshal(fields); err != nil {
-		return nil, fmt.Errorf("parse run config %s: %w", path, err)
+	rc.Transport = types.TransportConfig{Type: "grpc"}
+	if err := types.ValidateRunConfig(&rc); err != nil {
+		return nil, fmt.Errorf("validate run config %s: %w", path, err)
 	}
-	cfg := &harnessv1.RunConfig{}
-	if err := protojson.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("parse run config %s: %w", path, err)
+	cfg, err := runconfig.ToProto(&rc)
+	if err != nil {
+		return nil, fmt.Errorf("translate run config %s: %w", path, err)
 	}
 	return cfg, nil
 }

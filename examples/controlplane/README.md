@@ -37,9 +37,15 @@ CONTROL_PLANE_ADDR=127.0.0.1:50051 ./stirrup job
 
 A `RunConfig` delivered over the wire skips the CLI's convenience defaults, so
 the file has to name every component explicitly. Every file under
-[`examples/runconfig/`](../runconfig) is accepted. The `transport` key is
-ignored, since a job always reports over the stream it is connected to; any
-other field the wire format does not know is rejected.
+[`examples/runconfig/`](../runconfig) is accepted. The program decodes the
+file into `types.RunConfig`, rejecting unknown fields, validates it with
+`types.ValidateRunConfig` as the harness will, and sends it through
+`runconfig.ToProto` from `github.com/rxbynerd/stirrup/gen/runconfig`, so a
+config the harness would reject fails here before a harness is assigned.
+The `transport` key is replaced with `grpc`, since a job always reports over
+the stream it is connected to; a field the wire cannot carry (see
+[Features not on the wire](../../docs/integration-guide.md#features-not-on-the-wire))
+is rejected.
 
 Exit status:
 
