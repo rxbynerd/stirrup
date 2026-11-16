@@ -59,7 +59,7 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
 	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
 
-	emitter := tracepkg.NewOTelTraceEmitterForTest(tp)
+	emitter := tracepkg.NewOTelTraceEmitterWithCaptureForTest(tp)
 	tracer := emitter.Tracer()
 
 	// Parent provider: turn 0 spawns the sub-agent; turn 1 ends.
@@ -197,6 +197,25 @@ func TestSpawnSubAgent_OTelSpansNestUnderToolSpan(t *testing.T) {
 			}
 		}
 		must.Equal(1, childChats, "chat spans under the sub-agent span")
+	})
+
+	t.Run("chat spans carry the system prompt of their own run", func(t *testing.T) {
+		must := require.New(t)
+		var parentSystem, childSystem []string
+		for _, chat := range chats {
+			system, ok := spanAttr(chat, "gen_ai.system_instructions")
+			must.True(ok, "chat span missing gen_ai.system_instructions")
+			must.NotEmpty(system)
+			if chat.Parent.SpanID() == sub.SpanContext.SpanID() {
+				childSystem = append(childSystem, system)
+			} else {
+				parentSystem = append(parentSystem, system)
+			}
+		}
+		must.Len(childSystem, 1, "child chat spans")
+		must.Len(parentSystem, 2, "parent chat spans")
+		must.Equal(parentSystem[0], parentSystem[1], "the parent's requests share one system prompt")
+		must.NotEqual(parentSystem[0], childSystem[0], "the child's request carries the child's own prompt")
 	})
 
 	t.Run("provider stream spans nest under chat spans", func(t *testing.T) {

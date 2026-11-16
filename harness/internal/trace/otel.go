@@ -259,6 +259,12 @@ func NewOTelTraceEmitterForTest(tp *sdktrace.TracerProvider) *OTelTraceEmitter {
 	return newOTelTraceEmitterForTest(tp, false)
 }
 
+// NewOTelTraceEmitterWithCaptureForTest is NewOTelTraceEmitterForTest with
+// content capture on. Not intended for production use.
+func NewOTelTraceEmitterWithCaptureForTest(tp *sdktrace.TracerProvider) *OTelTraceEmitter {
+	return newOTelTraceEmitterForTest(tp, true)
+}
+
 // Start initialises a new trace with the given run ID and configuration.
 // It creates the root "invoke_agent stirrup" span.
 func (e *OTelTraceEmitter) Start(runID string, config *types.RunConfig) {
