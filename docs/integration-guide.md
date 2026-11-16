@@ -270,31 +270,37 @@ Go and send the result with `runconfig.ToProto`; see
 
 The `error` that `stirrup job` sends when the task cannot be built into a
 run carries `build_failure`, so a control plane can react to the class
-of failure without matching on the message. `build_failure.reason` is one
-of a closed set; a value a control plane does not recognise is treated
-as `unclassified`:
+of failure without matching on the message. A harness that sends it
+advertises the `build_failure` capability on `ready`; a pre-run `error`
+from a harness without it carries none. Reasons are only ever added: a
+control plane preserves a value it does not recognise and handles it as
+`unclassified`. The responses below are advice, not part of the
+contract.
 
 | `reason` | Meaning | Typical response |
 |---|---|---|
 | `config_invalid` | The `RunConfig` failed validation. | Fix the task; retrying it unchanged fails again. |
-| `host_file` | A file the `RunConfig` names could not be used from the harness host. | Fix the task or the harness image; the message names only the field. |
+| `host_file` | A file named by `provider.replayFile`, `permissionPolicy.policyFile` or `provider.gcpCredentialsFile` (or the same field of a `providers` entry) could not be used from the harness host. | Fix the task or the harness image; the message names only the field. Other host files a task can name, such as `executor.k8sKubeconfig`, report under their component's class. |
 | `credential` | A secret reference or provider credential could not be resolved. | Fix the secret or the workload identity. |
 | `token_exchange` | The sandbox identity token exchange was declined, timed out, or returned an unusable token. | Check the control plane's own token issuer. |
 | `sandbox_platform` | The cluster or container engine refused or could not serve a sandbox request: RBAC, a missing namespace or RuntimeClass, a quota, an unreachable engine. | Treat the cluster as misconfigured; retrying elsewhere may succeed. |
 | `admission_mismatch` | Admission changed the sandbox Pod in a way the executor's runtime does not accept. | Fix the cluster's admission policy. |
 | `runtime_diagnostic_failed` | The sandbox's runtime diagnostics found it was not isolated as its runtime requires. | Treat the node pool as misconfigured; do not retry on it. |
-| `sandbox_image` | The sandbox image could not be pulled or was not allowed, or its container exited before it was ready. | Fix the image reference, its registry credentials or the image itself. |
-| `sandbox_not_ready` | The sandbox did not become ready or reachable for commands, for example within the readiness timeout. | Usually capacity or a slow node; retrying may succeed. |
-| `control_stream_lost` | The control stream ended during construction. | The `done` that follows carries `stop_reason: "control_stream_lost"`. |
+| `sandbox_image` | The sandbox image could not be pulled or was not allowed, or its container exited on its own before it was ready. | Fix the image reference, its registry credentials or the image itself. |
+| `sandbox_not_ready` | The sandbox did not become ready or reachable for commands, for example within the readiness timeout, or the runtime diagnostics could not run. | Usually capacity or a slow node; retrying may succeed. |
+| `control_stream_lost` | The control stream ended during construction. Sent best-effort on a stream already found lost. | `done.stop_reason` (`control_stream_lost`) is authoritative. |
+| `interrupted` | A shutdown signal (SIGTERM or SIGINT) cut construction short, whatever was running. | The Pod was being stopped; nothing in the task is implicated. |
 | `unclassified` | Any other construction failure. | Read the message. |
 
 `build_failure.phase` is `constructing` with the step that was in
 progress, the same values the session heartbeats carry (see
 [The session phase](#the-session-phase)); an empty step is construction
-outside the named steps. A sandbox whose image cannot be pulled on
-Kubernetes, for example, arrives as reason `sandbox_image` and step
-`sandbox_ready`, since the kubelet pulls the image while the harness
-waits for readiness. `build_failure` is set only on this pre-run
+outside the named steps. A sandbox whose image cannot be pulled under
+the `k8s` executor, for example, arrives as reason `sandbox_image` and
+step `sandbox_ready`, since the kubelet pulls the image while the
+harness waits for readiness. The `k8s-sandbox` executor watches the
+Sandbox resource rather than its Pod, so the same failure arrives there
+as `sandbox_not_ready` once the readiness wait ends. `build_failure` is set only on this pre-run
 `error`; a run that fails setup, such as a fatal `preRun` hook, reports
 its outcome through `done.stop_reason` as before.
 
