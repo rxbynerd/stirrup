@@ -198,6 +198,16 @@ func TestCheckHTTPSPutDestinations_FileReferenceFailuresAreHostFileErrors(t *tes
 		must.ErrorAs(err, &hostFile)
 		must.Equal("resultSink.httpsPut.urlRef", hostFile.Field)
 	})
+	t.Run("trace emitter url file", func(t *testing.T) {
+		must := require.New(t)
+		cfg := &types.RunConfig{}
+		cfg.TraceEmitter.Type = "https-put"
+		cfg.TraceEmitter.HTTPSPut = &types.HTTPSPutConfig{URLRef: "secret://file://" + filepath.Join(dir, "absent")}
+		err := checkHTTPSPutDestinations(context.Background(), cfg, security.NewEnvSecretStore())
+		var hostFile *HostFileError
+		must.ErrorAs(err, &hostFile)
+		must.Equal("traceEmitter.httpsPut.urlRef", hostFile.Field)
+	})
 	t.Run("environment reference", func(t *testing.T) {
 		must := require.New(t)
 		cfg := &types.RunConfig{}
