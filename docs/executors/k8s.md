@@ -655,7 +655,8 @@ What the read in step 2 cannot establish:
 
 On a cluster that enforces NetworkPolicy a retained policy keeps
 confining a Pod that is still running and is inert once the Pod is gone.
-A workload that outlives its policy stays isolated by the
+While the Pod object still exists, a workload that outlives its policy
+stays isolated by the
 [standing default-deny egress policy](#standing-default-deny-egress).
 A policy is never owned by the sandbox Pod alone, because garbage
 collection would then remove it as soon as the Pod object disappears,
@@ -741,10 +742,14 @@ collector after the Node was removed) and the harness Pod is gone too.
 The workload can then outlive the policy, as described in
 [Teardown edge cases](#teardown-edge-cases).
 
-In each of these cases the
+In the foreground cases the sandbox Pod object exists until its
+container stops, so the
 [standing default-deny egress policy](#standing-default-deny-egress)
-keeps the sandbox isolated for egress until its container stops. The
-owner references only decide when the per-run policy is cleaned up.
+keeps it isolated for egress throughout. After a force delete or a
+Node removal the object is gone, no policy selects the workload any
+more, and what the CNI does with traffic from it is CNI-specific and
+has not been measured. The owner references only decide when the
+per-run policy is cleaned up.
 
 The `k8s-sandbox` executor sets no owner reference on its policy or its
 Sandbox. After a harness death the controller's TTL deletes the Sandbox
@@ -2011,7 +2016,9 @@ while the sandbox container is still running:
   `kubectl delete pod -l stirrup-sandbox=true --cascade=foreground`.
 - A force delete of the sandbox Pod, or its removal by the Pod garbage
   collector after its Node was deleted, when the harness Pod is gone
-  too (see [Teardown edge cases](#teardown-edge-cases)).
+  too (see [Teardown edge cases](#teardown-edge-cases)). The standing
+  policy cannot select a Pod whose object is gone either, so in this case
+  the outcome depends on the CNI.
 
 NetworkPolicy allows are additive, and a Pod that any `Egress` policy
 selects is isolated for egress. With the standing policy in place, a
@@ -2033,9 +2040,11 @@ of them, including runs in mode `none`; the default-deny is the
 standing policy to use.
 
 The [dry run](#dry-run-preflight) lists the namespace's NetworkPolicies
-and fails when none of them isolates every sandbox Pod for egress. A
-run does not check: the reference Role grants no `list`, and the
-executor does not need it.
+and fails when none of them isolates every sandbox Pod for egress. The
+reference Roles grant no `list`, so a dry run with the orchestrator's
+own credentials reports the check as `not checked` and passes; only
+credentials that can list policies detect a missing standing policy. A
+run does not check, and nothing enforces the policy at run time.
 
 The standing policy protects against the garbage collector and teardown
 edge cases, not against a leaked orchestrator credential. The reference
@@ -2043,11 +2052,15 @@ Role grants `create`, `delete` and `patch` on every NetworkPolicy in the
 namespace, because per-run policy names are random and RBAC cannot name
 them in advance. Those credentials can therefore delete the standing
 policy, add an allow-all policy, rewrite a policy in place, or add owner
-references that make the garbage collector delete one later. Operators
-who need to rule that out can bind a `ValidatingAdmissionPolicy` to the
-orchestrator ServiceAccount that admits changes only to policies
-labelled `stirrup-sandbox=true` and, for updates, only changes to
-`metadata.ownerReferences`.
+references that make the garbage collector delete one later. A
+`ValidatingAdmissionPolicy` bound to the orchestrator ServiceAccount
+narrows this. Admitting changes only to policies labelled
+`stirrup-sandbox=true`, and for updates only changes to
+`metadata.ownerReferences`, protects the standing policy from deletion
+and rewriting. It does not stop a create of a labelled policy that
+allows everything; ruling that out also needs the create rule to require
+the executor's shape, a Pod selector on `stirrup.dev/pod` alone with no
+egress rules or exactly the DNS-and-proxy rules.
 
 ### Mode `none` — deny all egress
 
