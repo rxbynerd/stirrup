@@ -49,6 +49,12 @@ status.
 
 - Source of truth: [`proto/harness/v1/harness.proto`](../proto/harness/v1/harness.proto).
   Generate stubs with `buf generate` or protoc.
+- Go control planes import the generated stubs from
+  `github.com/rxbynerd/stirrup/gen/harness/v1` and the translator from
+  `github.com/rxbynerd/stirrup/gen/runconfig`; see
+  [Sending a RunConfig from Go](#sending-a-runconfig-from-go). Both
+  live in the `gen` module, which depends on `types`, so the two
+  modules are versioned together.
 - Every CI and release run publishes a compiled
   `google.protobuf.FileDescriptorSet` as the `proto-descriptor-set`
   workflow artifact (`stirrup-<label>.fds.binpb` + `.sha256`) for
@@ -247,7 +253,8 @@ writer until the window expires. Treating stream closure without a
 Validating control-plane-side before dispatch is still worthwhile: it
 turns a pod launch into an immediate API error. Mirror the harness with
 `stirrup run-config --validate`, or call `types.ValidateRunConfig` from
-Go.
+Go and send the result with `runconfig.ToProto`; see
+[Sending a RunConfig from Go](#sending-a-runconfig-from-go).
 
 ### Transport security posture (v0.1)
 
@@ -384,6 +391,69 @@ alternatives (IRSA, GKE Workload Identity,
 Azure/Anthropic/OpenAI WIF) are configured via
 `provider.credential`; see
 [`credential-federation.md`](credential-federation.md).
+
+### Sending a RunConfig from Go
+
+`github.com/rxbynerd/stirrup/gen/runconfig` is the translator the
+harness itself uses, so a Go control plane does not maintain its own
+field-by-field mapping:
+
+- `runconfig.ToProto(*types.RunConfig) (*harnessv1.RunConfig, error)`
+  builds the `task_assignment` message. It returns an error, rather
+  than dropping the value, for a field the wire cannot carry: a field
+  in [Features not on the wire](#features-not-on-the-wire) (the error
+  wraps `runconfig.ErrNotOnWire`), an integer outside its `int32` wire
+  field, or an output or tool input schema that is not a JSON object.
+  `transport` is accepted when unset or `{"type": "grpc"}`.
+- `runconfig.FromProto(*harnessv1.RunConfig) *types.RunConfig` is the
+  harness's own decoding of a `task_assignment`. It always sets
+  `transport.type` to `grpc`.
+- `runconfig.PopulatedFieldPaths(*harnessv1.RunConfig) []string` lists
+  the fields a message sets, for the check in
+  [Negotiating RunConfig fields](#negotiating-runconfig-fields).
+
+To validate as the harness will, set `transport.type` to `grpc` (the
+value the harness assigns, which `executor.sandboxIdentity` and
+`ruleOfTwo.runtime.onDetect: "ask-upstream"` require), call
+`types.ValidateRunConfig`, then `runconfig.ToProto`:
+
+```go
+rc.Transport = types.TransportConfig{Type: "grpc"}
+if err := types.ValidateRunConfig(&rc); err != nil {
+	return err
+}
+task, err := runconfig.ToProto(&rc)
+if err != nil {
+	return err
+}
+```
+
+Validation fills defaults in place, so the message carries them
+explicitly; the harness's own validation leaves them unchanged.
+[`examples/controlplane`](../examples/controlplane) loads its task
+this way.
+
+### JSON round trip
+
+A control plane not written in Go can convert file-config JSON to
+protobuf JSON and back, since every mirrored field has the same JSON
+name in both. A test that sets every field and round-trips it pins
+two differences:
+
+- Encoding a `RunConfig` with Go's `encoding/json` always writes a
+  `transport` key, and writes `traceEmitter.credential` and
+  `traceEmitter.archive.credential` when set. Protobuf JSON has no
+  field for any of them, so a strict protobuf JSON parser rejects the
+  document. Remove the keys before parsing. Discarding unknown fields
+  instead also discards a misspelled or newer field without notice.
+- Protobuf JSON writes 64-bit integers as JSON strings. The four
+  `tools.commandOutput` byte limits (`inlineMaxBytes`,
+  `previewBytesPerStream`, `maxBytesPerStream`, `maxBytesPerRun`) are
+  64-bit, and file-config JSON rejects them as strings. Convert them
+  to numbers before decoding protobuf JSON as file-config JSON.
+  Protobuf JSON parsers accept numbers for them.
+
+Apart from these, every field survives in both directions.
 
 ## Cookbook
 
@@ -1410,7 +1480,8 @@ see [`guardrails.md`](guardrails.md).
 
 The proto mirrors `RunConfig` field-for-field, with a small set of
 exceptions. These fields exist on the JSON `RunConfig` (file/stdin
-topologies) but **cannot be expressed in a `task_assignment`**. Apart
+topologies) but **cannot be expressed in a `task_assignment`**, and
+`runconfig.ToProto` rejects a config that sets one. Apart
 from `transport`, which is harness-local by design, an integration
 that needs one supplies the config file itself (CLI or Cloud Run
 topology):
@@ -1482,7 +1553,8 @@ around silently".
   fleet inventory and reporting; gate features on `capabilities` and
   fields on `config_fields`, not on version comparisons.
 - For mirrored fields, file-config JSON and protobuf JSON use the same
-  lower-camel-case names. The MCP host allowlist spelling is
+  lower-camel-case names; [JSON round trip](#json-round-trip) lists
+  the differences in encoding. The MCP host allowlist spelling is
   `tools.mcpServers[].allowedMcpHosts`; the pre-#554 file spelling
   `allowedMCPHosts` is no longer accepted.
 - File-config JSON rejects unknown fields (`DisallowUnknownFields`),
@@ -1542,7 +1614,8 @@ sorted byte-wise:
 Before sending `task_assignment`:
 
 1. Read `config_fields` from `ready` into a set.
-2. Record the path of every field the intended `RunConfig` sets. Either
+2. Record the path of every field the intended `RunConfig` sets. In Go,
+   `runconfig.PopulatedFieldPaths` returns them. Otherwise, either
    walk the message with protobuf reflection, or render it as protobuf
    JSON with the default JSON names (not `UseProtoNames` or
    `preserving_proto_field_name`) and without unpopulated fields, then

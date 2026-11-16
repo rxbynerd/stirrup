@@ -220,13 +220,18 @@ The generated code is committed (`gen/` is a tracked module). Keep
 proto changes backwards-compatible where possible; `buf` will refuse to
 break wire compatibility on a tagged release without explicit override.
 
-A `RunConfig` field ships with its proto mirror and a line in
-`harness/internal/transport/grpc_translate.go`;
+A `RunConfig` field ships with its proto mirror and a line in each
+direction of the translator in `gen/runconfig` (`fromproto.go` and
+`toproto.go`), which the harness and Go control planes share.
 `TestRunConfigProtoMirror_EveryFieldIsMirroredAndTranslated` in
-`harness/internal/invariants` fails when either is missing. A field
+`harness/internal/invariants` fails when the proto field or the
+`fromproto.go` read is missing, and the round-trip parity tests in
+`gen/runconfig` fail when either direction drops the field. A field
 deliberately kept off the wire goes on that test's `configOnlyFields`
-allow-list with a reason, and on the "Features not on the wire" table
-in [`docs/integration-guide.md`](docs/integration-guide.md) in the same
+allow-list with a reason, on `notOnWirePaths` in
+`gen/runconfig/parity_test.go` with a rejection in `ToProto`, and on
+the "Features not on the wire" table in
+[`docs/integration-guide.md`](docs/integration-guide.md) in the same
 change.
 
 **Field-number blocks for parallel work.** When several branches add
