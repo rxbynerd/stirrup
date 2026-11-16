@@ -96,7 +96,7 @@ value and one `config_fields` path.
 
 Issue #659 found that after the stream ended, `stirrup job` kept
 calling the model and running tools, then exited zero with a `done`
-nobody received. A control plane that reschedules on "stream closed
+nobody received. A control plane that rescheduled on "stream closed
 without `done`" then had two workers on one task. PR #740 (merged
 2026-10-10) added the `Liveness` interface (commit `f96d676c`), the
 outcome (`5b09d092`), the cancel (`c145aa58`) and the watchers in both
@@ -170,8 +170,8 @@ today waits on the reader (`grpc.go:264-277`).
 
 A stream that the control plane ends with status OK (`io.EOF` at the
 harness) is a deliberate end, not a break. It goes straight to `lost`,
-which is today's behaviour: a loss during a run, the normal end of the
-session otherwise. Only a non-OK status, a transport error or a
+as it does today. During a run this is a loss; otherwise it is the
+normal end of the session. Only a non-OK status, a transport error or a
 liveness timeout starts the window. A control plane that drains for a
 deploy ends streams with `UNAVAILABLE` to invite a re-attach.
 
@@ -184,7 +184,7 @@ deploy ends streams with `UNAVAILABLE` to invite a re-attach.
 | Proto | `int32 control_stream_grace_seconds = 62;` in `RunConfig`. Plain `int32`, like `heartbeat_seconds = 61` (`harness.proto:792`), because 0 means off. |
 | Default | 0: no window; a loss cancels at once, as today. |
 | Range | 0, or 30-300 seconds. `ValidateRunConfig` also requires the value to be at least four times the effective heartbeat interval, so that a control plane can tell a dead stream from a live one inside the window (see [Liveness](#liveness-and-loss-detection)). |
-| Per break | Each break may last at most the window. |
+| Per break | Each break lasts at most the window. |
 | Per session | The total detached time across all breaks is capped at three times the window, and the number of re-attaches at 10 ([open question 4](#open-questions-for-the-maintainer)). Spending either budget goes to `lost`. |
 | Window reset | A break's clock stops only when the control plane acknowledges the end of the replay, not at the handshake. A stream that breaks again during replay continues the same break. |
 | Run timeout | Unchanged. The run's `timeout` keeps running while detached. |
@@ -239,11 +239,11 @@ more than the detection bound.
 | Parameter | Value | Reason |
 |---|---|---|
 | Target | `CONTROL_PLANE_ADDR`, read once at process start (`job.go:84`) | A `RunConfig` cannot redirect the redial. |
-| Connection | A fresh `grpc.ClientConn` per attempt; the old one is closed after its reader has exited | Re-resolves DNS and lands on any healthy replica, without grpc-go's connect backoff, which grows to 120 s. Waiting for the old reader keeps one reader dispatching at a time. |
+| Connection | A fresh `grpc.ClientConn` per attempt; the old one is closed after its reader has exited | The new connection re-resolves DNS and lands on any healthy replica, without grpc-go's connect backoff, which grows to 120 s. Waiting for the old reader keeps one reader dispatching at a time. |
 | TLS material | The CA bundle and client key pair are re-read on every attempt | Short-lived certificates (cert-manager, SPIFFE) rotate during a session; today they are loaded once (`harness/internal/transport/tls.go:105-110`). |
-| Backoff | First attempt immediately, then a full-jitter delay of up to `min(15 s, 0.5 s × 2^n)`; a server retry-pushback value is honoured | Many harnesses lose one replica at once; full jitter spreads their reconnects, and the cap keeps a recovering control plane from a storm. |
+| Backoff | First attempt immediately, then a full-jitter delay of up to `min(15 s, 0.5 s × 2^n)`; a server retry-pushback value is honoured | Many harnesses lose one replica at once; full jitter spreads their reconnects, and the cap protects a recovering control plane from a reconnect storm. |
 | Per-attempt deadline | `min(10 s, time left in the break)` for the dial, the `ResumeTask` open and `reattach_accepted` | A stalled handshake does not consume the window. Control planes answer within 5 s. |
-| Stops | On `reattach_accepted`, a permanent rejection, an OK end, a spent budget, or the session context ending (SIGTERM) | |
+| Stops | On `reattach_accepted`, a permanent rejection, an OK end, a spent budget, or the session context ending (SIGTERM) | Each of these either completes the re-attach or makes it impossible. |
 
 **Rejections.** Permanence is signalled explicitly, never inferred
 from a status code, because proxies and replicas that are still
@@ -289,8 +289,8 @@ Strict ordering on a resumed stream:
 
 1. The harness dispatches nothing before `reattach_accepted`. Any other
    first event abandons the attempt (retryable).
-2. `ack_seq` above `last_seq` is a protocol error; the attempt is
-   abandoned and retried.
+2. `ack_seq` above `last_seq` is a protocol error and abandons the
+   attempt (retryable).
 3. After `reattach_accepted`, a second `reattach_accepted` or a
    `task_assignment` is dropped and logged.
 
@@ -316,26 +316,26 @@ numbers are the next free ones at `0f0bc8e9` and are illustrative.
 | Credential | `resume_token` | Carried in a dedicated proto message field on `task_assignment`, `reattach_accepted` and `reattach`, never translated into `types.ControlEvent` or `types.HarnessEvent`. |
 
 All sends (`Emit`, the handshake and the replay) go through one
-function that bounds the event, converts it and sends it, so the
-existing `TestHarnessEvents_PassTheByteBound` invariant
-(`harness/internal/invariants/bytebound_test.go:40-82`) covers them
-without an allow-list entry. The credential is attached to the proto
+function that bounds the event, converts it and sends it. The existing
+`TestHarnessEvents_PassTheByteBound` invariant
+(`harness/internal/invariants/bytebound_test.go:40-82`) therefore
+covers them without an allow-list entry. The credential is attached to the proto
 message inside that function, after bounding.
 
 ## Authenticating a re-attach
 
 The session ID cannot authenticate a re-attach.
-`CONTROL_PLANE_SESSION_ID` is optional (`job.go:122-127`), it is echoed
+`CONTROL_PLANE_SESSION_ID` is optional (`job.go:122-127`). It is echoed
 in clear on `ready`, and at least one control-plane design treats it as
 single-use. The run ID is on `run_started`. A resume credential is
 needed.
 
 | Concern | Design |
 |---|---|
-| Issued by | The control plane, on `task_assignment`, only on a stream that arrived over TLS or a verified mesh identity. It is not part of `RunConfig`, for the reason `trace_context` is not (`harness.proto:632-638`): `RunConfig` is recorded, redacted and replayed, and replaying a configuration must not grant a resume. CLAUDE.md also forbids secrets in `RunConfig`. |
-| Format | A random handle of at least 256 bits, printable ASCII, at most 4 KiB. The control plane stores only its hash, looks the session up by that hash and compares in constant time. A self-contained signed token is not enough, since it cannot be spent without server-side state. |
+| Issued by | The control plane, on `task_assignment`, only on a stream that arrived over TLS or a verified mesh identity. It is not part of `RunConfig`, for the reason `trace_context` is not (`harness.proto:632-638`): `RunConfig` is recorded, redacted and replayed, and replaying a configuration must not grant a resume. The project's invariants also forbid secrets in `RunConfig`. |
+| Format | A random handle of at least 256 bits, printable ASCII, at most 4 KiB. The control plane stores only its hash, looks the session up by that hash and compares in constant time. A self-contained signed token is not enough, since single use cannot be enforced without server-side state. |
 | Validation in the harness | An empty, oversized or non-printable value is rejected, never truncated, using the rule of the sandbox token's `validToken` (`harness/internal/sandboxidentity/exchange.go:61-68`). |
-| Bound to | The session only. `session_id` and `run_id` on `reattach` are consistency checks for logs, not part of authentication, because a run can start or end during the break (construction finishing, a run finishing, or a follow-up started from queued input, `harness/internal/core/loop.go:1455-1481`). The replay tells the control plane about those transitions. |
+| Bound to | The session only. `session_id` and `run_id` on `reattach` are consistency checks for logs, not part of authentication. A run can start or end during the break (construction finishing, a run finishing, or a follow-up started from queued input, `harness/internal/core/loop.go:1455-1481`). The replay tells the control plane about those transitions. |
 | Generations | The session record holds a generation number, the hash of the credential last presented in an accepted re-attach (the previous one) and the hash of the credential last issued (the current one). A re-attach presenting either is accepted through a compare-and-set on the generation. The loser of a race between replicas ends its RPC with `ABORTED`, which the harness retries. |
 | Rotation | Every `reattach_accepted` issues a new credential. The harness replaces its copy before it sends `resumed`. |
 | Retirement | When `resumed` arrives on the stream that issued the new credential, that stream becomes the session's live stream and the previous credential is retired. If `resumed` never arrives, the next attempt presents the previous credential, which is still accepted. |
@@ -356,7 +356,7 @@ replace the credential.
 **What server-side TLS provides.** Today the harness trusts the network
 once, at the first dial. A redial trusts it again. Whoever answers a
 redial and completes the handshake receives the retained events (up to
-the cap, from the `ack_seq` it chooses). It can also inject
+the cap, from the `ack_seq` it chooses). That endpoint can also inject
 `user_response` text, answer `permission_request` and
 `tool_result_request` events, and send `batch_result`, which is the
 model's output in batch mode. Server certificate verification
@@ -385,12 +385,13 @@ unacknowledged suffix.
 | Eviction | Over the cap, the oldest droppable event is replaced by a tombstone: `seq`, `type`, `turn`, `request_id`, `evicted: true` and no payload. Structure is never lost. |
 | Protected (never reduced to a tombstone) | `run_started`, `done`, `error`, `turn_started`, `turn_committed`, `turn_abandoned`, every request event still pending, `batch_cancel_request`, and a `warning` or `user_message` carrying `request_id`. |
 | Droppable | `text_delta`, `thinking_delta`, `tool_call`, `tool_result`, `tools_loaded`, request events no longer pending, and other `user_message` and `warning` events. Their durable copy is the trace emitter or the `resultSink`, as the integration guide already advises. |
-| Hard limit | If protected events plus tombstones would exceed the cap, the session goes to `lost` at once with the cause "re-attach buffer exhausted". The design fails closed rather than growing. Because request inputs are bounded (see [Prerequisites](#prerequisites)), this needs an unusual burst. |
+| Hard limit | If protected events plus tombstones would exceed the cap, the session goes to `lost` at once with the cause "re-attach buffer exhausted". The design fails closed rather than growing. Once request inputs are bounded (see [Prerequisites](#prerequisites)), reaching this needs an unusual burst. |
 
 **Gaps.** A tombstone is the inline gap marker: the control plane sees
 exactly which events lost their payload, and it reads them from the
-trace if it needs them. The sequence has no holes, so a control plane
-checks contiguity and treats any hole as a protocol error.
+trace if it needs them. Every sequence number is either delivered or
+tombstoned, so a control plane checks contiguity and treats a missing
+number as a protocol error.
 
 **Duplicates.** The replay starts after the control plane's `ack_seq`,
 so a conforming control plane receives no duplicates. It still
@@ -411,8 +412,8 @@ show whether it arrived.
 - After `resumed`, the control plane re-sends every outbox event above
   `last_control_seq`. The harness drops any event at or below it.
 - Only the replica holding the session's current generation sends from
-  the outbox. A stale replica's sends on a dead stream are then lost to
-  nobody, because they are in the outbox.
+  the outbox. A stale replica's sends on a dead stream are then not
+  lost, because the outbox still holds them.
 
 This covers `permission_response`, `tool_result_response`,
 `sandbox_token_response`, `batch_result`, `user_response` and `cancel`.
@@ -498,10 +499,12 @@ with its reason, an OK end, or "re-attach buffer exhausted".
 
 ## Security argument
 
-Claim: across a break and a re-attach, the run gains no capability, it
-takes no tool action that nobody can see, and only the holder of the
-session's current credential can take over the session, and only from
-a stream the control plane already considers dead.
+Claim: across a break and a re-attach, the run gains no capability and
+takes no tool action that nobody can see. Only a holder of one of the
+session's two accepted credentials (the one last issued, or the one
+presented before it, until `resumed` retires it) can take over the
+session, and only from a stream the control plane already considers
+dead.
 
 | Capability | Attached run | While detached | After re-attach |
 |---|---|---|---|
@@ -566,8 +569,8 @@ become part of the `control_stream_reattach` capability's contract.
    with a lifetime of at least the window plus 60 s.
 9. **Issue the credential only over TLS** or a verified mesh identity,
    and revoke it when the task is rejected, cancelled or completed.
-10. **End a stream for a re-attach with `UNAVAILABLE`**, not OK, when
-    draining for a deploy; OK means the session is over.
+10. **End a stream with `UNAVAILABLE`**, not OK, when draining for a
+    deploy, to invite a re-attach; OK means the session is over.
 11. **Rate-limit `reattach`** per session and globally.
 
 ## Compatibility and the `ready` capability
@@ -625,8 +628,8 @@ unless the row says otherwise.
 | 2 | Field unset: behaviour unchanged | The existing stream-loss tests pass unmodified: `TestRun_ControlStreamLost*` and `TestControlStreamLost_*` (`harness/internal/core/streamloss_test.go`); `TestRunJob_ControlPlaneEndingRPCDuringProviderCallCancelsRun`, `TestRunJob_ConnectionFailureDuringProviderCallCancelsRun`, `TestRunJob_StreamLostDuringConstructionStartsNoRun`, `TestRunJob_StreamEndedAfterDoneClosesFollowUpWindow`, `TestWatchControlStream_*` and `TestRunWithConfig_GRPCTransportLossCancelsRun` (`harness/cmd/stirrup/cmd/controlstream_test.go`); `TestGRPCTransport_*` in `grpc_liveness_test.go`. A new test asserts that with the field unset no event other than `ready` sets any new field, and that `ready` differs from `main`'s only by the capability and the path. |
 | 3 | Break mid-turn, re-attach inside the window, real outcome, complete sequence or explicit gap | Over bufconn, a fake control plane fails the RPC with `UNAVAILABLE` while the provider call is blocked, accepts the `ResumeTask`, then the provider is released. Asserts outcome `success`, a contiguous `seq` from 1 to `done`, and no tombstone. A variant with a small cap asserts tombstones for droppable events and every protected event intact. |
 | 4 | The window lapses | The control plane never returns. Asserts `control_stream_lost`, the cause in `RunTrace.error`, a non-zero exit, and an end about one window after the loss. |
-| 5 | A permission request raised while detached is auto-denied at its normal timeout | 1 s policy timeout, 5 s window, a tool needing approval dispatched during the break. Asserts the tool result "Permission check error" with category `permission_error` at about 1 s, not at emit time and not at lapse. After a re-attach at about 3 s, the request is in the replay, absent from `pending_requests`, and a late `permission_response` for it is dropped. |
-| 6 | Dispatch hold | An auto-allowed tool called during a break does not run until re-attach, and never runs if the session goes to `lost`. Also an MCP tool. |
+| 5 | A permission request raised while detached is auto-denied at its normal timeout (the issue's wording; the harness reports a permission error, never an allow) | 1 s policy timeout, 5 s window, a tool needing approval dispatched during the break. Asserts the tool result "Permission check error" with category `permission_error` at about 1 s, not at emit time and not at lapse. After a re-attach at about 3 s, the request is in the replay, absent from `pending_requests`, and a late `permission_response` for it is dropped. |
+| 6 | Dispatch hold | An auto-allowed tool called during a break does not run until re-attach, and never runs if the session goes to `lost`. The same holds for an MCP tool. |
 | 7 | OK end | An OK end during a run gives today's `control_stream_lost`; an OK end after `done` ends the session with no redial. |
 | 8 | Liveness | No `ack` for 30 s is a loss on the first stream. A control plane that stops reading (flow-control stall) is detected by the same timeout. A real grpc-go server with default keepalive enforcement sees no pings from the harness. |
 | 9 | Rejections | `reattach_rejected{permanent:true}` goes to `lost` with the scrubbed reason. `UNIMPLEMENTED`, `UNAUTHENTICATED` without that event, and `ABORTED` are retried. |
@@ -637,7 +640,7 @@ unless the row says otherwise.
 | 14 | Inbound sequence | A `user_response` queued before the break and not yet echoed is not applied twice when the outbox re-sends it. A `cancel` sent during the break lands after re-attach. |
 | 15 | Replay boundary | A replayed request outside `pending_requests` is not acted on by the example control plane. |
 | 16 | Break during replay | A second break during the replay continues the same break; the window does not reset until the replay is acknowledged. |
-| 17 | Budgets | Repeated breaks stop at three windows of detached time or 10 re-attaches. A poison event that makes the control plane abort the replay ends in `lost` within the budget. |
+| 17 | Budgets | Repeated breaks stop at three windows of detached time or 10 re-attaches. An event that makes the control plane abort the replay on every attempt ends in `lost` within the budget. |
 | 18 | Buffer exhaustion | Protected events over the cap go to `lost` with "re-attach buffer exhausted". |
 | 19 | Construction and follow-up | A break during a blocked `buildJobLoop` recovers. A follow-up started from queued input during a break, and a run that finishes during a break, both re-attach with a session-bound credential despite the changed `run_id`. |
 | 20 | Run finishes and never re-attaches | The real outcome is in `RunResult`; the exit status is non-zero. |
