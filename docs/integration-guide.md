@@ -1038,7 +1038,8 @@ does not acknowledge, retry or replay events, and a stream that breaks
 cannot be resumed, since losing the control stream ends the run with
 `control_stream_lost`. A consumer that needs a complete record reads
 it from a trace emitter or the `resultSink` after the run, not from
-the stream.
+the stream. An opt-in re-attach window is proposed, not implemented,
+in [`control-stream-reattach-design.md`](control-stream-reattach-design.md).
 
 **Keys.** The run ID from `run_started.id` identifies everything up to
 that run's `done`. Within a run, `turn` numbers the model turns from 0;
