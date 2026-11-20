@@ -176,6 +176,9 @@ func newK8sExecutorWithClient(ctx context.Context, cfg K8sExecutorConfig, wrap f
 	if err != nil {
 		return nil, startupErr(types.BuildFailureSandboxPlatform, fmt.Errorf("build kube clientset: %w", err))
 	}
+	if err := awaitCredentialPlugin(ctx, restCfg); err != nil {
+		return nil, fmt.Errorf("k8s executor: %w", err)
+	}
 
 	var client kubernetes.Interface = clientset
 	if wrap != nil {
