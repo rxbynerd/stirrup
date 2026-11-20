@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -192,14 +191,15 @@ func TestRun_ToolFailuresCommitsLastToolTurn(t *testing.T) {
 func TestRun_TimeoutCommitsOnDetachedContext(t *testing.T) {
 	must := require.New(t)
 	repo, base := newGitRepo(t)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
 	probe := &writeProbe{repo: repo, after: func(ctx context.Context, _ int) error {
+		cancel(context.DeadlineExceeded)
 		<-ctx.Done()
 		return ctx.Err()
 	}}
 	loop, config, _ := newGitFinaliseLoop(t, repo, &toolLoopProvider{}, probe)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
 	rt, err := loop.Run(ctx, config)
 	must.NoError(err)
 	assertCommittedOnRunBranch(t, repo, base, probeFile(1), "timeout", rt)
