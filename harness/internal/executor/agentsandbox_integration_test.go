@@ -129,14 +129,12 @@ func TestAgentSandbox_Lifecycle(t *testing.T) {
 	dyn := dynamicClientFromConfig(t, cfg.kubeconfig)
 	clientset, err := kubeClientFromConfig(t, cfg.kubeconfig)
 	must.NoError(err, "build verification clientset")
-	sandboxGVR, err := resolveSandboxGVR(context.Background(), clientset.Discovery())
-	must.NoError(err, "resolve the served Sandbox API version")
 
 	// Close blocks on the Sandbox being gone before removing the policy, so by
 	// the time Close returns the Sandbox should already be absent; a short poll
 	// absorbs read-after-delete lag on the Sandbox/Pod/policy reads.
 	assertGone(t, "sandbox", func() error {
-		_, getErr := dyn.Resource(sandboxGVR).Namespace(namespace).Get(context.Background(), sandboxName, metav1.GetOptions{})
+		_, getErr := dyn.Resource(exec.sandboxGVR).Namespace(namespace).Get(context.Background(), sandboxName, metav1.GetOptions{})
 		return getErr
 	})
 	assertGone(t, "pod", func() error {
