@@ -295,11 +295,11 @@ func TestNewAgentSandboxExecutor_UsesTheServedSandboxVersion(t *testing.T) {
 		{name: "both served", served: []string{"v1alpha1", "v1beta1"}, want: testSandboxGVR, wantAPI: "agents.x-k8s.io/v1beta1"},
 		{name: "only v1alpha1 served", served: []string{"v1alpha1"}, want: testSandboxGVRAlpha, wantAPI: "agents.x-k8s.io/v1alpha1"},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			check := assert.New(t)
-			f := newFakeAgentSandboxServing(t, tt.served...)
+			f := newFakeAgentSandboxServing(t, tc.served...)
 			f.admitSandboxes(nil)
 
 			exec, _, err := f.build(t, fastK8sTiming)
@@ -308,13 +308,13 @@ func TestNewAgentSandboxExecutor_UsesTheServedSandboxVersion(t *testing.T) {
 
 			var created *metav1unstructured.Unstructured
 			for _, a := range f.dyn.Actions() {
-				check.Equal(tt.want, a.GetResource(), "a %s used another Sandbox version", a.GetVerb())
+				check.Equal(tc.want, a.GetResource(), "a %s used another Sandbox version", a.GetVerb())
 				if c, ok := a.(clienttesting.CreateAction); ok {
 					created = c.GetObject().(*metav1unstructured.Unstructured)
 				}
 			}
 			must.NotNil(created, "no sandbox create recorded")
-			check.Equal(tt.wantAPI, created.GetAPIVersion())
+			check.Equal(tc.wantAPI, created.GetAPIVersion())
 		})
 	}
 }
@@ -650,6 +650,40 @@ func reconcileFailedCreateScenarios(t *testing.T, version string) {
 		must.Empty(f.sandboxDeletes(), "a sandbox this run cannot prove it owns was deleted")
 		f.requireRetained(t, err, logs, f.sandboxName(t))
 	})
+}
+
+func TestNewAgentSandboxExecutor_FailsBeforeAnyWriteWhenSandboxDiscoveryFails(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "unavailable", err: apierrors.NewServiceUnavailable("apiserver restarting")},
+		{name: "forbidden", err: apierrors.NewForbidden(schema.GroupResource{Resource: "resource"}, "", errors.New("denied by RBAC"))},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			f := newFakeAgentSandboxServing(t, "v1alpha1")
+			failed := false
+			f.cs.PrependReactor("get", fakeDiscoveryResource, func(clienttesting.Action) (bool, runtime.Object, error) {
+				if failed {
+					return false, nil, nil
+				}
+				failed = true
+				return true, nil, tc.err
+			})
+
+			_, _, err := f.build(t, fastK8sTiming)
+
+			must.ErrorIs(err, tc.err)
+			var startup *StartupError
+			must.ErrorAs(err, &startup)
+			check.Equal(types.BuildFailureSandboxPlatform, startup.Reason)
+			check.Empty(f.dyn.Actions(), "the executor fell back to another Sandbox version after a discovery failure")
+			check.Zero(countVerb(f.cs, "create", "networkpolicies"), "a NetworkPolicy was created before the Sandbox version was known")
+		})
+	}
 }
 
 func TestNewAgentSandboxExecutor_RejectsNonGVisorRuntimeBeforeAnyClusterCall(t *testing.T) {
