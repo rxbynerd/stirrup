@@ -77,7 +77,7 @@ func readySandbox() *metav1unstructured.Unstructured {
 func backingPod(uid k8stypes.UID) *corev1.Pod {
 	pod := readyPod(uid)
 	pod.Spec = readinessTemplate().Spec
-	pod.OwnerReferences = []metav1.OwnerReference{sandboxControllerRef(testK8sPodName, testSandboxUID)}
+	pod.OwnerReferences = []metav1.OwnerReference{sandboxControllerRef(testSandboxGVR, testK8sPodName, testSandboxUID)}
 	return pod
 }
 
@@ -320,14 +320,14 @@ func TestWaitForSandboxReady_ChecksTheFirstPodAgainstTheTemplate(t *testing.T) {
 		{
 			name: "controlled by another Sandbox",
 			mutate: func(pod *corev1.Pod) {
-				pod.OwnerReferences = []metav1.OwnerReference{sandboxControllerRef(testK8sPodName, "uid-other")}
+				pod.OwnerReferences = []metav1.OwnerReference{sandboxControllerRef(testSandboxGVR, testK8sPodName, "uid-other")}
 			},
 			wantErr: `observed agents.x-k8s.io/v1beta1 Sandbox "` + testK8sPodName + `" (UID uid-other)`,
 		},
 		{
 			name: "controlled by another kind",
 			mutate: func(pod *corev1.Pod) {
-				ref := sandboxControllerRef(testK8sPodName, testSandboxUID)
+				ref := sandboxControllerRef(testSandboxGVR, testK8sPodName, testSandboxUID)
 				ref.APIVersion, ref.Kind = "apps/v1", "ReplicaSet"
 				pod.OwnerReferences = []metav1.OwnerReference{ref}
 			},
