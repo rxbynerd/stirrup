@@ -160,13 +160,16 @@ by name. These rules differ from the `k8s` executor's:
   cluster text), then the backing Pod's phase, `PodScheduled` condition
   and last waiting reason. The log lines carry `namespace` and `sandbox`.
 
-For example (one line in the log, wrapped here; the condition's reason
-and message are the controller's):
+For example, a run whose `--k8s-node-selector` matches no node ends
+with this error (one line in the log, wrapped here; observed on GKE
+1.37):
 
 ```
-sandbox stirrup-sandbox/stirrup-0123456789ab not ready within 5m0s: sandbox Ready
-False (<reason>: <message>); backing pod: phase Pending; PodScheduled True; last
-waiting reason ImagePullBackOff (Back-off pulling image "registry.invalid/sandbox:1"):
+sandbox stirrup-sandbox/stirrup-6288d63a0c52 not ready within 5m0s: sandbox Ready
+False (DependenciesNotReady: Pod exists with phase: Pending); backing pod: phase
+Pending; PodScheduled False (Unschedulable: 0/3 nodes are available: 1 node(s) had
+untolerated taint(s), 2 node(s) didn't match Pod's node affinity/selector.
+preemption: 0/3 nodes are available: 3 Preemption is not helpful for scheduling.):
 context deadline exceeded
 ```
 
@@ -489,7 +492,7 @@ The suite reuses the shared `STIRRUP_TEST_*` variables documented in
 
 `TestAgentSandbox_Lifecycle` provisions a gVisor sandbox, checks the
 scratch `HOME` and `TMPDIR` and the 65532:65532 identity, asserts gVisor
-is in force (`uname -r` contains `4.4.0`), round-trips a file under
+is in force (the `dmesg` boot banner names gVisor), round-trips a file under
 `/workspace`, and — after `Close()` — asserts the Sandbox CR, the backing
 Pod, and the per-Pod `NetworkPolicy` are all gone.
 `TestAgentSandbox_AllowlistEnforced` mirrors the raw-Pod egress test:
