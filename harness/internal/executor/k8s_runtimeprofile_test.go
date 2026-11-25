@@ -45,7 +45,12 @@ func TestK8sRuntimeProfiles_RuntimeClassNames(t *testing.T) {
 			must.Equal(runtime, profile.runtimeClassName)
 			must.Empty(profile.podAnnotations)
 			must.Empty(profile.noNetworkAnnotations)
-			must.Nil(profile.diagnose)
+			must.False(profile.strictAdmission)
+			if runtime == "gvisor" {
+				must.NotNil(profile.diagnose, "gvisor has runtime diagnostics")
+			} else {
+				must.Nil(profile.diagnose)
+			}
 		})
 	}
 	t.Run("nitro-isolated selects isolated-sandbox", func(t *testing.T) {

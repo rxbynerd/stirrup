@@ -885,13 +885,15 @@ smaller. The limit that enforces it differs by executor:
 
 For a `k8s` runtime that can be checked from inside the guest, the
 executor reads guest files after the sandbox Pod is Ready and fails the
-run when they do not match the runtime. Only `nitro-isolated` has such
-checks. Their outcome is the `sandbox_runtime_diagnostic_passed`
+run when they do not match the runtime. `gvisor` and `nitro-isolated`
+have such checks; the `k8s-sandbox` executor runs none. Their outcome
+is the `sandbox_runtime_diagnostic_passed`
 (info) or `sandbox_runtime_diagnostic_failed` (error) security event,
 documented with its keys under
-[Runtime diagnostics](executors/k8s.md#runtime-diagnostics); a
+[gVisor runtime diagnostics](executors/k8s.md#gvisor-runtime-diagnostics)
+and [Runtime diagnostics](executors/k8s.md#runtime-diagnostics) (Nitro); a
 failure of the [whole-Pod admission check](executors/k8s.md#whole-pod-admission-check)
-for that runtime emits the same failure event with check `admitted_pod`.
+for `nitro-isolated` emits the same failure event with check `admitted_pod`.
 The values the guest and the diagnostics `exec` supply have every Unicode
 control and format character dropped, are then scrubbed and are cut to
 256 characters before they enter

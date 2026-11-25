@@ -52,7 +52,7 @@ type k8sRuntimeProfile struct {
 var k8sRuntimeProfiles = map[string]k8sRuntimeProfile{
 	"":          {},
 	"runc":      {runtimeClassName: "runc"},
-	"gvisor":    {runtimeClassName: "gvisor"},
+	"gvisor":    {runtimeClassName: "gvisor", diagnose: diagnoseGVisorGuest},
 	"kata-qemu": {runtimeClassName: "kata-qemu"},
 	"kata-fc":   {runtimeClassName: "kata-fc"},
 	"kata-clh":  {runtimeClassName: "kata-clh"},

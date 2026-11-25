@@ -43,8 +43,25 @@ var fastK8sTiming = k8sTiming{
 	execReachableTimeout: 200 * time.Millisecond,
 }
 
-// reachableExec serves every pods/exec call with a clean exit and no output.
-func reachableExec(context.Context, []string, io.Reader, io.Writer, io.Writer) error { return nil }
+// gvisorGuestDump is what the gVisor runtime diagnostics read on a gVisor
+// sandbox Pod.
+const gvisorGuestDump = "begin /proc/version\n" +
+	" " + gvisorProcVersion + "\n" +
+	"end /proc/version\n" +
+	"begin /proc/sentry-meminfo\n" +
+	" Alloc:              4202 kB\n" +
+	"end /proc/sentry-meminfo\n"
+
+// reachableExec serves every pods/exec call with a clean exit, answering the
+// gVisor runtime diagnostics as a gVisor guest and every other command with
+// no output.
+func reachableExec(_ context.Context, command []string, _ io.Reader, stdout, _ io.Writer) error {
+	if slices.Equal(guestFileDumpCommand(procVersionPath, gvisorSentryMeminfoPath), command) {
+		_, err := io.WriteString(stdout, gvisorGuestDump)
+		return err
+	}
+	return nil
+}
 
 // isExecProbe reports whether command is the constructor's reachability probe.
 func isExecProbe(command []string) bool { return slices.Equal(execProbeCommand, command) }

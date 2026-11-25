@@ -1,0 +1,14 @@
+begin /proc/version
+ Linux version 4.19.0-gvisor #1 SMP Sun Jan 10 15:06:54 PST 2016
+end /proc/version
+begin /proc/sentry-meminfo
+ Alloc:              4202 kB
+ TotalAlloc:        11985 kB
+ Sys:               19030 kB
+ Mallocs:          106039
+ Frees:             87668
+ Live Objects:      18371
+ HeapAlloc:          4202 kB
+ HeapSys:           10752 kB
+ HeapObjects:       18371
+end /proc/sentry-meminfo
