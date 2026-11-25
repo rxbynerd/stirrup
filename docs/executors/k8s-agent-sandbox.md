@@ -1,7 +1,7 @@
 # Kubernetes Agent Sandbox executor (`k8s-sandbox`)
 
 The `k8s-sandbox` executor runs the agent inside a hardened, single-use
-sandbox Pod that is **provisioned through the GKE Agent Sandbox
+sandbox Pod that is **provisioned through the Agent Sandbox
 controller** rather than created directly. The executor submits an
 `agents.x-k8s.io` **Sandbox** custom resource (`v1beta1`, or `v1alpha1`
 on clusters that serve only that version); the controller
@@ -42,7 +42,7 @@ files. The reference manifests live under
 | Executor | Pod provisioned by | Use when |
 |---|---|---|
 | `k8s` | the executor itself (direct Pod create) | The cluster runs no Agent Sandbox controller, or a runtime other than gVisor is required (`runc`, `kata-*`). The executor owns the Pod's full lifecycle. |
-| `k8s-sandbox` | the GKE Agent Sandbox controller (via the Sandbox CRD) | The cluster runs the `agents.x-k8s.io` controller and gVisor isolation is wanted, and a controller-owned lifecycle (cascade GC, TTL backstop, a path toward warm pools and snapshots) is preferred over the executor managing the Pod directly. |
+| `k8s-sandbox` | the Agent Sandbox controller (via the Sandbox CRD) | The cluster runs the `agents.x-k8s.io` controller and gVisor isolation is wanted, and a controller-owned lifecycle (cascade GC, TTL backstop, a path toward warm pools and snapshots) is preferred over the executor managing the Pod directly. |
 
 Both deliver the same hardened, gVisor-capable sandbox. The choice is
 about *who owns the Pod*: with `k8s` the orchestrator does; with
@@ -233,10 +233,13 @@ serve:
 | Older GKE | `v1alpha1` only |
 | Upstream controller installed by hand (`kubernetes-sigs/agent-sandbox` v1.x) | `v1beta1` only |
 
-The fields the executor reads and writes have the same shape in every
-version: `spec.podTemplate`, `spec.shutdownTime`, `spec.shutdownPolicy`,
-the `Ready` condition in `status.conditions` and the
-`agents.x-k8s.io/pod-name` annotation. Only the `apiVersion` and the
+The fields the executor reads and writes sit at the same paths in every
+version: `spec.podTemplate`, `spec.shutdownTime`, `spec.shutdownPolicy`, the
+`Ready` condition in `status.conditions` and the `agents.x-k8s.io/pod-name`
+annotation. The `v1beta1` schema GKE serves and upstream agent-sandbox v1.0
+carry them where `v1alpha1` does. The two GKE-served versions differ only in
+`spec.replicas` (`v1alpha1`) being replaced by `spec.operatingMode`
+(`v1beta1`), and the executor sets neither. Only the `apiVersion` and the
 dynamic client's resource differ.
 
 The executor therefore discovers the version at construction time
@@ -449,15 +452,15 @@ read-only access check described in
 holds the authoritative permission table. For `k8s-sandbox` that table has
 `sandboxes.agents.x-k8s.io` verbs in place of Pod create and delete, plus
 the `pods` `get` that teardown uses, so Pod-create permission does not
-satisfy it. The check also confirms through API
-discovery that the cluster serves `sandboxes` at `agents.x-k8s.io/v1beta1`
-or `v1alpha1` (see [Sandbox API version
-selection](#sandbox-api-version-selection); a cluster serving neither fails
-the step, and the passing detail names the version the run will use), reads the `gvisor` RuntimeClass and the
+satisfy it. The check also confirms through API discovery that the
+cluster serves `sandboxes` at `agents.x-k8s.io/v1beta1` or `v1alpha1` (see
+[Sandbox API version selection](#sandbox-api-version-selection)). A
+cluster serving neither fails the step, and the passing detail names the
+version the run will use. It then reads the `gvisor` RuntimeClass and the
 namespace, and lists the namespace's NetworkPolicies to find the standing
 default-deny egress policy (each reported as `not checked`, with the step
-still `ok`, when the credentials may not read it). Failure messages and fixes are in the
-[`k8s` troubleshooting table](k8s.md#troubleshooting).
+still `ok`, when the credentials may not read it). Failure messages and
+fixes are in the [`k8s` troubleshooting table](k8s.md#troubleshooting).
 `--no-probe-executor` skips the check without contacting the API server.
 
 ## Configuration
@@ -554,8 +557,8 @@ The following are **not** in this version of the executor:
   installing the policy against the resolved Pod name or the
   controller-guaranteed `agents.x-k8s.io/sandbox-name-hash` label.
 - **Snapshots.** Checkpoint/restore of a sandbox's state is not wired up.
-- **Suspend / resume** via `spec.replicas` (scaling a Sandbox to zero and
-  back) is not exposed.
+- **Suspend / resume** via `spec.operatingMode` (`spec.replicas` on
+  `v1alpha1`), which scales a Sandbox to zero and back, is not exposed.
 - **Autoscaling** of the sandbox pool requires GKE ≥ 1.36 and is not
   configured by the executor.
 

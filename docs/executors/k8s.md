@@ -95,7 +95,7 @@ host proxy).
 
 ### Variant: provisioning via the Agent Sandbox CRD
 
-On a cluster running the GKE Agent Sandbox controller, the
+On a cluster running the Agent Sandbox controller, the
 [`k8s-sandbox` executor](k8s-agent-sandbox.md) provisions the same
 hardened sandbox Pod through an `agents.x-k8s.io` **Sandbox**
 custom resource instead of creating the Pod directly. It reuses every
@@ -2469,7 +2469,9 @@ in the step detail, and a definitive negative fails the step.
 - For `k8s-sandbox`, API discovery confirms that `agents.x-k8s.io/v1beta1`
   or `v1alpha1` serves `sandboxes`, and the passing detail names the version
   the run will use. A cluster serving neither, or a version served without
-  the resource, fails the step; a discovery request that cannot be made is `not checked`.
+  the resource, fails the step. A discovery request that cannot be made is
+  `not checked`; a real run fails on any such error, so a `not checked` note
+  does not guarantee that the run will start.
 - The namespace's NetworkPolicies are listed, looking for the
   [standing default-deny egress policy](#standing-default-deny-egress): an
   `Egress` policy whose Pod selector matches every sandbox Pod. Any such
