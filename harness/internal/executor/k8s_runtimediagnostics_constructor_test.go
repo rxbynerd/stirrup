@@ -277,7 +277,7 @@ func TestNewK8sExecutor_ReportsStartupStepsAfterPodCreate(t *testing.T) {
 		},
 		{
 			name: "runtime without diagnostics",
-			cfg:  func() K8sExecutorConfig { return constructorCfg("gvisor") },
+			cfg:  func() K8sExecutorConfig { return constructorCfg("runc") },
 			want: []string{types.SessionStepSandboxReady},
 		},
 	}
