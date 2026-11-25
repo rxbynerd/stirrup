@@ -1213,9 +1213,9 @@ With `executor.runtime: gvisor` the executor runs the
 [gVisor runtime diagnostics](#gvisor-runtime-diagnostics) before the
 run starts. They have not been run on GKE Sandbox. A manual exec gives
 a second look: `uname -r` reports a synthetic kernel version (observed
-`4.4.0` on GKE Sandbox in June 2026; gVisor releases from late April
-2026 report `4.19.0-gvisor`) and `dmesg` shows a `Starting gVisor...`
-banner, both distinct from the host kernel.
+`4.4.0` on GKE Sandbox in June 2026 and `4.19.0-gvisor` on GKE 1.37;
+gVisor releases from late April 2026 report `4.19.0-gvisor`) and `dmesg`
+shows a `Starting gVisor...` banner, both distinct from the host kernel.
 
 ```sh
 POD=$(kubectl -n stirrup-sandbox get pod -l stirrup-sandbox=true \
