@@ -312,6 +312,25 @@ func TestNewAgentSandboxExecutor_UsesTheServedSandboxVersion(t *testing.T) {
 	}
 }
 
+func TestNewAgentSandboxExecutor_CreatesTheSandboxWithStrictFieldValidation(t *testing.T) {
+	must := require.New(t)
+	f := newFakeAgentSandbox(t)
+	f.admitSandboxes(nil)
+
+	exec, _, err := f.build(t, fastK8sTiming)
+	must.NoError(err)
+	must.NoError(exec.Close())
+
+	var creates []clienttesting.CreateActionImpl
+	for _, a := range f.dyn.Actions() {
+		if c, ok := a.(clienttesting.CreateActionImpl); ok {
+			creates = append(creates, c)
+		}
+	}
+	must.Len(creates, 1)
+	must.Equal("Strict", creates[0].CreateOptions.FieldValidation)
+}
+
 func TestNewAgentSandboxExecutor_FailsBeforeAnyWriteWhenNoSandboxVersionIsServed(t *testing.T) {
 	must := require.New(t)
 	check := assert.New(t)

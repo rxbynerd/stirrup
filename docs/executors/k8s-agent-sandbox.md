@@ -255,6 +255,11 @@ later request (create, readiness polling, teardown) uses it.
   versions and asking for the Agent Sandbox controller to be installed.
   A version served without the `sandboxes` resource counts as not served.
 
+The Sandbox create sends `fieldValidation=Strict`. A served schema that
+lacks a field the executor sets, such as `spec.shutdownTime` (the cleanup
+backstop), therefore fails the create instead of the API server silently
+dropping the field.
+
 The executor uses a dynamic client rather than a typed, generated one, so it
 is not coupled to the upstream Go types. The
 [`--dry-run` access check](#dry-run-preflight) uses the same resolver and

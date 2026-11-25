@@ -126,6 +126,11 @@ func applyAgentSandboxAdmissionDeltas(spec *corev1.PodSpec) {
 	}
 }
 
+// sandboxCreateOptions makes the API server reject a Sandbox carrying a field
+// the served CRD schema lacks, rather than prune it. Pruning would silently
+// drop fields such as spec.shutdownTime, the cleanup backstop.
+var sandboxCreateOptions = metav1.CreateOptions{FieldValidation: "Strict"}
+
 // buildSandboxObject assembles the Sandbox custom resource, at the version of
 // gvr, that the Agent Sandbox controller reconciles into a Pod. shutdownPolicy
 // "Delete" + shutdownTime is the GC backstop (agentSandboxMaxTTL); the
@@ -272,7 +277,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 		return nil, withTeardownErr(fmt.Errorf("build sandbox object: %w", err), partial.egress().removePolicy())
 	}
 
-	if _, err := dyn.Resource(sandboxGVR).Namespace(cfg.Namespace).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
+	if _, err := dyn.Resource(sandboxGVR).Namespace(cfg.Namespace).Create(ctx, obj, sandboxCreateOptions); err != nil {
 		createErr := startupErr(types.BuildFailureSandboxPlatform, fmt.Errorf("create sandbox %s/%s: %w", cfg.Namespace, name, boundClusterErr(err)))
 		return nil, withTeardownErr(createErr, partial.reconcileFailedCreate(sandboxLabels(cfg.Lifecycle.RunID), err))
 	}
