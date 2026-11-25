@@ -36,6 +36,20 @@ func serveSandboxVersions(kube kubernetes.Interface, versions ...string) {
 	kube.Discovery().(*fakediscovery.FakeDiscovery).Resources = lists
 }
 
+// seedSandboxResources makes the fake cluster's discovery serve each version
+// in lists with exactly the named resources.
+func seedSandboxResources(kube kubernetes.Interface, lists map[string][]string) {
+	var out []*metav1.APIResourceList
+	for version, names := range lists {
+		list := &metav1.APIResourceList{GroupVersion: sandboxGroup + "/" + version}
+		for _, name := range names {
+			list.APIResources = append(list.APIResources, metav1.APIResource{Name: name})
+		}
+		out = append(out, list)
+	}
+	kube.Discovery().(*fakediscovery.FakeDiscovery).Resources = out
+}
+
 func TestResolveSandboxGVR_PicksTheMostPreferredServedVersion(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -46,33 +60,58 @@ func TestResolveSandboxGVR_PicksTheMostPreferredServedVersion(t *testing.T) {
 		{name: "only v1beta1", served: []string{"v1beta1"}, want: testSandboxGVR},
 		{name: "only v1alpha1", served: []string{"v1alpha1"}, want: testSandboxGVRAlpha},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
 			must := require.New(t)
 			check := assert.New(t)
 			kube := fake.NewClientset()
-			serveSandboxVersions(kube, tt.served...)
+			serveSandboxVersions(kube, tc.served...)
 
 			got, err := resolveSandboxGVR(context.Background(), kube.Discovery())
 
 			must.NoError(err)
-			check.Equal(tt.want, got)
+			check.Equal(tc.want, got)
 		})
 	}
 }
 
-func TestResolveSandboxGVR_FallsBackPastAVersionWithoutTheResource(t *testing.T) {
-	must := require.New(t)
-	check := assert.New(t)
-	kube := fake.NewClientset()
-	serveSandboxVersions(kube, "v1alpha1")
-	disco := kube.Discovery().(*fakediscovery.FakeDiscovery)
-	disco.Resources = append(disco.Resources, &metav1.APIResourceList{GroupVersion: sandboxGroup + "/v1beta1"})
+func TestResolveSandboxGVR_SkipsAVersionWithoutTheSandboxesResource(t *testing.T) {
+	tests := []struct {
+		name string
+		// lists maps a version to the resource names it serves; a version
+		// that is absent from the map is not served.
+		lists map[string][]string
+		want  schema.GroupVersionResource
+	}{
+		{
+			name:  "v1beta1 without sandboxes falls back to v1alpha1",
+			lists: map[string][]string{"v1beta1": {}, "v1alpha1": {sandboxResource}},
+			want:  testSandboxGVRAlpha,
+		},
+		{
+			name:  "v1alpha1 without sandboxes is not reached when v1beta1 serves them",
+			lists: map[string][]string{"v1beta1": {sandboxResource}, "v1alpha1": {}},
+			want:  testSandboxGVR,
+		},
+		{
+			name:  "other resources do not stand in for sandboxes",
+			lists: map[string][]string{"v1beta1": {"sandboxes/status", "pods"}, "v1alpha1": {sandboxResource}},
+			want:  testSandboxGVRAlpha,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			kube := fake.NewClientset()
+			seedSandboxResources(kube, tc.lists)
 
-	got, err := resolveSandboxGVR(context.Background(), disco)
+			got, err := resolveSandboxGVR(context.Background(), kube.Discovery())
 
-	must.NoError(err)
-	check.Equal(testSandboxGVRAlpha, got)
+			must.NoError(err)
+			check.Equal(tc.want, got)
+		})
+	}
 }
 
 func TestResolveSandboxGVR_NeitherVersionServedIsAnError(t *testing.T) {
@@ -87,17 +126,39 @@ func TestResolveSandboxGVR_NeitherVersionServedIsAnError(t *testing.T) {
 }
 
 func TestResolveSandboxGVR_ServedWithoutTheResourceIsAnError(t *testing.T) {
-	must := require.New(t)
-	kube := fake.NewClientset()
-	kube.Discovery().(*fakediscovery.FakeDiscovery).Resources = []*metav1.APIResourceList{
-		{GroupVersion: sandboxGroup + "/v1beta1"},
-		{GroupVersion: sandboxGroup + "/v1alpha1"},
+	tests := []struct {
+		name    string
+		lists   map[string][]string
+		wantMsg string
+	}{
+		{
+			name:    "both versions lack the resource",
+			lists:   map[string][]string{"v1beta1": {}, "v1alpha1": {}},
+			wantMsg: "the cluster serves agents.x-k8s.io/v1beta1 and agents.x-k8s.io/v1alpha1 but not the sandboxes resource",
+		},
+		{
+			name:    "only v1beta1 is served, without the resource",
+			lists:   map[string][]string{"v1beta1": {"pods"}},
+			wantMsg: "the cluster serves agents.x-k8s.io/v1beta1 but not the sandboxes resource",
+		},
+		{
+			name:    "only v1alpha1 is served, without the resource",
+			lists:   map[string][]string{"v1alpha1": {"sandboxes/status"}},
+			wantMsg: "the cluster serves agents.x-k8s.io/v1alpha1 but not the sandboxes resource",
+		},
 	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			kube := fake.NewClientset()
+			seedSandboxResources(kube, tc.lists)
 
-	_, err := resolveSandboxGVR(context.Background(), kube.Discovery())
+			_, err := resolveSandboxGVR(context.Background(), kube.Discovery())
 
-	must.ErrorIs(err, errSandboxResourceMissing)
-	must.EqualError(err, "the cluster serves agents.x-k8s.io/v1beta1 and agents.x-k8s.io/v1alpha1 but not the sandboxes resource")
+			must.ErrorIs(err, errSandboxResourceMissing)
+			must.EqualError(err, tc.wantMsg)
+		})
+	}
 }
 
 func TestResolveSandboxGVR_OtherDiscoveryErrorsFailClosedWithoutFallback(t *testing.T) {
