@@ -919,10 +919,9 @@ uses one.
 
 **G9. The `k8s-sandbox` executor is GKE-specific.** It forces
 `runtimeClassName: gvisor`, a `sandbox.gke.io/runtime` node selector and
-toleration (`agentsandbox.go:63-110`), and pins the CRD at
-`agents.x-k8s.io/v1alpha1` (`agentsandbox_api.go:12`; the executor now
-discovers the served version, preferring `v1beta1`). AWS's samples use
-the upstream controller at `v1beta1`. [SAMPLES-IDE] The warm-pool
+toleration (`agentsandbox.go:63-110`), and discovers the served Agent
+Sandbox API version, preferring `v1beta1` (`resolveSandboxGVR`). AWS's
+samples use the upstream controller at `v1beta1`. [SAMPLES-IDE] The warm-pool
 feature that AWS recommends for fast starts ("about two seconds"
 [BLOG]) is also the feature Stirrup's executor refuses today
 (`agentsandbox.go:263-270`), because its per-Pod egress policy would
@@ -1277,15 +1276,13 @@ mirror invariant.
 
 ### `k8s-sandbox` and warm pools (separate design)
 
-Making `k8s-sandbox` work on EKS needs three things, in increasing
+Making `k8s-sandbox` work on EKS needs two things, in increasing
 size:
 
 1. Move the GKE admission deltas (`applyAgentSandboxAdmissionDeltas`)
    behind the runtime profile so they apply only when the runtime is
    `gvisor`, and stop forcing `gvisor` when another runtime is named.
-2. Discover the served Agent Sandbox API version instead of pinning
-   `v1alpha1`, and build the object in the matching shape.
-3. Warm pools: claim a pre-booted Pod through a `SandboxClaim` against
+2. Warm pools: claim a pre-booted Pod through a `SandboxClaim` against
    a `SandboxTemplate`. This breaks two current assumptions. The egress
    policy must bind to the adopted Pod (by the controller's
    `agents.x-k8s.io/sandbox-name-hash` label, as
@@ -1297,7 +1294,7 @@ size:
    network-isolated pool is a distinct template from a networked one,
    because the annotation is read once at Pod creation.
 
-Items 1 and 2 are mechanical. Item 3 is a design of its own and should
+Item 1 is mechanical. Item 2 is a design of its own and should
 be written only once the cold-start measurement from live validation
 shows it is needed. If a Nitro Sandbox on an already-provisioned node
 is Ready in a few seconds, warm pools buy little for a run that lasts
