@@ -20,6 +20,10 @@ import (
 	clienttesting "k8s.io/client-go/testing"
 )
 
+// fakeDiscoveryResource is the resource the fake discovery client records its
+// requests under; discovery is not an access the probe reviews.
+const fakeDiscoveryResource = "resource"
+
 // observedAccess converts recorded fake-client actions to the permissions
 // they need, in k8sAccess.String form.
 func observedAccess(actions ...[]clienttesting.Action) map[string]bool {
@@ -27,6 +31,9 @@ func observedAccess(actions ...[]clienttesting.Action) map[string]bool {
 	for _, list := range actions {
 		for _, a := range list {
 			gvr := a.GetResource()
+			if a.GetVerb() == "get" && gvr.Resource == fakeDiscoveryResource {
+				continue
+			}
 			access := k8sAccess{group: gvr.Group, resource: gvr.Resource, subresource: a.GetSubresource(), verb: a.GetVerb()}
 			seen[access.String()] = true
 		}
@@ -121,7 +128,7 @@ func TestK8sAccessProbe_CoversEveryCallTheK8sExecutorMakes(t *testing.T) {
 
 func TestK8sAccessProbe_CoversEveryCallTheK8sSandboxExecutorMakes(t *testing.T) {
 	must := require.New(t)
-	ambiguous := apierrors.NewServerTimeout(sandboxGVR.GroupResource(), "create", 1)
+	ambiguous := apierrors.NewServerTimeout(testSandboxGVR.GroupResource(), "create", 1)
 	var recorded [][]clienttesting.Action
 
 	t.Run("construct and close", func(t *testing.T) {
@@ -141,7 +148,7 @@ func TestK8sAccessProbe_CoversEveryCallTheK8sSandboxExecutorMakes(t *testing.T) 
 		f := newFakeAgentSandbox(t)
 		f.dyn.PrependReactor("create", "sandboxes", func(action clienttesting.Action) (bool, runtime.Object, error) {
 			obj := action.(clienttesting.CreateAction).GetObject().(*metav1unstructured.Unstructured).DeepCopy()
-			must.NoError(f.dyn.Tracker().Create(sandboxGVR, obj, testK8sNamespace))
+			must.NoError(f.dyn.Tracker().Create(testSandboxGVR, obj, testK8sNamespace))
 			return true, nil, ambiguous
 		})
 		f.lingerOnDelete(t, 3)

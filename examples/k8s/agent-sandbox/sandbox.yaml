@@ -15,11 +15,11 @@
 # env); under mode "allowlist" the env also carries HTTP_PROXY/HTTPS_PROXY/NO_PROXY
 # and the per-Pod NetworkPolicy permits DNS + the proxy peer instead of denying all.
 #
-# API version: agents.x-k8s.io/v1alpha1 is what GKE Agent Sandbox SERVES.
-# Upstream HEAD has moved to v1beta1 with a different field shape; the executor
-# pins v1alpha1 via sandboxGVR (agentsandbox_api.go). Do not "upgrade" this to
-# v1beta1 for a GKE cluster — admission would reject the unknown shape.
-apiVersion: agents.x-k8s.io/v1alpha1
+# API version: the executor discovers which agents.x-k8s.io version the cluster
+# serves (v1beta1 first, then v1alpha1; resolveSandboxGVR in agentsandbox_api.go)
+# and sets it as the apiVersion. The object has the same shape in both, so a
+# cluster that serves only v1alpha1 receives this object with that apiVersion.
+apiVersion: agents.x-k8s.io/v1beta1
 kind: Sandbox
 metadata:
   # Generated as "stirrup-<12 hex chars>" by generatePodName(). On the

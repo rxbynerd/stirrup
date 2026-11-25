@@ -95,9 +95,9 @@ host proxy).
 
 ### Variant: provisioning via the Agent Sandbox CRD
 
-On a cluster running the GKE Agent Sandbox controller, the
+On a cluster running the Agent Sandbox controller, the
 [`k8s-sandbox` executor](k8s-agent-sandbox.md) provisions the same
-hardened sandbox Pod through an `agents.x-k8s.io/v1alpha1` **Sandbox**
+hardened sandbox Pod through an `agents.x-k8s.io` **Sandbox**
 custom resource instead of creating the Pod directly. It reuses every
 `K8s*` flag, the hardened Pod spec, and the per-Pod egress
 `NetworkPolicy` documented here; it differs only in *who owns the Pod*
@@ -2466,9 +2466,12 @@ in the step detail, and a definitive negative fails the step.
   for `k8s-sandbox`) is read from `node.k8s.io`. A missing RuntimeClass
   fails the step; a refused read is `not checked`. With `executor.runtime`
   empty no RuntimeClass is read.
-- For `k8s-sandbox`, API discovery confirms the `agents.x-k8s.io/v1alpha1`
-  group serves `sandboxes`. A group or resource that is not served fails the
-  step; a discovery request that cannot be made is `not checked`.
+- For `k8s-sandbox`, API discovery confirms that `agents.x-k8s.io/v1beta1`
+  or `v1alpha1` serves `sandboxes`, and the passing detail names the version
+  the run will use. A cluster serving neither, or a version served without
+  the resource, fails the step. A discovery request that cannot be made is
+  `not checked`; a real run fails on any such error, so a `not checked` note
+  does not guarantee that the run will start.
 - The namespace's NetworkPolicies are listed, looking for the
   [standing default-deny egress policy](#standing-default-deny-egress): an
   `Egress` policy whose Pod selector matches every sandbox Pod. Any such
@@ -2530,8 +2533,8 @@ it, the probe uses the same kubeconfig resolution as a run:
 | `credentials lack permission in namespace "<ns>": "<verb> <resource>" (<reason>)` (dry run) | Every listed permission is missing in `executor.k8sNamespace`: the credentials' Role lacks the verbs, the Role is not bound there, or the namespace does not exist (credentials that cannot read namespaces see a missing namespace as a denial). | Apply [`rbac.yaml`](../../examples/k8s/rbac.yaml) (or [`rbac-agent-sandbox.yaml`](../../examples/k8s/agent-sandbox/rbac-agent-sandbox.yaml)) in that namespace, or grant the verbs; confirm the namespace name. |
 | `access review for "<verb> <resource>" in namespace "<ns>" failed: ...` (dry run) | The review request itself failed: the API server is unreachable, the credentials are rejected, `create` on `selfsubjectaccessreviews` was removed, or `context deadline exceeded` because the sequential reviews used up the `--dry-run-timeout` budget (30 s by default). | Check reachability and credentials (`kubectl auth can-i create selfsubjectaccessreviews`); raise `--dry-run-timeout` for a slow API server. |
 | `build kube rest config: ...` / `build kube clientset: ...` (dry run) | No usable kubeconfig or in-cluster configuration. | Set `--k8s-kubeconfig` (`executor.k8sKubeconfig`) or `$KUBECONFIG`, or run in-cluster. |
-| `the Agent Sandbox API agents.x-k8s.io/v1alpha1 is not served by the cluster` (dry run, `k8s-sandbox`) | The Agent Sandbox controller and its CRD are not installed, or serve another version. | Install the controller; see [`k8s-agent-sandbox.md`](k8s-agent-sandbox.md). |
-| `the cluster serves agents.x-k8s.io/v1alpha1 but not the sandboxes resource` (dry run, `k8s-sandbox`) | The group is registered without the `sandboxes` resource, usually an incomplete CRD install. | Reinstall the Agent Sandbox CRDs. |
+| `the Agent Sandbox API agents.x-k8s.io/v1beta1 or agents.x-k8s.io/v1alpha1 is not served by the cluster (install the Agent Sandbox controller)` (dry run, `k8s-sandbox`) | The Agent Sandbox controller and its CRD are not installed, or serve only a version the executor does not support. | Install the controller; see [`k8s-agent-sandbox.md`](k8s-agent-sandbox.md). |
+| `the cluster serves agents.x-k8s.io/v1beta1 but not the sandboxes resource` (dry run, `k8s-sandbox`) | A served version of the group lacks the `sandboxes` resource, usually an incomplete CRD install. When both versions lack it, the message names both (`agents.x-k8s.io/v1beta1 and agents.x-k8s.io/v1alpha1`). | Reinstall the Agent Sandbox CRDs. |
 | `namespace "<ns>" does not exist in the cluster` (dry run) | `executor.k8sNamespace` names a namespace that is absent. | Create the namespace or correct the name. Credentials that cannot read namespaces get the permission-denied row instead. |
 | `RuntimeClass "<name>" does not exist in the cluster` (dry run) | The requested RuntimeClass is not registered. The real-run counterpart is the row below. | `kubectl get runtimeclass`; apply [`runtimeclass.yaml`](../../examples/k8s/runtimeclass.yaml) or pick a registered runtime. For `isolated-sandbox` (`nitro-isolated`) the class comes from EKS Auto Mode instead; see [Troubleshooting on Nitro](#troubleshooting-on-nitro). |
 | `executor.network.mode must be "none" or "allowlist" for executor.type=...` (`config-validation`) | `network.mode` is empty or another value. | Set `executor.network.mode` to `none` or `allowlist`. |

@@ -86,7 +86,7 @@ The agent runs inside one of six executors, selected with
 | `local` | none (host process) | Trusted local iteration. |
 | `container` | a Docker/Podman container | Single-host sandbox with an in-process egress proxy. |
 | `k8s` | a Pod on a Kubernetes cluster | Pod-per-run with a hardened `securityContext`, per-tenant RuntimeClass, and `NetworkPolicy` egress. See [`docs/executors/k8s.md`](docs/executors/k8s.md). |
-| `k8s-sandbox` | a Pod provisioned via the Agent Sandbox CRD | Variant of `k8s`: the GKE Agent Sandbox controller creates the Pod from an `agents.x-k8s.io` `Sandbox` resource; gVisor-only. See [`docs/executors/k8s-agent-sandbox.md`](docs/executors/k8s-agent-sandbox.md). |
+| `k8s-sandbox` | a Pod provisioned via the Agent Sandbox CRD | Variant of `k8s`: the Agent Sandbox controller creates the Pod from an `agents.x-k8s.io` `Sandbox` resource; gVisor-only. See [`docs/executors/k8s-agent-sandbox.md`](docs/executors/k8s-agent-sandbox.md). |
 | `api` | no shell (VCS-backed, read-only) | Reviews/plans against a Git host without a workspace. |
 | `none` | no execution surface at all | No local filesystem or shell access, not even read-only. For MCP-only / server-side-tool runs. Not to be confused with `executor.network.mode: "none"` (deny-all egress on a filesystem-capable executor) — see [`docs/configuration.md`](docs/configuration.md#components). |
 

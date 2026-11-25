@@ -49,7 +49,7 @@ func dynamicClientFromConfig(t *testing.T, kubeconfig string) dynamic.Interface 
 
 // TestAgentSandbox_Lifecycle exercises the full provision→exec→file-I/O→teardown
 // lifecycle of the Agent Sandbox executor against a live cluster. It mirrors
-// TestK8sExecutor_Lifecycle but provisions through the agents.x-k8s.io/v1alpha1
+// TestK8sExecutor_Lifecycle but provisions through the agents.x-k8s.io
 // Sandbox CRD (controller-created Pod) rather than a raw Pod. The constructor
 // forces the gVisor runtime, so this run is sandboxed regardless of the
 // RuntimeClass the env supplies.
@@ -134,7 +134,7 @@ func TestAgentSandbox_Lifecycle(t *testing.T) {
 	// the time Close returns the Sandbox should already be absent; a short poll
 	// absorbs read-after-delete lag on the Sandbox/Pod/policy reads.
 	assertGone(t, "sandbox", func() error {
-		_, getErr := dyn.Resource(sandboxGVR).Namespace(namespace).Get(context.Background(), sandboxName, metav1.GetOptions{})
+		_, getErr := dyn.Resource(exec.sandboxGVR).Namespace(namespace).Get(context.Background(), sandboxName, metav1.GetOptions{})
 		return getErr
 	})
 	assertGone(t, "pod", func() error {

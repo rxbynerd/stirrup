@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -131,9 +132,9 @@ func k8sRequiredAccess(executorType string) []k8sAccess {
 		}
 	case "k8s-sandbox":
 		workload = []k8sAccess{
-			{group: sandboxGVR.Group, resource: sandboxGVR.Resource, verb: "create"},
-			{group: sandboxGVR.Group, resource: sandboxGVR.Resource, verb: "get"},
-			{group: sandboxGVR.Group, resource: sandboxGVR.Resource, verb: "delete"},
+			{group: sandboxGroup, resource: sandboxResource, verb: "create"},
+			{group: sandboxGroup, resource: sandboxResource, verb: "get"},
+			{group: sandboxGroup, resource: sandboxResource, verb: "delete"},
 			{resource: "pods", verb: "get"},
 		}
 	default:
@@ -389,24 +390,21 @@ func hasEgressPolicyType(policy *networkingv1.NetworkPolicy) bool {
 	return slices.Contains(policy.Spec.PolicyTypes, networkingv1.PolicyTypeEgress)
 }
 
-// checkSandboxAPIServed confirms the Agent Sandbox API group and the sandboxes
-// resource are served. A refused or failed discovery request is reported as
+// checkSandboxAPIServed resolves the Sandbox API version the executor will
+// use, through the same resolver the constructor uses, and reports it. A
+// cluster serving no supported version, or serving one without the sandboxes
+// resource, is a failure. A refused or failed discovery request is reported as
 // not checked rather than as a failure.
 func checkSandboxAPIServed(ctx context.Context, kube kubernetes.Interface) optionalCheck {
-	gv := sandboxGVR.GroupVersion().String()
-	resources, err := kube.Discovery().ServerResourcesForGroupVersionWithContext(ctx, gv)
+	gvr, err := resolveSandboxGVR(ctx, kube.Discovery())
 	switch {
-	case apierrors.IsNotFound(err):
-		return optionalCheck{kind: K8sProbeSandboxAPIMissing, problem: fmt.Sprintf("the Agent Sandbox API %s is not served by the cluster (install the Agent Sandbox controller)", gv)}
-	case err != nil:
-		return optionalCheck{note: fmt.Sprintf("Agent Sandbox API %s not checked (%v)", gv, err)}
+	case err == nil:
+		return optionalCheck{note: fmt.Sprintf("Agent Sandbox API %s served", gvr.GroupVersion())}
+	case errors.Is(err, errSandboxAPINotServed), errors.Is(err, errSandboxResourceMissing):
+		return optionalCheck{kind: K8sProbeSandboxAPIMissing, problem: err.Error()}
+	default:
+		return optionalCheck{note: fmt.Sprintf("Agent Sandbox API not checked (%v)", err)}
 	}
-	for _, r := range resources.APIResources {
-		if r.Name == sandboxGVR.Resource {
-			return optionalCheck{note: fmt.Sprintf("Agent Sandbox API %s served", gv)}
-		}
-	}
-	return optionalCheck{kind: K8sProbeSandboxAPIMissing, problem: fmt.Sprintf("the cluster serves %s but not the %s resource", gv, sandboxGVR.Resource)}
 }
 
 // checkRuntimeClassExists reads the RuntimeClass the Pods will request. A

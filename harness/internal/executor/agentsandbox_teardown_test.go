@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"testing"
 	"time"
 
@@ -47,14 +48,33 @@ type fakeAgentSandbox struct {
 	released           bool
 	policyDeletedEarly bool
 	readsLeft          int
+	// gvr is the Sandbox version the cluster serves and the executor resolves.
+	gvr schema.GroupVersionResource
 }
 
+// newFakeAgentSandbox returns a cluster serving the Sandbox API at v1beta1.
 func newFakeAgentSandbox(t *testing.T) *fakeAgentSandbox {
 	t.Helper()
-	return &fakeAgentSandbox{
-		cs:  fake.NewClientset(),
-		dyn: dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{sandboxGVR: "SandboxList"}),
+	return newFakeAgentSandboxServing(t, "v1beta1")
+}
+
+// newFakeAgentSandboxServing returns a cluster serving the Sandbox API at
+// exactly the given versions.
+func newFakeAgentSandboxServing(t *testing.T, versions ...string) *fakeAgentSandbox {
+	t.Helper()
+	f := &fakeAgentSandbox{
+		cs: fake.NewClientset(),
+		dyn: dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+			testSandboxGVR:      "SandboxList",
+			testSandboxGVRAlpha: "SandboxList",
+		}),
 	}
+	serveSandboxVersions(f.cs, versions...)
+	f.gvr = testSandboxGVRAlpha
+	if slices.Contains(versions, "v1beta1") {
+		f.gvr = testSandboxGVR
+	}
+	return f
 }
 
 // admitSandboxes stands in for the Agent Sandbox controller: every created
@@ -100,7 +120,7 @@ func (f *fakeAgentSandbox) createBackingPod(sandbox *metav1unstructured.Unstruct
 	pod.Name = sandbox.GetName()
 	pod.Namespace = sandbox.GetNamespace()
 	pod.UID = "uid-backing"
-	pod.OwnerReferences = []metav1.OwnerReference{sandboxControllerRef(sandbox.GetName(), sandbox.GetUID())}
+	pod.OwnerReferences = []metav1.OwnerReference{sandboxControllerRef(f.gvr, sandbox.GetName(), sandbox.GetUID())}
 	pod.Status = corev1.PodStatus{
 		Phase:             corev1.PodRunning,
 		ContainerStatuses: []corev1.ContainerStatus{{Name: k8sAgentContainer, Ready: true}},
@@ -113,9 +133,9 @@ func (f *fakeAgentSandbox) createBackingPod(sandbox *metav1unstructured.Unstruct
 
 // sandboxControllerRef is the controller reference the Agent Sandbox
 // controller sets on a backing Pod.
-func sandboxControllerRef(name string, uid k8stypes.UID) metav1.OwnerReference {
+func sandboxControllerRef(gvr schema.GroupVersionResource, name string, uid k8stypes.UID) metav1.OwnerReference {
 	return metav1.OwnerReference{
-		APIVersion: sandboxGVR.GroupVersion().String(),
+		APIVersion: gvr.GroupVersion().String(),
 		Kind:       "Sandbox",
 		Name:       name,
 		UID:        uid,
@@ -136,13 +156,13 @@ func (f *fakeAgentSandbox) lingerOnDelete(t *testing.T, reads int) {
 	f.readsLeft = reads
 	f.dyn.PrependReactor("delete", "sandboxes", func(action clienttesting.Action) (bool, runtime.Object, error) {
 		del := action.(clienttesting.DeleteAction)
-		obj, err := f.dyn.Tracker().Get(sandboxGVR, del.GetNamespace(), del.GetName())
+		obj, err := f.dyn.Tracker().Get(f.gvr, del.GetNamespace(), del.GetName())
 		if err != nil {
 			return false, nil, nil
 		}
 		sandbox := obj.(*metav1unstructured.Unstructured).DeepCopy()
 		sandbox.SetDeletionTimestamp(&metav1.Time{Time: time.Now()})
-		if err := f.dyn.Tracker().Update(sandboxGVR, sandbox, del.GetNamespace()); err != nil {
+		if err := f.dyn.Tracker().Update(f.gvr, sandbox, del.GetNamespace()); err != nil {
 			return true, nil, err
 		}
 		f.terminating = true
@@ -157,7 +177,7 @@ func (f *fakeAgentSandbox) lingerOnDelete(t *testing.T, reads int) {
 			return false, nil, nil
 		}
 		get := action.(clienttesting.GetAction)
-		if err := f.dyn.Tracker().Delete(sandboxGVR, get.GetNamespace(), get.GetName()); err != nil && !apierrors.IsNotFound(err) {
+		if err := f.dyn.Tracker().Delete(f.gvr, get.GetNamespace(), get.GetName()); err != nil && !apierrors.IsNotFound(err) {
 			return true, nil, err
 		}
 		f.removeBackingPod(get.GetNamespace(), get.GetName())
@@ -265,6 +285,78 @@ func TestNewAgentSandboxExecutor_BindsReadySandboxAndClosesInOrder(t *testing.T)
 	must.Len(f.sandboxDeletes(), 1, "a second Close issued another delete")
 }
 
+func TestNewAgentSandboxExecutor_UsesTheServedSandboxVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		served  []string
+		want    schema.GroupVersionResource
+		wantAPI string
+	}{
+		{name: "both served", served: []string{"v1alpha1", "v1beta1"}, want: testSandboxGVR, wantAPI: "agents.x-k8s.io/v1beta1"},
+		{name: "only v1alpha1 served", served: []string{"v1alpha1"}, want: testSandboxGVRAlpha, wantAPI: "agents.x-k8s.io/v1alpha1"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			f := newFakeAgentSandboxServing(t, tc.served...)
+			f.admitSandboxes(nil)
+
+			exec, _, err := f.build(t, fastK8sTiming)
+			must.NoError(err)
+			must.NoError(exec.Close())
+
+			var created *metav1unstructured.Unstructured
+			for _, a := range f.dyn.Actions() {
+				check.Equal(tc.want, a.GetResource(), "a %s used another Sandbox version", a.GetVerb())
+				if c, ok := a.(clienttesting.CreateAction); ok {
+					created = c.GetObject().(*metav1unstructured.Unstructured)
+				}
+			}
+			must.NotNil(created, "no sandbox create recorded")
+			check.Equal(tc.wantAPI, created.GetAPIVersion())
+		})
+	}
+}
+
+func TestNewAgentSandboxExecutor_CreatesTheSandboxWithStrictFieldValidation(t *testing.T) {
+	must := require.New(t)
+	f := newFakeAgentSandbox(t)
+	f.admitSandboxes(nil)
+
+	exec, _, err := f.build(t, fastK8sTiming)
+	must.NoError(err)
+	must.NoError(exec.Close())
+
+	var creates []clienttesting.CreateActionImpl
+	for _, a := range f.dyn.Actions() {
+		if c, ok := a.(clienttesting.CreateActionImpl); ok {
+			creates = append(creates, c)
+		}
+	}
+	must.Len(creates, 1)
+	must.Equal("Strict", creates[0].CreateOptions.FieldValidation)
+}
+
+func TestNewAgentSandboxExecutor_FailsBeforeAnyWriteWhenNoSandboxVersionIsServed(t *testing.T) {
+	must := require.New(t)
+	check := assert.New(t)
+	f := newFakeAgentSandboxServing(t)
+
+	_, _, err := f.build(t, fastK8sTiming)
+
+	must.ErrorIs(err, errSandboxAPINotServed)
+	must.ErrorContains(err, "install the Agent Sandbox controller")
+	var startup *StartupError
+	must.ErrorAs(err, &startup)
+	check.Equal(types.BuildFailureSandboxPlatform, startup.Reason)
+	check.Empty(f.dyn.Actions(), "the Sandbox API was used without a served version")
+	for _, a := range f.cs.Actions() {
+		check.Equal("get", a.GetVerb(), "a cluster write preceded version resolution")
+		check.Equal(fakeDiscoveryResource, a.GetResource().Resource)
+	}
+}
+
 func TestNewAgentSandboxExecutor_RollsBackThroughClose(t *testing.T) {
 	t.Run("readiness failure", func(t *testing.T) {
 		must := require.New(t)
@@ -354,7 +446,7 @@ func TestAgentSandboxExecutor_CloseRetainsPolicy(t *testing.T) {
 			name: "sandbox delete forbidden",
 			arrange: func(_ *testing.T, f *fakeAgentSandbox, _ string) {
 				f.dyn.PrependReactor("delete", "sandboxes", func(clienttesting.Action) (bool, runtime.Object, error) {
-					return true, nil, apierrors.NewForbidden(sandboxGVR.GroupResource(), "x", errors.New("denied by RBAC"))
+					return true, nil, apierrors.NewForbidden(testSandboxGVR.GroupResource(), "x", errors.New("denied by RBAC"))
 				})
 			},
 			wantErr: "denied by RBAC",
@@ -372,7 +464,7 @@ func TestAgentSandboxExecutor_CloseRetainsPolicy(t *testing.T) {
 			name: "sandbox delete answers not found while the sandbox remains",
 			arrange: func(_ *testing.T, f *fakeAgentSandbox, name string) {
 				f.dyn.PrependReactor("delete", "sandboxes", func(clienttesting.Action) (bool, runtime.Object, error) {
-					return true, nil, apierrors.NewNotFound(sandboxGVR.GroupResource(), name)
+					return true, nil, apierrors.NewNotFound(testSandboxGVR.GroupResource(), name)
 				})
 			},
 			wantErr: "sandbox deletion not confirmed within the 100ms teardown bound",
@@ -381,7 +473,7 @@ func TestAgentSandboxExecutor_CloseRetainsPolicy(t *testing.T) {
 			name: "sandbox delete answers conflict while the sandbox remains",
 			arrange: func(_ *testing.T, f *fakeAgentSandbox, name string) {
 				f.dyn.PrependReactor("delete", "sandboxes", func(clienttesting.Action) (bool, runtime.Object, error) {
-					return true, nil, apierrors.NewConflict(sandboxGVR.GroupResource(), name, errors.New("precondition failed"))
+					return true, nil, apierrors.NewConflict(testSandboxGVR.GroupResource(), name, errors.New("precondition failed"))
 				})
 			},
 			wantErr: "gave up within the 100ms teardown bound",
@@ -482,15 +574,23 @@ func TestAgentSandboxExecutor_CloseWaitsForTheBackingPod(t *testing.T) {
 }
 
 func TestNewAgentSandboxExecutor_ReconcilesFailedCreate(t *testing.T) {
-	definitive := apierrors.NewForbidden(sandboxGVR.GroupResource(), "x", errors.New("exceeded quota"))
-	ambiguous := apierrors.NewServerTimeout(sandboxGVR.GroupResource(), "create", 1)
+	for _, version := range []string{"v1beta1", "v1alpha1"} {
+		t.Run(version, func(t *testing.T) { reconcileFailedCreateScenarios(t, version) })
+	}
+}
+
+// reconcileFailedCreateScenarios runs the failed-create cases against a
+// cluster serving only the given Sandbox version.
+func reconcileFailedCreateScenarios(t *testing.T, version string) {
+	definitive := apierrors.NewForbidden(testSandboxGVR.GroupResource(), "x", errors.New("exceeded quota"))
+	ambiguous := apierrors.NewServerTimeout(testSandboxGVR.GroupResource(), "create", 1)
 	persistThenFail := func(f *fakeAgentSandbox, createErr error, labels map[string]string) {
 		f.dyn.PrependReactor("create", "sandboxes", func(action clienttesting.Action) (bool, runtime.Object, error) {
 			obj := action.(clienttesting.CreateAction).GetObject().(*metav1unstructured.Unstructured).DeepCopy()
 			if labels != nil {
 				obj.SetLabels(labels)
 			}
-			if err := f.dyn.Tracker().Create(sandboxGVR, obj, testK8sNamespace); err != nil {
+			if err := f.dyn.Tracker().Create(f.gvr, obj, testK8sNamespace); err != nil {
 				return true, nil, err
 			}
 			return true, nil, createErr
@@ -499,7 +599,7 @@ func TestNewAgentSandboxExecutor_ReconcilesFailedCreate(t *testing.T) {
 
 	t.Run("definitive rejection with no sandbox removes the policy", func(t *testing.T) {
 		must := require.New(t)
-		f := newFakeAgentSandbox(t)
+		f := newFakeAgentSandboxServing(t, version)
 		f.dyn.PrependReactor("create", "sandboxes", func(clienttesting.Action) (bool, runtime.Object, error) {
 			return true, nil, definitive
 		})
@@ -513,7 +613,7 @@ func TestNewAgentSandboxExecutor_ReconcilesFailedCreate(t *testing.T) {
 
 	t.Run("ambiguous error with no sandbox retains the policy", func(t *testing.T) {
 		must := require.New(t)
-		f := newFakeAgentSandbox(t)
+		f := newFakeAgentSandboxServing(t, version)
 		f.dyn.PrependReactor("create", "sandboxes", func(clienttesting.Action) (bool, runtime.Object, error) {
 			return true, nil, ambiguous
 		})
@@ -528,7 +628,7 @@ func TestNewAgentSandboxExecutor_ReconcilesFailedCreate(t *testing.T) {
 	for name, createErr := range map[string]error{"ambiguous": ambiguous, "definitive": definitive} {
 		t.Run(name+" error with the sandbox present tears it down", func(t *testing.T) {
 			must := require.New(t)
-			f := newFakeAgentSandbox(t)
+			f := newFakeAgentSandboxServing(t, version)
 			persistThenFail(f, createErr, nil)
 			f.lingerOnDelete(t, 3)
 
@@ -541,7 +641,7 @@ func TestNewAgentSandboxExecutor_ReconcilesFailedCreate(t *testing.T) {
 
 	t.Run("sandbox without this run's labels is left alone", func(t *testing.T) {
 		must := require.New(t)
-		f := newFakeAgentSandbox(t)
+		f := newFakeAgentSandboxServing(t, version)
 		persistThenFail(f, ambiguous, map[string]string{"app": "other"})
 
 		_, logs, err := f.build(t, fastK8sTiming)
@@ -550,6 +650,40 @@ func TestNewAgentSandboxExecutor_ReconcilesFailedCreate(t *testing.T) {
 		must.Empty(f.sandboxDeletes(), "a sandbox this run cannot prove it owns was deleted")
 		f.requireRetained(t, err, logs, f.sandboxName(t))
 	})
+}
+
+func TestNewAgentSandboxExecutor_FailsBeforeAnyWriteWhenSandboxDiscoveryFails(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "unavailable", err: apierrors.NewServiceUnavailable("apiserver restarting")},
+		{name: "forbidden", err: apierrors.NewForbidden(schema.GroupResource{Resource: "resource"}, "", errors.New("denied by RBAC"))},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			check := assert.New(t)
+			f := newFakeAgentSandboxServing(t, "v1alpha1")
+			failed := false
+			f.cs.PrependReactor("get", fakeDiscoveryResource, func(clienttesting.Action) (bool, runtime.Object, error) {
+				if failed {
+					return false, nil, nil
+				}
+				failed = true
+				return true, nil, tc.err
+			})
+
+			_, _, err := f.build(t, fastK8sTiming)
+
+			must.ErrorIs(err, tc.err)
+			var startup *StartupError
+			must.ErrorAs(err, &startup)
+			check.Equal(types.BuildFailureSandboxPlatform, startup.Reason)
+			check.Empty(f.dyn.Actions(), "the executor fell back to another Sandbox version after a discovery failure")
+			check.Zero(countVerb(f.cs, "create", "networkpolicies"), "a NetworkPolicy was created before the Sandbox version was known")
+		})
+	}
 }
 
 func TestNewAgentSandboxExecutor_RejectsNonGVisorRuntimeBeforeAnyClusterCall(t *testing.T) {

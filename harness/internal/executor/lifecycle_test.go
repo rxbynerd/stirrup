@@ -143,7 +143,7 @@ func TestK8sLabelValue_TruncatesToValidLabel(t *testing.T) {
 
 func TestBuildSandboxObject_CarriesRunLabel(t *testing.T) {
 	must := require.New(t)
-	obj, err := buildSandboxObject("stirrup", "stirrup-abc", "run-42", buildSandboxPodSpec(lifecycleK8sCfg(), nil, nil), time.Now())
+	obj, err := buildSandboxObject(testSandboxGVR, "stirrup", "stirrup-abc", "run-42", buildSandboxPodSpec(lifecycleK8sCfg(), nil, nil), time.Now())
 	must.NoError(err)
 	must.Equal("run-42", obj.GetLabels()[k8sRunIDLabel])
 }

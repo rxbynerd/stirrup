@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -45,7 +46,7 @@ var (
 )
 
 // AgentSandboxExecutor implements Executor by provisioning the sandbox Pod
-// through GKE's Agent Sandbox controller (agents.x-k8s.io/v1alpha1 Sandbox),
+// through the Agent Sandbox controller (an agents.x-k8s.io Sandbox),
 // rather than creating a raw Pod directly as K8sExecutor does. See
 // docs/executors/k8s-agent-sandbox.md.
 type AgentSandboxExecutor struct {
@@ -53,6 +54,9 @@ type AgentSandboxExecutor struct {
 	// dynamicClient drives the Sandbox CR; podExecCore's clientset handles
 	// pods/exec and the NetworkPolicy.
 	dynamicClient dynamic.Interface
+	// sandboxGVR is the Sandbox API version the cluster serves, resolved once
+	// at construction.
+	sandboxGVR schema.GroupVersionResource
 	// sandboxName is the Sandbox CR's name; on the cold-create path it is
 	// also the backing Pod's name (resolved into podExecCore.podName).
 	sandboxName string
@@ -122,13 +126,18 @@ func applyAgentSandboxAdmissionDeltas(spec *corev1.PodSpec) {
 	}
 }
 
-// buildSandboxObject assembles the agents.x-k8s.io/v1alpha1 Sandbox custom
-// resource the GKE controller reconciles into a Pod. shutdownPolicy
+// sandboxCreateOptions makes the API server reject a Sandbox carrying a field
+// the served CRD schema lacks, rather than prune it. Pruning would silently
+// drop fields such as spec.shutdownTime, the cleanup backstop.
+var sandboxCreateOptions = metav1.CreateOptions{FieldValidation: "Strict"}
+
+// buildSandboxObject assembles the Sandbox custom resource, at the version of
+// gvr, that the Agent Sandbox controller reconciles into a Pod. shutdownPolicy
 // "Delete" + shutdownTime is the GC backstop (agentSandboxMaxTTL); the
 // controller propagates podTemplate labels to the Pod so the per-pod
 // stirrup.dev/pod label set by podLabels lands on it and the egress
 // NetworkPolicy binds to it.
-func buildSandboxObject(namespace, name, runID string, podSpec corev1.PodSpec, shutdownTime time.Time) (*metav1unstructured.Unstructured, error) {
+func buildSandboxObject(gvr schema.GroupVersionResource, namespace, name, runID string, podSpec corev1.PodSpec, shutdownTime time.Time) (*metav1unstructured.Unstructured, error) {
 	specMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(&podSpec)
 	if err != nil {
 		return nil, fmt.Errorf("convert pod spec to unstructured: %w", err)
@@ -149,7 +158,7 @@ func buildSandboxObject(namespace, name, runID string, podSpec corev1.PodSpec, s
 
 	return &metav1unstructured.Unstructured{
 		Object: map[string]any{
-			"apiVersion": sandboxGVR.GroupVersion().String(),
+			"apiVersion": gvr.GroupVersion().String(),
 			"kind":       "Sandbox",
 			"metadata": map[string]any{
 				"name":      name,
@@ -218,8 +227,9 @@ func NewAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig) (*Agent
 }
 
 // newAgentSandboxExecutor is NewAgentSandboxExecutor after the clients are
-// built. execFn, when non-nil, replaces the pods/exec round trip (see
-// podExecCore).
+// built. It resolves the served Sandbox API version through clientset's
+// discovery before any cluster write. execFn, when non-nil, replaces the
+// pods/exec round trip (see podExecCore).
 func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEnv []corev1.EnvVar, clientset kubernetes.Interface, dyn dynamic.Interface, restCfg *rest.Config, execFn podExecFunc, timing k8sTiming, logger *slog.Logger) (*AgentSandboxExecutor, error) {
 	if err := checkAgentSandboxRuntime(cfg.Runtime); err != nil {
 		return nil, err
@@ -233,6 +243,11 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 	name, err := generatePodName()
 	if err != nil {
 		return nil, fmt.Errorf("generate sandbox name: %w", err)
+	}
+
+	sandboxGVR, err := resolveSandboxGVR(ctx, clientset.Discovery())
+	if err != nil {
+		return nil, startupErr(types.BuildFailureSandboxPlatform, fmt.Errorf("resolve the Sandbox API version for %s/%s: %w", cfg.Namespace, name, boundClusterErr(err)))
 	}
 
 	spec := buildSandboxPodSpec(cfg, proxyEnv, cfg.ExtraEnv)
@@ -250,18 +265,19 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 	partial := &AgentSandboxExecutor{
 		podExecCore:       podExecCore{clientset: clientset, namespace: cfg.Namespace, podName: name, logger: logger},
 		dynamicClient:     dyn,
+		sandboxGVR:        sandboxGVR,
 		sandboxName:       name,
 		networkPolicyName: policy.Name,
 		runID:             cfg.Lifecycle.RunID,
 		timing:            timing,
 	}
 
-	obj, err := buildSandboxObject(cfg.Namespace, name, cfg.Lifecycle.RunID, template.Spec, time.Now().Add(agentSandboxMaxTTL))
+	obj, err := buildSandboxObject(sandboxGVR, cfg.Namespace, name, cfg.Lifecycle.RunID, template.Spec, time.Now().Add(agentSandboxMaxTTL))
 	if err != nil {
 		return nil, withTeardownErr(fmt.Errorf("build sandbox object: %w", err), partial.egress().removePolicy())
 	}
 
-	if _, err := dyn.Resource(sandboxGVR).Namespace(cfg.Namespace).Create(ctx, obj, metav1.CreateOptions{}); err != nil {
+	if _, err := dyn.Resource(sandboxGVR).Namespace(cfg.Namespace).Create(ctx, obj, sandboxCreateOptions); err != nil {
 		createErr := startupErr(types.BuildFailureSandboxPlatform, fmt.Errorf("create sandbox %s/%s: %w", cfg.Namespace, name, boundClusterErr(err)))
 		return nil, withTeardownErr(createErr, partial.reconcileFailedCreate(sandboxLabels(cfg.Lifecycle.RunID), err))
 	}
@@ -273,7 +289,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 	}
 
 	cfg.Lifecycle.reportStartup(types.SessionStepSandboxReady)
-	pod, err := waitForSandboxReady(ctx, dyn, clientset, template, timing, logger)
+	pod, err := waitForSandboxReady(ctx, dyn, sandboxGVR, clientset, template, timing, logger)
 	if err != nil {
 		return nil, rollback(classifyK8sStartup(fmt.Errorf("sandbox %s/%s %w", cfg.Namespace, name, err), types.BuildFailureSandboxNotReady))
 	}
@@ -293,6 +309,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 			fileIOTimeout:   timing.fileIOTimeout,
 		},
 		dynamicClient:     dyn,
+		sandboxGVR:        sandboxGVR,
 		sandboxName:       name,
 		networkPolicyName: policy.Name,
 		runID:             cfg.Lifecycle.RunID,
@@ -372,7 +389,7 @@ func (e *AgentSandboxExecutor) egress() sandboxEgress {
 // not taken as proof. Forbidden and Unauthorized stop at once.
 func (e *AgentSandboxExecutor) terminateSandbox(ctx context.Context) error {
 	timing := e.effectiveTiming()
-	sandboxes := e.dynamicClient.Resource(sandboxGVR).Namespace(e.namespace)
+	sandboxes := e.dynamicClient.Resource(e.sandboxGVR).Namespace(e.namespace)
 	foreground := metav1.DeletePropagationForeground
 	for {
 		err := sandboxes.Delete(ctx, e.sandboxName, metav1.DeleteOptions{PropagationPolicy: &foreground})
@@ -448,7 +465,7 @@ func (e *AgentSandboxExecutor) reconcileFailedCreate(submitted map[string]string
 func (e *AgentSandboxExecutor) lookUpSandbox(ctx context.Context) (*metav1unstructured.Unstructured, error) {
 	timing := e.effectiveTiming()
 	for {
-		sandbox, err := e.dynamicClient.Resource(sandboxGVR).Namespace(e.namespace).Get(ctx, e.sandboxName, metav1.GetOptions{})
+		sandbox, err := e.dynamicClient.Resource(e.sandboxGVR).Namespace(e.namespace).Get(ctx, e.sandboxName, metav1.GetOptions{})
 		switch {
 		case err == nil:
 			return sandbox, nil

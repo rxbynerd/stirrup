@@ -1,9 +1,10 @@
 # Kubernetes Agent Sandbox executor (`k8s-sandbox`)
 
 The `k8s-sandbox` executor runs the agent inside a hardened, single-use
-sandbox Pod that is **provisioned through the GKE Agent Sandbox
+sandbox Pod that is **provisioned through the Agent Sandbox
 controller** rather than created directly. The executor submits an
-`agents.x-k8s.io/v1alpha1` **Sandbox** custom resource; the controller
+`agents.x-k8s.io` **Sandbox** custom resource (`v1beta1`, or `v1alpha1`
+on clusters that serve only that version); the controller
 materialises the backing Pod; the executor then drives command execution
 and file I/O over the `pods/exec` subresource — the same machinery the
 [`k8s` executor](k8s.md) uses once the Pod exists.
@@ -26,7 +27,7 @@ files. The reference manifests live under
 
 - [When to use it vs. the `k8s` executor](#when-to-use-it-vs-the-k8s-executor)
 - [Architecture](#architecture)
-- [The v1alpha1 vs. v1beta1 API skew](#the-v1alpha1-vs-v1beta1-api-skew)
+- [Sandbox API version selection](#sandbox-api-version-selection)
 - [The four GKE admission deltas](#the-four-gke-admission-deltas)
 - [Egress is unchanged](#egress-is-unchanged)
 - [The controller-owned TTL GC backstop](#the-controller-owned-ttl-gc-backstop)
@@ -41,7 +42,7 @@ files. The reference manifests live under
 | Executor | Pod provisioned by | Use when |
 |---|---|---|
 | `k8s` | the executor itself (direct Pod create) | The cluster runs no Agent Sandbox controller, or a runtime other than gVisor is required (`runc`, `kata-*`). The executor owns the Pod's full lifecycle. |
-| `k8s-sandbox` | the GKE Agent Sandbox controller (via the Sandbox CRD) | The cluster runs the `agents.x-k8s.io` controller and gVisor isolation is wanted, and a controller-owned lifecycle (cascade GC, TTL backstop, a path toward warm pools and snapshots) is preferred over the executor managing the Pod directly. |
+| `k8s-sandbox` | the Agent Sandbox controller (via the Sandbox CRD) | The cluster runs the `agents.x-k8s.io` controller and gVisor isolation is wanted, and a controller-owned lifecycle (cascade GC, TTL backstop, a path toward warm pools and snapshots) is preferred over the executor managing the Pod directly. |
 
 Both deliver the same hardened, gVisor-capable sandbox. The choice is
 about *who owns the Pod*: with `k8s` the orchestrator does; with
@@ -59,7 +60,7 @@ flowchart LR
     SA[authenticates as<br/>stirrup-orchestrator SA]
   end
   subgraph NS["Sandbox namespace (PodSecurity: restricted)"]
-    SB[/"Sandbox CR<br/>agents.x-k8s.io/v1alpha1"/]
+    SB[/"Sandbox CR<br/>agents.x-k8s.io/v1beta1 or v1alpha1"/]
     Ctl{{Agent Sandbox<br/>controller}}
     NP{{Per-Pod egress<br/>NetworkPolicy}}
     Pod[/"Backing Pod (agent)<br/>hardened securityContext<br/>runtimeClass = gvisor"/]
@@ -221,25 +222,54 @@ run with unconfined egress — a silent fail-open. The executor refuses an
 adopted Sandbox rather than run one unconfined (see [Deferred
 value-adds](#deferred-value-adds)).
 
-## The v1alpha1 vs. v1beta1 API skew
+## Sandbox API version selection
 
-GKE Agent Sandbox **serves `agents.x-k8s.io/v1alpha1`**. Upstream HEAD
-has moved on to `v1beta1` with a different field shape. The executor pins
-the version it talks to via a single `GroupVersionResource`
-([`sandboxGVR`](../../harness/internal/executor/agentsandbox_api.go)):
+Clusters differ in which `agents.x-k8s.io` Sandbox API versions they
+serve:
 
-```go
-schema.GroupVersionResource{Group: "agents.x-k8s.io", Version: "v1alpha1", Resource: "sandboxes"}
-```
+| Cluster | Serves |
+|---|---|
+| Current GKE (Agent Sandbox add-on, GKE 1.37) | `v1beta1` (the storage version) and `v1alpha1` (deprecated; every request returns a deprecation warning) |
+| Older GKE | `v1alpha1` only |
+| Upstream controller installed by hand (`kubernetes-sigs/agent-sandbox` v1.x) | `v1beta1` only |
 
-Because the executor uses a dynamic client keyed on that GVR (not a typed,
-generated client), it talks to exactly the version GKE serves and is not
-coupled to the upstream Go types. Tracking a future GKE bump to `v1beta1`
-is the single edit of that constant (plus any field-shape adjustment in
-`buildSandboxObject`). The reference
+The fields the executor reads and writes sit at the same paths in every
+version: `spec.podTemplate`, `spec.shutdownTime`, `spec.shutdownPolicy`, the
+`Ready` condition in `status.conditions` and the `agents.x-k8s.io/pod-name`
+annotation. The `v1beta1` schema GKE serves and upstream agent-sandbox v1.0
+carry them where `v1alpha1` does. The two GKE-served versions differ only in
+`spec.replicas` (`v1alpha1`) being replaced by `spec.operatingMode`
+(`v1beta1`), and the executor sets neither. Only the `apiVersion` and the
+dynamic client's resource differ.
+
+The executor therefore discovers the version at construction time
+([`resolveSandboxGVR`](../../harness/internal/executor/agentsandbox_api.go)).
+It asks API discovery for `agents.x-k8s.io/v1beta1` and then
+`agents.x-k8s.io/v1alpha1`, and uses the first that serves the `sandboxes`
+resource. The choice is made once, before any cluster write, and every
+later request (create, readiness polling, teardown) uses it.
+
+- A version the cluster does not serve (a `NotFound` from discovery) is
+  skipped.
+- Any other discovery failure, such as a refused or timed-out request,
+  fails the run instead of falling back. A transient error therefore never
+  selects the deprecated version silently.
+- When neither version is served, the run fails with an error naming both
+  versions and asking for the Agent Sandbox controller to be installed.
+  A version served without the `sandboxes` resource counts as not served.
+
+The Sandbox create sends `fieldValidation=Strict`. A served schema that
+lacks a field the executor sets, such as `spec.shutdownTime` (the cleanup
+backstop), therefore fails the create instead of the API server silently
+dropping the field.
+
+The executor uses a dynamic client rather than a typed, generated one, so it
+is not coupled to the upstream Go types. The
+[`--dry-run` access check](#dry-run-preflight) uses the same resolver and
+reports the version it found. The reference
 [`examples/k8s/agent-sandbox/sandbox.yaml`](../../examples/k8s/agent-sandbox/sandbox.yaml)
-is pinned to `v1alpha1` for the same reason — do not "upgrade" it for a
-GKE cluster, as admission would reject the unknown shape.
+shows the object at `v1beta1`; the `v1alpha1` object differs only in its
+`apiVersion`.
 
 ## The four GKE admission deltas
 
@@ -422,13 +452,15 @@ read-only access check described in
 holds the authoritative permission table. For `k8s-sandbox` that table has
 `sandboxes.agents.x-k8s.io` verbs in place of Pod create and delete, plus
 the `pods` `get` that teardown uses, so Pod-create permission does not
-satisfy it. The check also confirms through API
-discovery that `agents.x-k8s.io/v1alpha1` serves `sandboxes` (a group that
-is not served fails the step), reads the `gvisor` RuntimeClass and the
+satisfy it. The check also confirms through API discovery that the
+cluster serves `sandboxes` at `agents.x-k8s.io/v1beta1` or `v1alpha1` (see
+[Sandbox API version selection](#sandbox-api-version-selection)). A
+cluster serving neither fails the step, and the passing detail names the
+version the run will use. It then reads the `gvisor` RuntimeClass and the
 namespace, and lists the namespace's NetworkPolicies to find the standing
 default-deny egress policy (each reported as `not checked`, with the step
-still `ok`, when the credentials may not read it). Failure messages and fixes are in the
-[`k8s` troubleshooting table](k8s.md#troubleshooting).
+still `ok`, when the credentials may not read it). Failure messages and
+fixes are in the [`k8s` troubleshooting table](k8s.md#troubleshooting).
 `--no-probe-executor` skips the check without contacting the API server.
 
 ## Configuration
@@ -525,8 +557,8 @@ The following are **not** in this version of the executor:
   installing the policy against the resolved Pod name or the
   controller-guaranteed `agents.x-k8s.io/sandbox-name-hash` label.
 - **Snapshots.** Checkpoint/restore of a sandbox's state is not wired up.
-- **Suspend / resume** via `spec.replicas` (scaling a Sandbox to zero and
-  back) is not exposed.
+- **Suspend / resume** via `spec.operatingMode` (`spec.replicas` on
+  `v1alpha1`), which scales a Sandbox to zero and back, is not exposed.
 - **Autoscaling** of the sandbox pool requires GKE ≥ 1.36 and is not
   configured by the executor.
 

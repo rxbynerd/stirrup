@@ -50,7 +50,8 @@ type fakeKubeAPI struct {
 	// denied holds "verb resource[/subresource][.group]" entries the access
 	// review refuses.
 	denied map[string]bool
-	// sandboxAPI makes discovery serve agents.x-k8s.io/v1alpha1.
+	// sandboxAPI makes discovery serve agents.x-k8s.io/v1beta1; v1alpha1 is
+	// never served.
 	sandboxAPI   bool
 	namespace    readMode
 	runtimeClass readMode
@@ -150,13 +151,13 @@ func (a *fakeKubeAPI) serve(w http.ResponseWriter, r *http.Request) {
 			"kind":       "SelfSubjectAccessReview",
 			"status":     map[string]any{"allowed": !denied, "reason": "no RBAC policy matched"},
 		})
-	case r.Method == http.MethodGet && r.URL.Path == "/apis/agents.x-k8s.io/v1alpha1":
-		if !sandboxAPI {
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/apis/agents.x-k8s.io/"):
+		if !sandboxAPI || r.URL.Path != "/apis/agents.x-k8s.io/v1beta1" {
 			writeStatus(w, http.StatusNotFound, "NotFound")
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"agents.x-k8s.io/v1alpha1","resources":[{"name":"sandboxes","namespaced":true,"kind":"Sandbox","verbs":["get"]}]}`))
+		_, _ = w.Write([]byte(`{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"agents.x-k8s.io/v1beta1","resources":[{"name":"sandboxes","namespaced":true,"kind":"Sandbox","verbs":["get"]}]}`))
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/namespaces/"+k8sTestNamespace:
 		writeRead(w, namespace, `{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"`+k8sTestNamespace+`"}}`)
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/apis/node.k8s.io/v1/runtimeclasses/"):
@@ -181,6 +182,7 @@ func (a *fakeKubeAPI) unexpected() []string {
 	for _, req := range a.recorded() {
 		switch {
 		case req == "POST /apis/authorization.k8s.io/v1/selfsubjectaccessreviews",
+			req == "GET /apis/agents.x-k8s.io/v1beta1",
 			req == "GET /apis/agents.x-k8s.io/v1alpha1",
 			req == "GET /api/v1/namespaces/"+k8sTestNamespace,
 			req == "GET "+k8sPoliciesPath,
@@ -391,7 +393,7 @@ func TestPreflight_K8sSandbox_UnservedAPIFailsStepWithControllerHint(t *testing.
 	status, _ := stepStatus(report, "executor-probe")
 	check.Equal(PreflightFail, status)
 	detail, _ := stepDetail(report, "executor-probe")
-	check.Contains(detail, "agents.x-k8s.io/v1alpha1 is not served")
+	check.Contains(detail, "agents.x-k8s.io/v1beta1 or agents.x-k8s.io/v1alpha1 is not served")
 	hint := stepHint(report, "executor-probe")
 	check.Contains(hint, "Agent Sandbox controller")
 	check.NotContains(hint, "bind a Role")
