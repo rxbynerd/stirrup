@@ -515,6 +515,7 @@ func k8sProbeHint(executorType, runtime string, err error) string {
 		{executor.K8sProbeNamespaceMissing, "create the namespace or correct executor.k8sNamespace"},
 		{executor.K8sProbeRuntimeClassMissing, runtimeClassHint},
 		{executor.K8sProbeSandboxAPIMissing, "install the Agent Sandbox controller (docs/executors/k8s-agent-sandbox.md)"},
+		{executor.K8sProbeEgressBaselineMissing, "apply examples/k8s/sandbox-egress-default-deny.yaml with its namespace set to executor.k8sNamespace (docs/executors/k8s.md#standing-default-deny-egress)"},
 	}
 	var out []string
 	for _, h := range hints {

@@ -8,7 +8,8 @@
 #
 # The verbs below are derived from the executor's clientset calls in
 # harness/internal/executor/k8s.go, k8s_netpol.go, k8s_readiness.go and
-# k8s_teardown.go:
+# k8s_teardown.go. The Role grants nothing else; reading a sandbox Pod's logs
+# (`kubectl logs`) needs `pods/log` get from a separate Role.
 #
 #   pods                  create  — NewK8sExecutor creates the sandbox Pod
 #                         get     — waitForPodReady polls Pod status; teardown
@@ -18,16 +19,26 @@
 #                                   delete on Close() and on construction failure
 #   pods/exec             create  — Exec + tar-based file I/O POST to the
 #                                   pods/exec subresource (streamExec)
-#   pods/log              get     — NOT used by the executor today; granted so
-#                                   an operator can `kubectl logs` a sandbox Pod
-#                                   for debugging. Drop this verb to tighten the
-#                                   Role to exactly what the executor needs.
 #   networkpolicies       create  — the egress policy is installed BEFORE the
 #                         delete    Pod and removed only once teardown has
 #                                   confirmed the Pod is gone; without these
 #                                   two verbs construction fails fail-closed,
 #                                   because a Pod whose egress cannot be
 #                                   confined must never be created.
+#                         patch   — adds the harness Pod and the sandbox Pod
+#                                   as owners once the sandbox Pod exists, so a
+#                                   policy a dead harness leaves behind is
+#                                   garbage-collected. Without it the run is
+#                                   unaffected and such a policy stays.
+#                         get     — on the standing default-deny policy by name
+#                                   only; `stirrup --dry-run` reads it to confirm
+#                                   it exists. Optional: without it the dry run
+#                                   reports the check as not checked.
+#
+#   These verbs cover every NetworkPolicy in the namespace, including the
+#   standing default-deny (sandbox-egress-default-deny.yaml); RBAC cannot name
+#   the random per-run policies. docs/executors/k8s.md ("Standing default-deny
+#   egress") describes an admission policy that narrows them.
 #
 # The Role is intentionally namespaced (not a ClusterRole): the orchestrator
 # operates within a single sandbox namespace. Bind one Role per namespace if
@@ -67,17 +78,20 @@ rules:
       - pods/exec
     verbs:
       - create
-  - apiGroups: [""]
-    resources:
-      - pods/log
-    verbs:
-      - get
   - apiGroups: ["networking.k8s.io"]
     resources:
       - networkpolicies
     verbs:
       - create
       - delete
+      - patch
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+    resourceNames:
+      - stirrup-sandbox-default-deny-egress
+    verbs:
+      - get
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
