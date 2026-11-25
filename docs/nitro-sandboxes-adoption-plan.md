@@ -920,7 +920,8 @@ uses one.
 **G9. The `k8s-sandbox` executor is GKE-specific.** It forces
 `runtimeClassName: gvisor`, a `sandbox.gke.io/runtime` node selector and
 toleration (`agentsandbox.go:63-110`), and pins the CRD at
-`agents.x-k8s.io/v1alpha1` (`agentsandbox_api.go:12`). AWS's samples use
+`agents.x-k8s.io/v1alpha1` (`agentsandbox_api.go:12`; the executor now
+discovers the served version, preferring `v1beta1`). AWS's samples use
 the upstream controller at `v1beta1`. [SAMPLES-IDE] The warm-pool
 feature that AWS recommends for fast starts ("about two seconds"
 [BLOG]) is also the feature Stirrup's executor refuses today

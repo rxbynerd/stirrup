@@ -2362,7 +2362,7 @@ message ExecutorConfig {
   //                   CapDrop ALL, RunAsNonRoot, seccomp RuntimeDefault,
   //                   no token automount).
   //   "k8s-sandbox" — Kubernetes sandbox Pod provisioned via the Agent
-  //                   Sandbox CRD (agents.x-k8s.io/v1alpha1) rather than
+  //                   Sandbox CRD (agents.x-k8s.io, v1beta1 or v1alpha1) rather than
   //                   created directly; gVisor-only runtime.
   //   "api"         — read-only, backed by a VCS API (e.g. GitHub
   //                   Contents). WriteFile and Exec return errors.
