@@ -1,16 +1,90 @@
 package executor
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1unstructured "k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/discovery"
 )
 
-// sandboxGVR is the GroupVersionResource for the Agent Sandbox CRD as served
-// by GKE Agent Sandbox. GKE installs v1alpha1; upstream HEAD has moved to
-// v1beta1 with a different field shape, so this is pinned to what the cluster
-// actually serves. Changing this is the single edit needed to track a GKE bump.
-var sandboxGVR = schema.GroupVersionResource{
-	Group: "agents.x-k8s.io", Version: "v1alpha1", Resource: "sandboxes",
+const (
+	sandboxGroup    = "agents.x-k8s.io"
+	sandboxResource = "sandboxes"
+)
+
+// sandboxVersions lists the Sandbox API versions the executor can drive, most
+// preferred first. The object shape the executor writes and reads is the same
+// in each, so only the apiVersion and the dynamic client's resource differ.
+var sandboxVersions = []string{"v1beta1", "v1alpha1"}
+
+var (
+	// errSandboxAPINotServed means the cluster serves none of sandboxVersions.
+	errSandboxAPINotServed = errors.New("the Agent Sandbox API is not served by the cluster")
+	// errSandboxResourceMissing means the cluster serves a version of the group
+	// without the sandboxes resource.
+	errSandboxResourceMissing = errors.New("the Agent Sandbox API group is served without the sandboxes resource")
+)
+
+// sandboxAPIError is a resolveSandboxGVR failure that matches its sentinel
+// under errors.Is while carrying its own message.
+type sandboxAPIError struct {
+	msg      string
+	sentinel error
+}
+
+func (e *sandboxAPIError) Error() string        { return e.msg }
+func (e *sandboxAPIError) Is(target error) bool { return target == e.sentinel }
+
+// sandboxGroupVersions renders the supported versions as full group/version
+// strings joined by sep.
+func sandboxGroupVersions(versions []string, sep string) string {
+	out := make([]string, len(versions))
+	for i, v := range versions {
+		out[i] = sandboxGroup + "/" + v
+	}
+	return strings.Join(out, sep)
+}
+
+// resolveSandboxGVR returns the GroupVersionResource of the most preferred
+// supported Sandbox version the cluster serves with the sandboxes resource. A
+// version the cluster does not serve is skipped. Any other discovery failure
+// is returned as it is rather than falling back, since a transient error
+// would otherwise silently select the deprecated version. When no version
+// qualifies, the error wraps errSandboxAPINotServed, or errSandboxResourceMissing
+// if some version was served without the resource.
+func resolveSandboxGVR(ctx context.Context, disco discovery.DiscoveryInterfaces) (schema.GroupVersionResource, error) {
+	var withoutResource []string
+	for _, version := range sandboxVersions {
+		gv := schema.GroupVersion{Group: sandboxGroup, Version: version}
+		resources, err := disco.ServerResourcesForGroupVersionWithContext(ctx, gv.String())
+		if apierrors.IsNotFound(err) {
+			continue
+		}
+		if err != nil {
+			return schema.GroupVersionResource{}, fmt.Errorf("discover the Agent Sandbox API %s: %w", gv, err)
+		}
+		if slices.ContainsFunc(resources.APIResources, func(r metav1.APIResource) bool { return r.Name == sandboxResource }) {
+			return gv.WithResource(sandboxResource), nil
+		}
+		withoutResource = append(withoutResource, version)
+	}
+	if len(withoutResource) > 0 {
+		return schema.GroupVersionResource{}, &sandboxAPIError{
+			msg:      fmt.Sprintf("the cluster serves %s but not the %s resource", sandboxGroupVersions(withoutResource, " and "), sandboxResource),
+			sentinel: errSandboxResourceMissing,
+		}
+	}
+	return schema.GroupVersionResource{}, &sandboxAPIError{
+		msg:      fmt.Sprintf("the Agent Sandbox API %s is not served by the cluster (install the Agent Sandbox controller)", sandboxGroupVersions(sandboxVersions, " or ")),
+		sentinel: errSandboxAPINotServed,
+	}
 }
 
 const (
@@ -29,7 +103,7 @@ const (
 
 // sandboxReady reports whether the Sandbox's status carries a "Ready" condition
 // with status "True". It gates purely on that condition and deliberately
-// ignores status.podIPs, which GKE's v1alpha1 controller does not emit. A
+// ignores status.podIPs, which the controller does not emit. A
 // missing or malformed status yields false rather than a panic, so a partially
 // populated object observed mid-reconcile is simply treated as not-yet-ready.
 func sandboxReady(obj *metav1unstructured.Unstructured) bool {

@@ -75,10 +75,7 @@ func accessClient(denied ...string) *fake.Clientset {
 }
 
 func serveSandboxAPI(kube *fake.Clientset) {
-	kube.Discovery().(*fakediscovery.FakeDiscovery).Resources = []*metav1.APIResourceList{{
-		GroupVersion: sandboxGVR.GroupVersion().String(),
-		APIResources: []metav1.APIResource{{Name: sandboxGVR.Resource}},
-	}}
+	serveSandboxVersions(kube, "v1beta1")
 }
 
 func addRuntimeClass(t *testing.T, kube *fake.Clientset, name string) {
@@ -604,7 +601,7 @@ func TestProbeK8sAccess_SandboxAPIOutcomes(t *testing.T) {
 
 		_, err := probeK8sAccess(context.Background(), kube, cfg)
 
-		must.ErrorContains(err, "agents.x-k8s.io/v1alpha1 is not served")
+		must.ErrorContains(err, "agents.x-k8s.io/v1beta1 or agents.x-k8s.io/v1alpha1 is not served")
 		check.Equal([]K8sProbeKind{K8sProbeSandboxAPIMissing}, probeErrorKinds(t, err))
 	})
 
@@ -613,7 +610,7 @@ func TestProbeK8sAccess_SandboxAPIOutcomes(t *testing.T) {
 		check := assert.New(t)
 		kube := accessClient()
 		addRuntimeClass(t, kube, "gvisor")
-		kube.Discovery().(*fakediscovery.FakeDiscovery).Resources = []*metav1.APIResourceList{{GroupVersion: sandboxGVR.GroupVersion().String()}}
+		kube.Discovery().(*fakediscovery.FakeDiscovery).Resources = []*metav1.APIResourceList{{GroupVersion: testSandboxGVR.GroupVersion().String()}}
 
 		_, err := probeK8sAccess(context.Background(), kube, cfg)
 
@@ -637,7 +634,7 @@ func TestProbeK8sAccess_SandboxAPIOutcomes(t *testing.T) {
 				detail, err := probeK8sAccess(context.Background(), kube, cfg)
 
 				must.NoError(err)
-				check.Contains(detail, "Agent Sandbox API agents.x-k8s.io/v1alpha1 not checked")
+				check.Contains(detail, "Agent Sandbox API agents.x-k8s.io not checked")
 				check.NotContains(detail, "served")
 			})
 		}
@@ -648,6 +645,19 @@ func TestProbeK8sAccess_SandboxAPIOutcomes(t *testing.T) {
 		check := assert.New(t)
 		kube := accessClient()
 		serveSandboxAPI(kube)
+		addRuntimeClass(t, kube, "gvisor")
+
+		detail, err := probeK8sAccess(context.Background(), kube, cfg)
+
+		must.NoError(err)
+		check.Contains(detail, "Agent Sandbox API agents.x-k8s.io/v1beta1 served")
+	})
+
+	t.Run("a cluster serving only v1alpha1 is reported with that version", func(t *testing.T) {
+		must := require.New(t)
+		check := assert.New(t)
+		kube := accessClient()
+		serveSandboxVersions(kube, "v1alpha1")
 		addRuntimeClass(t, kube, "gvisor")
 
 		detail, err := probeK8sAccess(context.Background(), kube, cfg)

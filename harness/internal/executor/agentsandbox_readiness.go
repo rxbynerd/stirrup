@@ -34,6 +34,7 @@ func sandboxPodTemplate(namespace, name, runID string, spec corev1.PodSpec) *cor
 // Sandbox and of its backing Pod.
 type sandboxReadinessWait struct {
 	dyn       dynamic.Interface
+	gvr       schema.GroupVersionResource
 	template  *corev1.Pod
 	logger    *slog.Logger
 	pod       podReadinessPoll
@@ -53,9 +54,10 @@ type sandboxReadinessWait struct {
 // mismatch, a Pod or Sandbox that disappears after being observed, a Sandbox
 // naming another backing Pod and an RBAC denial fail at once; a Pod not yet
 // created and other API errors are waited out.
-func waitForSandboxReady(ctx context.Context, dyn dynamic.Interface, clientset kubernetes.Interface, template *corev1.Pod, timing k8sTiming, logger *slog.Logger) (*corev1.Pod, error) {
+func waitForSandboxReady(ctx context.Context, dyn dynamic.Interface, gvr schema.GroupVersionResource, clientset kubernetes.Interface, template *corev1.Pod, timing k8sTiming, logger *slog.Logger) (*corev1.Pod, error) {
 	w := &sandboxReadinessWait{
 		dyn:      dyn,
+		gvr:      gvr,
 		template: template,
 		logger:   logger,
 		pod: podReadinessPoll{
@@ -90,7 +92,7 @@ func waitForSandboxReady(ctx context.Context, dyn dynamic.Interface, clientset k
 // is True.
 func (w *sandboxReadinessWait) pollSandbox(ctx context.Context) (bool, error) {
 	namespace, name := w.template.Namespace, w.template.Name
-	sandbox, err := w.dyn.Resource(sandboxGVR).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+	sandbox, err := w.dyn.Resource(w.gvr).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	switch {
 	case err == nil:
 		w.sawSandbox = true
@@ -151,7 +153,7 @@ func newSandboxPodAdmission(template, first *corev1.Pod, sandboxUID k8stypes.UID
 func checkControlledBySandbox(sandboxUID k8stypes.UID, observed *corev1.Pod) []admissionMismatch {
 	ref := metav1.GetControllerOfNoCopy(observed)
 	if ref != nil && sandboxUID != "" && ref.UID == sandboxUID && ref.Kind == "Sandbox" {
-		if gv, err := schema.ParseGroupVersion(ref.APIVersion); err == nil && gv.Group == sandboxGVR.Group {
+		if gv, err := schema.ParseGroupVersion(ref.APIVersion); err == nil && gv.Group == sandboxGroup {
 			return nil
 		}
 	}

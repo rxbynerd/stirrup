@@ -192,7 +192,7 @@ func TestApplyAgentSandboxAdmissionDeltas_AppliesGVisorPolicy(t *testing.T) {
 }
 
 // TestBuildSandboxObject_EmitsSandboxCR checks the assembled Sandbox CR: the
-// v1alpha1 apiVersion and kind, the Delete shutdown policy, a 12h shutdown time,
+// apiVersion and kind, the Delete shutdown policy, a 12h shutdown time,
 // the per-pod labels on the pod template, and the admission deltas and hardened
 // security fields that must survive the typed-to-unstructured conversion.
 func TestBuildSandboxObject_EmitsSandboxCR(t *testing.T) {
@@ -204,7 +204,7 @@ func TestBuildSandboxObject_EmitsSandboxCR(t *testing.T) {
 	applyAgentSandboxAdmissionDeltas(&spec)
 
 	before := time.Now()
-	obj, err := buildSandboxObject(ns, name, "", spec, before.Add(agentSandboxMaxTTL))
+	obj, err := buildSandboxObject(testSandboxGVR, ns, name, "", spec, before.Add(agentSandboxMaxTTL))
 	must.NoError(err, "buildSandboxObject")
 
 	specMap := asObjectMap(t, "spec", obj.Object["spec"])
@@ -216,7 +216,7 @@ func TestBuildSandboxObject_EmitsSandboxCR(t *testing.T) {
 
 	t.Run("identifies the sandbox kind", func(t *testing.T) {
 		must := require.New(t)
-		must.Equal("agents.x-k8s.io/v1alpha1", obj.Object["apiVersion"])
+		must.Equal("agents.x-k8s.io/v1beta1", obj.Object["apiVersion"])
 		must.Equal("Sandbox", obj.Object["kind"])
 	})
 
@@ -317,7 +317,7 @@ func TestBuildSandboxPodSpec_SetsShortTerminationGracePeriod(t *testing.T) {
 		must := require.New(t)
 		spec := buildSandboxPodSpec(baseSandboxCfg(), nil, nil)
 		applyAgentSandboxAdmissionDeltas(&spec)
-		obj, err := buildSandboxObject("default", "stirrup-abc", "", spec, time.Now().Add(agentSandboxMaxTTL))
+		obj, err := buildSandboxObject(testSandboxGVR, "default", "stirrup-abc", "", spec, time.Now().Add(agentSandboxMaxTTL))
 		must.NoError(err)
 		got, found, err := metav1unstructured.NestedInt64(obj.Object, "spec", "podTemplate", "spec", "terminationGracePeriodSeconds")
 		must.NoError(err)

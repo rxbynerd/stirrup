@@ -36,10 +36,10 @@ func newSandboxCluster(t *testing.T, sandbox *metav1unstructured.Unstructured, p
 	must := require.New(t)
 	c := sandboxCluster{
 		cs:  fake.NewClientset(),
-		dyn: dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{sandboxGVR: "SandboxList"}),
+		dyn: dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{testSandboxGVR: "SandboxList"}),
 	}
 	if sandbox != nil {
-		must.NoError(c.dyn.Tracker().Create(sandboxGVR, sandbox, testK8sNamespace))
+		must.NoError(c.dyn.Tracker().Create(testSandboxGVR, sandbox, testK8sNamespace))
 	}
 	if pod != nil {
 		must.NoError(c.cs.Tracker().Add(pod))
@@ -92,7 +92,7 @@ func (c sandboxCluster) wait(t *testing.T, timing k8sTiming) (*corev1.Pod, time.
 	t.Helper()
 	logger, logs := testLogger()
 	start := time.Now()
-	pod, err := waitForSandboxReady(context.Background(), c.dyn, c.cs, readinessTemplate(), timing, logger)
+	pod, err := waitForSandboxReady(context.Background(), c.dyn, testSandboxGVR, c.cs, readinessTemplate(), timing, logger)
 	return pod, time.Since(start), logs, err
 }
 
@@ -322,7 +322,7 @@ func TestWaitForSandboxReady_ChecksTheFirstPodAgainstTheTemplate(t *testing.T) {
 			mutate: func(pod *corev1.Pod) {
 				pod.OwnerReferences = []metav1.OwnerReference{sandboxControllerRef(testK8sPodName, "uid-other")}
 			},
-			wantErr: `observed agents.x-k8s.io/v1alpha1 Sandbox "` + testK8sPodName + `" (UID uid-other)`,
+			wantErr: `observed agents.x-k8s.io/v1beta1 Sandbox "` + testK8sPodName + `" (UID uid-other)`,
 		},
 		{
 			name: "controlled by another kind",
@@ -464,7 +464,7 @@ func TestWaitForSandboxReady_FailsWhenAnObservedObjectDisappears(t *testing.T) {
 		c.dyn.PrependReactor("get", "sandboxes", func(clienttesting.Action) (bool, runtime.Object, error) {
 			reads++
 			if reads == 2 {
-				must.NoError(c.dyn.Tracker().Delete(sandboxGVR, testK8sNamespace, testK8sPodName))
+				must.NoError(c.dyn.Tracker().Delete(testSandboxGVR, testK8sNamespace, testK8sPodName))
 			}
 			return false, nil, nil
 		})
@@ -483,7 +483,7 @@ func TestWaitForSandboxReady_FailsFastOnRBACDenial(t *testing.T) {
 		err      error
 		wantErr  string
 	}{
-		{name: "sandbox read forbidden", resource: "sandboxes", err: apierrors.NewForbidden(sandboxGVR.GroupResource(), testK8sPodName, errors.New("denied by RBAC")), wantErr: "get sandbox: "},
+		{name: "sandbox read forbidden", resource: "sandboxes", err: apierrors.NewForbidden(testSandboxGVR.GroupResource(), testK8sPodName, errors.New("denied by RBAC")), wantErr: "get sandbox: "},
 		{name: "sandbox read unauthorized", resource: "sandboxes", err: apierrors.NewUnauthorized("token expired"), wantErr: "get sandbox: token expired"},
 		{name: "pod read forbidden", resource: "pods", err: errForbiddenPods, wantErr: "get pod: "},
 		{name: "pod read unauthorized", resource: "pods", err: apierrors.NewUnauthorized("token expired"), wantErr: "get pod: token expired"},
