@@ -575,3 +575,42 @@ func TestNewAgentSandboxExecutor_WaitsForExecBeforeReturning(t *testing.T) {
 	must.Empty(f.sandboxDeletes())
 	must.NoError(exec.Close())
 }
+
+func TestCheckControlledBySandbox_MatchesTheSandboxGroupAndKindAtAnyVersion(t *testing.T) {
+	tests := []struct {
+		name       string
+		apiVersion string
+		kind       string
+		// refUID is the UID the controller reference carries; sandboxUID is the
+		// UID observed on the Sandbox.
+		refUID     k8stypes.UID
+		sandboxUID k8stypes.UID
+		wantOK     bool
+	}{
+		{name: "v1beta1 Sandbox", apiVersion: "agents.x-k8s.io/v1beta1", kind: "Sandbox", refUID: "u", sandboxUID: "u", wantOK: true},
+		{name: "v1alpha1 Sandbox", apiVersion: "agents.x-k8s.io/v1alpha1", kind: "Sandbox", refUID: "u", sandboxUID: "u", wantOK: true},
+		{name: "a group that extends the Sandbox group", apiVersion: "agents.x-k8s.io.evil/v1beta1", kind: "Sandbox", refUID: "u", sandboxUID: "u"},
+		{name: "a subdomain of the Sandbox group", apiVersion: "extensions.agents.x-k8s.io/v1beta1", kind: "Sandbox", refUID: "u", sandboxUID: "u"},
+		{name: "no version", apiVersion: "agents.x-k8s.io", kind: "Sandbox", refUID: "u", sandboxUID: "u"},
+		{name: "another kind in the group", apiVersion: "agents.x-k8s.io/v1beta1", kind: "SandboxClaim", refUID: "u", sandboxUID: "u"},
+		{name: "another UID", apiVersion: "agents.x-k8s.io/v1beta1", kind: "Sandbox", refUID: "other", sandboxUID: "u"},
+		{name: "no Sandbox UID observed", apiVersion: "agents.x-k8s.io/v1beta1", kind: "Sandbox", refUID: "u"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			must := require.New(t)
+			pod := backingPod("uid-backing")
+			pod.OwnerReferences = []metav1.OwnerReference{{
+				APIVersion: tc.apiVersion, Kind: tc.kind, Name: testK8sPodName, UID: tc.refUID, Controller: ptr.To(true),
+			}}
+
+			mismatches := checkControlledBySandbox(tc.sandboxUID, pod)
+
+			if tc.wantOK {
+				must.Empty(mismatches)
+			} else {
+				must.NotEmpty(mismatches)
+			}
+		})
+	}
+}
