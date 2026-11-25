@@ -403,7 +403,7 @@ func checkSandboxAPIServed(ctx context.Context, kube kubernetes.Interface) optio
 	case errors.Is(err, errSandboxAPINotServed), errors.Is(err, errSandboxResourceMissing):
 		return optionalCheck{kind: K8sProbeSandboxAPIMissing, problem: err.Error()}
 	default:
-		return optionalCheck{note: fmt.Sprintf("Agent Sandbox API %s not checked (%v)", sandboxGroup, err)}
+		return optionalCheck{note: fmt.Sprintf("Agent Sandbox API not checked (%v)", err)}
 	}
 }
 

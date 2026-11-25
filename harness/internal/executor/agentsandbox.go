@@ -242,7 +242,7 @@ func newAgentSandboxExecutor(ctx context.Context, cfg K8sExecutorConfig, proxyEn
 
 	sandboxGVR, err := resolveSandboxGVR(ctx, clientset.Discovery())
 	if err != nil {
-		return nil, startupErr(types.BuildFailureSandboxPlatform, boundClusterErr(err))
+		return nil, startupErr(types.BuildFailureSandboxPlatform, fmt.Errorf("resolve the Sandbox API version for %s/%s: %w", cfg.Namespace, name, boundClusterErr(err)))
 	}
 
 	spec := buildSandboxPodSpec(cfg, proxyEnv, cfg.ExtraEnv)

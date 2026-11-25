@@ -25,22 +25,13 @@ const (
 var sandboxVersions = []string{"v1beta1", "v1alpha1"}
 
 var (
-	// errSandboxAPINotServed means the cluster serves none of sandboxVersions.
-	errSandboxAPINotServed = errors.New("the Agent Sandbox API is not served by the cluster")
-	// errSandboxResourceMissing means the cluster serves a version of the group
-	// without the sandboxes resource.
-	errSandboxResourceMissing = errors.New("the Agent Sandbox API group is served without the sandboxes resource")
+	// errSandboxAPINotServed ends the error for a cluster that serves none of
+	// sandboxVersions.
+	errSandboxAPINotServed = errors.New("is not served by the cluster (install the Agent Sandbox controller)")
+	// errSandboxResourceMissing ends the error for a cluster that serves a
+	// version without the sandboxes resource.
+	errSandboxResourceMissing = errors.New("not the " + sandboxResource + " resource")
 )
-
-// sandboxAPIError is a resolveSandboxGVR failure that matches its sentinel
-// under errors.Is while carrying its own message.
-type sandboxAPIError struct {
-	msg      string
-	sentinel error
-}
-
-func (e *sandboxAPIError) Error() string        { return e.msg }
-func (e *sandboxAPIError) Is(target error) bool { return target == e.sentinel }
 
 // sandboxGroupVersions renders the supported versions as full group/version
 // strings joined by sep.
@@ -52,13 +43,11 @@ func sandboxGroupVersions(versions []string, sep string) string {
 	return strings.Join(out, sep)
 }
 
-// resolveSandboxGVR returns the GroupVersionResource of the most preferred
-// supported Sandbox version the cluster serves with the sandboxes resource. A
-// version the cluster does not serve is skipped. Any other discovery failure
-// is returned as it is rather than falling back, since a transient error
-// would otherwise silently select the deprecated version. When no version
-// qualifies, the error wraps errSandboxAPINotServed, or errSandboxResourceMissing
-// if some version was served without the resource.
+// resolveSandboxGVR returns the most preferred supported Sandbox version the
+// cluster serves with the sandboxes resource. A version the cluster does not
+// serve is skipped; any other discovery error is returned without falling
+// back. With no usable version the error wraps errSandboxAPINotServed, or
+// errSandboxResourceMissing if some version lacked the resource.
 func resolveSandboxGVR(ctx context.Context, disco discovery.DiscoveryInterfaces) (schema.GroupVersionResource, error) {
 	var withoutResource []string
 	for _, version := range sandboxVersions {
@@ -68,7 +57,7 @@ func resolveSandboxGVR(ctx context.Context, disco discovery.DiscoveryInterfaces)
 			continue
 		}
 		if err != nil {
-			return schema.GroupVersionResource{}, fmt.Errorf("discover the Agent Sandbox API %s: %w", gv, err)
+			return schema.GroupVersionResource{}, fmt.Errorf("discover %s: %w", gv, err)
 		}
 		if slices.ContainsFunc(resources.APIResources, func(r metav1.APIResource) bool { return r.Name == sandboxResource }) {
 			return gv.WithResource(sandboxResource), nil
@@ -76,15 +65,9 @@ func resolveSandboxGVR(ctx context.Context, disco discovery.DiscoveryInterfaces)
 		withoutResource = append(withoutResource, version)
 	}
 	if len(withoutResource) > 0 {
-		return schema.GroupVersionResource{}, &sandboxAPIError{
-			msg:      fmt.Sprintf("the cluster serves %s but not the %s resource", sandboxGroupVersions(withoutResource, " and "), sandboxResource),
-			sentinel: errSandboxResourceMissing,
-		}
+		return schema.GroupVersionResource{}, fmt.Errorf("the cluster serves %s but %w", sandboxGroupVersions(withoutResource, " and "), errSandboxResourceMissing)
 	}
-	return schema.GroupVersionResource{}, &sandboxAPIError{
-		msg:      fmt.Sprintf("the Agent Sandbox API %s is not served by the cluster (install the Agent Sandbox controller)", sandboxGroupVersions(sandboxVersions, " or ")),
-		sentinel: errSandboxAPINotServed,
-	}
+	return schema.GroupVersionResource{}, fmt.Errorf("the Agent Sandbox API %s %w", sandboxGroupVersions(sandboxVersions, " or "), errSandboxAPINotServed)
 }
 
 const (
@@ -103,9 +86,9 @@ const (
 
 // sandboxReady reports whether the Sandbox's status carries a "Ready" condition
 // with status "True". It gates purely on that condition and deliberately
-// ignores status.podIPs, which the controller does not emit. A
-// missing or malformed status yields false rather than a panic, so a partially
-// populated object observed mid-reconcile is simply treated as not-yet-ready.
+// ignores status.podIPs, which the controller does not emit. A missing or
+// malformed status yields false rather than a panic, so a partially populated
+// object observed mid-reconcile is simply treated as not-yet-ready.
 func sandboxReady(obj *metav1unstructured.Unstructured) bool {
 	cond, ok := sandboxReadyCondition(obj)
 	if !ok {

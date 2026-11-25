@@ -634,7 +634,7 @@ func TestProbeK8sAccess_SandboxAPIOutcomes(t *testing.T) {
 				detail, err := probeK8sAccess(context.Background(), kube, cfg)
 
 				must.NoError(err)
-				check.Contains(detail, "Agent Sandbox API agents.x-k8s.io not checked")
+				check.Contains(detail, "Agent Sandbox API not checked (discover agents.x-k8s.io/v1beta1: ")
 				check.NotContains(detail, "served")
 			})
 		}
