@@ -117,8 +117,8 @@ var k8sNetworkPolicyAccess = []k8sAccess{
 // k8sRequiredAccess returns the namespaced permissions the selected executor
 // uses at run time: the calls NewK8sExecutor, Close and the pods/exec streams
 // make for "k8s", and the Sandbox calls in NewAgentSandboxExecutor and Close
-// plus the teardown read of the backing Pod for "k8s-sandbox". Any other type
-// has none.
+// plus the readiness and teardown reads of the backing Pod for "k8s-sandbox".
+// Any other type has none.
 func k8sRequiredAccess(executorType string) []k8sAccess {
 	var workload []k8sAccess
 	switch executorType {

@@ -92,12 +92,15 @@ func TestAgentSandbox_Lifecycle(t *testing.T) {
 	assertSandboxScratchUsable(t, ctx, exec)
 
 	// (a) gVisor is in force: the controller honoured runtimeClassName=gvisor on
-	// the podTemplate. uname -r reports a synthetic kernel ("4.4.0" on the
-	// observed runsc release) distinct from the host's. This is the same signal
-	// the raw-Pod k8s suite keys on (see TestK8sRuntimeClass_Admitted).
+	// the podTemplate. The dmesg boot banner is the signal the raw-Pod k8s suite
+	// asserts (see TestK8sRuntimeClass_Admitted); uname -r tracks the runsc
+	// build, so it is only logged.
+	dmesgRes, err := exec.Exec(ctx, "dmesg 2>/dev/null | head -n 50", 10*time.Second)
+	must.NoError(err, "dmesg under gvisor")
+	check.Contains(strings.ToLower(dmesgRes.Stdout), "gvisor", "no gVisor banner in dmesg; sandbox may not be active")
 	unameRes, err := exec.Exec(ctx, "uname -r", 10*time.Second)
 	must.NoError(err, "uname under gvisor")
-	check.Contains(unameRes.Stdout, "4.4.0", "gVisor may not be in force")
+	t.Logf("gvisor in force: uname -r = %q, dmesg banner present", strings.TrimSpace(unameRes.Stdout))
 
 	// (b) File round-trip under /workspace exercises the shared tar-over-exec
 	// path on the controller-created Pod.

@@ -23,8 +23,8 @@
 # harness/internal/executor/agentsandbox.go (Sandbox create/get/delete via the
 # dynamic client), k8s_teardown.go (NetworkPolicy delete via the clientset,
 # shared with the k8s executor), k8s_netpol.go (NetworkPolicy create), k8s_execcore.go
-# (pods/exec for Exec + tar-based file I/O), and the teardown read of the
-# backing Pod in k8s_teardown.go:
+# (pods/exec for Exec + tar-based file I/O), and the reads of the backing Pod
+# in agentsandbox_readiness.go and k8s_teardown.go:
 #
 #   sandboxes        create  — NewAgentSandboxExecutor creates the Sandbox CR
 #                    get     — readiness poll + pod-name resolution; Close()
@@ -33,7 +33,8 @@
 #                              failed create
 #                    delete  — the foreground teardown delete on Close(),
 #                              which construction failures also go through
-#   pods             get     — Close() reads the controller-created Pod until it
+#   pods             get     — the readiness wait reads the controller-created
+#                              Pod on every poll, and Close() reads it until it
 #                              is gone before removing the egress policy; the
 #                              orchestrator never creates or deletes it
 #   pods/exec        create  — Exec + tar-based file I/O POST to the pods/exec

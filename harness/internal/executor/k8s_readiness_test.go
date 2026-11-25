@@ -107,6 +107,22 @@ func TestWaitForPodReady_FailsFastOnTerminalState(t *testing.T) {
 			wantErr: "agent container cannot start: ErrImageNeverPull",
 		},
 		{
+			name: "agent container in a crash loop",
+			mutate: func(pod *corev1.Pod) {
+				pod.Status.ContainerStatuses = agentWaiting("CrashLoopBackOff", "back-off 10s restarting failed container")
+				pod.Status.ContainerStatuses[0].RestartCount = 2
+				pod.Status.ContainerStatuses[0].LastTerminationState = corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 127, Reason: "Error", Message: "exec: /bin/sh: not found"}}
+			},
+			wantErr: "agent container restarted (restart count 2, last exit code 127, Error: exec: /bin/sh: not found)",
+		},
+		{
+			name: "agent container running again after a restart",
+			mutate: func(pod *corev1.Pod) {
+				pod.Status.ContainerStatuses[0].RestartCount = 1
+			},
+			wantErr: "agent container restarted (restart count 1)",
+		},
+		{
 			name: "pod being deleted",
 			mutate: func(pod *corev1.Pod) {
 				pod.Status.Phase = corev1.PodPending
